@@ -113,30 +113,6 @@
       </section>
 
       <section class="admin-block">
-        <div class="panel-head">
-          <h3>Guests</h3>
-          <button id="admin-guests-refresh" type="button">Refresh</button>
-        </div>
-        <div class="grid-2">
-          <label>
-            Search
-            <input id="admin-guests-search" type="text" placeholder="Guest/reservation/event/buyer" />
-          </label>
-          <label>
-            Sort
-            <select id="admin-guests-sort">
-              <option value="newest">Newest</option>
-              <option value="name">Name</option>
-              <option value="event">Event</option>
-              <option value="reservation">Reservation</option>
-              <option value="status">Status</option>
-            </select>
-          </label>
-        </div>
-        <div id="admin-guests-list" class="admin-cards"></div>
-      </section>
-
-      <section class="admin-block">
         <h3>Add Guest</h3>
         <div class="grid-2">
           <label>
@@ -199,6 +175,30 @@
         <div class="admin-actions">
           <button id="admin-export-download" type="button">Download Excel</button>
         </div>
+      </section>
+
+      <section class="admin-block">
+        <div class="panel-head">
+          <h3>Search Guests</h3>
+          <button id="admin-guests-refresh" type="button">Refresh</button>
+        </div>
+        <div class="grid-2">
+          <label>
+            Search
+            <input id="admin-guests-search" type="text" placeholder="Guest/reservation/event/buyer" />
+          </label>
+          <label>
+            Sort
+            <select id="admin-guests-sort">
+              <option value="newest">Newest</option>
+              <option value="name">Name</option>
+              <option value="event">Event</option>
+              <option value="reservation">Reservation</option>
+              <option value="status">Status</option>
+            </select>
+          </label>
+        </div>
+        <div id="admin-guests-list" class="admin-cards"></div>
       </section>
     </section>
   </main>
