@@ -239,12 +239,21 @@ label {
   font-size: 14px;
 }
 
-input {
+input,
+select,
+textarea {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px;
   font: inherit;
   width: 100%;
+  background: #fff;
+  color: var(--ink);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 130px;
 }
 
 .attendees {
@@ -306,6 +315,7 @@ input {
   display: flex;
   gap: 8px;
   margin-top: 10px;
+  flex-wrap: wrap;
 }
 
 .admin-grid3 {

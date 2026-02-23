@@ -1,11 +1,13 @@
 import os
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 
 from ticketbot.database import Database
@@ -63,6 +65,21 @@ class AdminEventUpdateRequest(BaseModel):
     tg_id: int
     event_id: int
     updates: Dict[str, Any]
+
+
+class AdminGuestAddByEventRequest(BaseModel):
+    tg_id: int
+    event_id: int
+    name: str
+    surname: str
+    gender: str
+
+
+class AdminGuestRemoveByNameRequest(BaseModel):
+    tg_id: int
+    event_id: int
+    name: str
+    surname: str
 
 
 def _require_admin(tg_id: Optional[int]) -> int:
@@ -205,6 +222,113 @@ def admin_guest_rename(payload: AdminGuestRenameRequest) -> Dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=400, detail=message)
     return {"ok": True, "message": message}
+
+
+@app.post("/api/admin/guest/add_by_event")
+def admin_guest_add_by_event(payload: AdminGuestAddByEventRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message, reservation = db.admin_add_guest_by_event(
+        admin_tg_id=payload.tg_id,
+        event_id=payload.event_id,
+        name=payload.name.strip(),
+        surname=payload.surname.strip(),
+        gender_raw=payload.gender.strip().lower(),
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}
+
+
+@app.post("/api/admin/guest/remove_by_name")
+def admin_guest_remove_by_name(payload: AdminGuestRemoveByNameRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message, reservation = db.admin_remove_guest_by_name(
+        event_id=payload.event_id,
+        name=payload.name.strip(),
+        surname=payload.surname.strip(),
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}
+
+
+@app.post("/api/admin/guest/import_xlsx")
+async def admin_guest_import_xlsx(
+    tg_id: int = Form(...),
+    event_id: int = Form(...),
+    gender: str = Form("girl"),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    _require_admin(tg_id)
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Upload .xlsx file.")
+
+    raw = await file.read()
+    try:
+        workbook = load_workbook(filename=BytesIO(raw), data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse xlsx: {exc}") from exc
+
+    sheet = workbook.active
+    added = 0
+    skipped = 0
+    errors = []
+
+    for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+        value_name = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
+        value_surname = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+        if not value_name and not value_surname:
+            continue
+        if row_index == 1 and value_name.lower() in {"name", "first_name"} and value_surname.lower() in {
+            "surname",
+            "last_name",
+        }:
+            continue
+        if not value_name or not value_surname:
+            skipped += 1
+            errors.append(f"Row {row_index}: missing name or surname.")
+            continue
+
+        ok, message, _reservation = db.admin_add_guest_by_event(
+            admin_tg_id=tg_id,
+            event_id=event_id,
+            name=value_name,
+            surname=value_surname,
+            gender_raw=gender,
+        )
+        if ok:
+            added += 1
+        else:
+            skipped += 1
+            errors.append(f"Row {row_index}: {message}")
+
+    return {
+        "ok": True,
+        "added": added,
+        "skipped": skipped,
+        "errors": errors[:10],
+    }
+
+
+@app.get("/api/admin/guest/export_xlsx")
+def admin_guest_export_xlsx(tg_id: int) -> StreamingResponse:
+    _require_admin(tg_id)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Guests"
+    sheet.append(["Name", "Surname"])
+    for first, last in db.list_guest_name_pairs():
+        sheet.append([first, last])
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    headers = {"Content-Disposition": 'attachment; filename="guests_export.xlsx"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @app.post("/api/admin/event/update")

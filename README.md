@@ -204,6 +204,14 @@ Admin can do most actions via buttons:
 - `/admin` -> `Edit events` for button-driven event field updates.
 - `/admin` -> `Open Admin App` (same Mini App, auto-opens admin section).
 
+Admin dashboard (Mini App) now includes:
+- Event setup block at top (title, caption, prices, quantities).
+- Guest search/sort list.
+- Add guest by event + name + surname + gender.
+- Remove guest by event + name + surname.
+- Import guests from `.xlsx` (column A: Name, column B: Surname).
+- Export all guest names/surnames to `.xlsx`.
+
 Sort options:
 - `admin_stats`: `date`, `title`, `approved`, `pending`, `sold`, `revenue`
 - `admin_find`: `newest`, `amount`, `status`, `event_date`

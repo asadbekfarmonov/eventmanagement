@@ -78,6 +78,42 @@
 
       <section class="admin-block">
         <div class="panel-head">
+          <h3>Event Setup</h3>
+          <button id="admin-events-refresh" type="button">Reload events</button>
+        </div>
+        <label>
+          Event
+          <select id="admin-event-select"></select>
+        </label>
+        <label>Title<input id="admin-ev-title" type="text" /></label>
+        <label>
+          Caption / Description
+          <textarea
+            id="admin-ev-caption"
+            rows="6"
+            placeholder="Write full event info and details here..."
+          ></textarea>
+        </label>
+        <div class="admin-grid3">
+          <label>EB Boy<input id="admin-ev-eb-boy" type="number" min="0" step="0.01" /></label>
+          <label>EB Girl<input id="admin-ev-eb-girl" type="number" min="0" step="0.01" /></label>
+          <label>EB Qty<input id="admin-ev-eb-qty" type="number" min="0" step="1" /></label>
+        </div>
+        <div class="admin-grid3">
+          <label>T1 Boy<input id="admin-ev-t1-boy" type="number" min="0" step="0.01" /></label>
+          <label>T1 Girl<input id="admin-ev-t1-girl" type="number" min="0" step="0.01" /></label>
+          <label>T1 Qty<input id="admin-ev-t1-qty" type="number" min="0" step="1" /></label>
+        </div>
+        <div class="admin-grid3">
+          <label>T2 Boy<input id="admin-ev-t2-boy" type="number" min="0" step="0.01" /></label>
+          <label>T2 Girl<input id="admin-ev-t2-girl" type="number" min="0" step="0.01" /></label>
+          <label>T2 Qty<input id="admin-ev-t2-qty" type="number" min="0" step="1" /></label>
+        </div>
+        <button id="admin-event-save" class="primary" type="button">Save Event Changes</button>
+      </section>
+
+      <section class="admin-block">
+        <div class="panel-head">
           <h3>Guests</h3>
           <button id="admin-guests-refresh" type="button">Refresh</button>
         </div>
@@ -104,15 +140,9 @@
         <h3>Add Guest</h3>
         <div class="grid-2">
           <label>
-            Reservation Search
-            <input id="admin-res-search" type="text" placeholder="Code/event/buyer" />
+            Event
+            <select id="admin-add-event-select"></select>
           </label>
-          <label>
-            Reservation
-            <select id="admin-reservation-select"></select>
-          </label>
-        </div>
-        <div class="grid-2">
           <label>
             Gender
             <select id="admin-guest-gender">
@@ -120,50 +150,55 @@
               <option value="girl">Girl</option>
             </select>
           </label>
-          <label>
-            Full Name
-            <input id="admin-guest-name" type="text" placeholder="Name Surname" />
-          </label>
+        </div>
+        <div class="grid-2">
+          <label>First Name<input id="admin-guest-name" type="text" placeholder="Name" /></label>
+          <label>Surname<input id="admin-guest-surname" type="text" placeholder="Surname" /></label>
         </div>
         <div class="admin-actions">
-          <button id="admin-res-refresh" type="button">Load Reservations</button>
           <button id="admin-guest-add" class="primary" type="button">Add Guest</button>
         </div>
       </section>
 
       <section class="admin-block">
-        <div class="panel-head">
-          <h3>Edit Event</h3>
-          <button id="admin-events-refresh" type="button">Reload events</button>
+        <h3>Remove Guest</h3>
+        <div class="grid-2">
+          <label>Event<select id="admin-remove-event-select"></select></label>
+          <label>First Name<input id="admin-remove-name" type="text" placeholder="Name" /></label>
+        </div>
+        <div class="grid-2">
+          <label>Surname<input id="admin-remove-surname" type="text" placeholder="Surname" /></label>
+          <button id="admin-guest-remove-by-name" type="button">Remove Guest</button>
+        </div>
+      </section>
+
+      <section class="admin-block">
+        <h3>Import Guests (Excel)</h3>
+        <div class="grid-2">
+          <label>Event<select id="admin-import-event-select"></select></label>
+          <label>
+            Gender For Imported Rows
+            <select id="admin-import-gender">
+              <option value="boy">Boy</option>
+              <option value="girl">Girl</option>
+            </select>
+          </label>
         </div>
         <label>
-          Event
-          <select id="admin-event-select"></select>
+          Excel File (.xlsx, col A=Name, col B=Surname)
+          <input id="admin-import-file" type="file" accept=".xlsx" />
         </label>
-        <div class="grid-2">
-          <label>Title<input id="admin-ev-title" type="text" /></label>
-          <label>Date/Time<input id="admin-ev-datetime" type="text" placeholder="YYYY-MM-DD HH:MM" /></label>
+        <div class="admin-actions">
+          <button id="admin-import-upload" type="button">Import Guests</button>
         </div>
-        <div class="grid-2">
-          <label>Location<input id="admin-ev-location" type="text" /></label>
-          <label>Caption<input id="admin-ev-caption" type="text" /></label>
+      </section>
+
+      <section class="admin-block">
+        <h3>Export Guests (Excel)</h3>
+        <p class="hint">Export all names and surnames from database.</p>
+        <div class="admin-actions">
+          <button id="admin-export-download" type="button">Download Excel</button>
         </div>
-        <div class="admin-grid3">
-          <label>EB Boy<input id="admin-ev-eb-boy" type="number" min="0" step="0.01" /></label>
-          <label>EB Girl<input id="admin-ev-eb-girl" type="number" min="0" step="0.01" /></label>
-          <label>EB Qty<input id="admin-ev-eb-qty" type="number" min="0" step="1" /></label>
-        </div>
-        <div class="admin-grid3">
-          <label>T1 Boy<input id="admin-ev-t1-boy" type="number" min="0" step="0.01" /></label>
-          <label>T1 Girl<input id="admin-ev-t1-girl" type="number" min="0" step="0.01" /></label>
-          <label>T1 Qty<input id="admin-ev-t1-qty" type="number" min="0" step="1" /></label>
-        </div>
-        <div class="admin-grid3">
-          <label>T2 Boy<input id="admin-ev-t2-boy" type="number" min="0" step="0.01" /></label>
-          <label>T2 Girl<input id="admin-ev-t2-girl" type="number" min="0" step="0.01" /></label>
-          <label>T2 Qty<input id="admin-ev-t2-qty" type="number" min="0" step="1" /></label>
-        </div>
-        <button id="admin-event-save" class="primary" type="button">Save Event Changes</button>
       </section>
     </section>
   </main>

@@ -265,6 +265,53 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(event.regular_tier1_qty, 9)
         self.assertEqual(event.event_datetime, new_dt)
 
+    def test_admin_add_guest_by_event_and_remove_by_name(self):
+        event_id = self._create_event(early_qty=2, t1_qty=0, t2_qty=0)
+
+        ok_add, _msg_add, reservation = self.db.admin_add_guest_by_event(
+            admin_tg_id=7164876915,
+            event_id=event_id,
+            name="Olzhas",
+            surname="Olzhasov",
+            gender_raw="boy",
+        )
+        self.assertTrue(ok_add)
+        self.assertIsNotNone(reservation)
+        self.assertEqual(reservation.status, STATUS_APPROVED)
+        self.assertEqual(reservation.quantity, 1)
+        self.assertEqual(reservation.boys, 1)
+        self.assertEqual(reservation.girls, 0)
+
+        event_after_add = self.db.get_event(event_id)
+        self.assertEqual(event_after_add.early_bird_qty, 1)
+
+        ok_remove, _msg_remove, updated_res = self.db.admin_remove_guest_by_name(
+            event_id=event_id,
+            name="Olzhas",
+            surname="Olzhasov",
+        )
+        self.assertTrue(ok_remove)
+        self.assertIsNotNone(updated_res)
+        self.assertEqual(updated_res.status, STATUS_CANCELLED)
+        self.assertEqual(updated_res.quantity, 0)
+
+        event_after_remove = self.db.get_event(event_id)
+        self.assertEqual(event_after_remove.early_bird_qty, 2)
+
+    def test_list_guest_name_pairs_splits_legacy_full_name(self):
+        event_id = self._create_event(early_qty=3, t1_qty=0, t2_qty=0)
+        self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Olzhas Olzhasov"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        pairs = self.db.list_guest_name_pairs()
+        self.assertTrue(("Olzhas", "Olzhasov") in pairs)
+
     def test_migrates_legacy_schema_for_new_fields(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy.db")
         conn = sqlite3.connect(legacy_path)

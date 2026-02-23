@@ -238,6 +238,34 @@ class Database:
         }
         return mapping.get((value or "").strip().lower())
 
+    def _name_parts(self, name: str, surname: str, full_name: str) -> Tuple[str, str]:
+        left = (name or "").strip()
+        right = (surname or "").strip()
+        if left and right:
+            return left, right
+
+        merged = (full_name or "").strip() or left
+        if not merged:
+            return "", ""
+        tokens = merged.split()
+        if len(tokens) == 1:
+            return tokens[0], ""
+        return tokens[0], " ".join(tokens[1:])
+
+    def _ensure_user_for_tg(self, tg_id: int, cursor: sqlite3.Cursor) -> int:
+        cursor.execute("SELECT id FROM users WHERE tg_id = ?", (tg_id,))
+        existing = cursor.fetchone()
+        if existing:
+            return int(existing["id"])
+        cursor.execute(
+            """
+            INSERT INTO users (tg_id, name, surname, phone, blocked, blocked_reason)
+            VALUES (?, ?, ?, ?, 0, '')
+            """,
+            (tg_id, "Admin", "User", "admin"),
+        )
+        return int(cursor.lastrowid)
+
     def _release_hold(self, reservation_row: sqlite3.Row, cursor: sqlite3.Cursor) -> None:
         if reservation_row["hold_applied"] != 1:
             return
@@ -645,6 +673,101 @@ class Database:
         updated = self.get_reservation(reservation_row["id"])
         return True, "Guest added successfully.", updated
 
+    def admin_add_guest_by_event(
+        self,
+        admin_tg_id: int,
+        event_id: int,
+        name: str,
+        surname: str,
+        gender_raw: str,
+    ) -> Tuple[bool, str, Optional[Reservation]]:
+        gender = self._normalize_gender(gender_raw)
+        if gender is None:
+            return False, "Gender must be boy or girl.", None
+
+        clean_name = (name or "").strip()
+        clean_surname = (surname or "").strip()
+        if not clean_name or not clean_surname:
+            return False, "Both name and surname are required.", None
+
+        event = self.get_event(event_id)
+        if not event:
+            return False, "Event not found.", None
+
+        active_tier = self.active_tier(event)
+        if not active_tier:
+            return False, "Event is sold out.", None
+
+        price = float(active_tier["boy_price"] if gender == "boy" else active_tier["girl_price"])
+        code = f"A{event_id}-{uuid.uuid4().hex[:8].upper()}"
+        quantity = 1
+        boys = 1 if gender == "boy" else 0
+        girls = 1 if gender == "girl" else 0
+        full_name = f"{clean_name} {clean_surname}"
+
+        cursor = self.conn.cursor()
+        user_id = self._ensure_user_for_tg(admin_tg_id, cursor)
+
+        qty_column = self._tier_qty_column(active_tier["key"])
+        cursor.execute(
+            f"UPDATE events SET {qty_column} = {qty_column} - 1 WHERE id = ? AND {qty_column} > 0",
+            (event_id,),
+        )
+        if cursor.rowcount <= 0:
+            self.conn.rollback()
+            return False, "No tickets left in current tier.", None
+
+        reservation_cols = self._table_columns("reservations")
+        insert_values: Dict[str, Any] = {
+            "code": code,
+            "user_id": user_id,
+            "event_id": event_id,
+            "ticket_type": active_tier["key"],
+            "quantity": quantity,
+            "total_price": price,
+            "boys": boys,
+            "girls": girls,
+            "status": STATUS_APPROVED,
+            "created_at": self._utc_now(),
+        }
+        if "price_per_ticket" in reservation_cols:
+            insert_values["price_per_ticket"] = price
+        if "paid_tickets" in reservation_cols:
+            insert_values["paid_tickets"] = quantity
+        if "credit_used_tickets" in reservation_cols:
+            insert_values["credit_used_tickets"] = 0
+        if "credit_source_codes" in reservation_cols:
+            insert_values["credit_source_codes"] = ""
+        if "payment_file_id" in reservation_cols:
+            insert_values["payment_file_id"] = ""
+        if "payment_file_type" in reservation_cols:
+            insert_values["payment_file_type"] = ""
+        if "admin_note" in reservation_cols:
+            insert_values["admin_note"] = "Added by admin dashboard"
+        if "reviewed_at" in reservation_cols:
+            insert_values["reviewed_at"] = self._utc_now()
+        if "reviewed_by_tg_id" in reservation_cols:
+            insert_values["reviewed_by_tg_id"] = admin_tg_id
+        if "hold_applied" in reservation_cols:
+            insert_values["hold_applied"] = 1
+
+        columns = list(insert_values.keys())
+        placeholders = ", ".join(["?"] * len(columns))
+        cursor.execute(
+            f"INSERT INTO reservations ({', '.join(columns)}) VALUES ({placeholders})",
+            tuple(insert_values[col] for col in columns),
+        )
+        reservation_id = int(cursor.lastrowid)
+        cursor.execute(
+            """
+            INSERT INTO attendees (reservation_id, name, surname, full_name, gender)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (reservation_id, clean_name, clean_surname, full_name, gender),
+        )
+        self.conn.commit()
+        return True, "Guest added successfully.", self.get_reservation(reservation_id)
+
     def admin_remove_guest(self, attendee_id: int) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()
         cursor.execute(
@@ -718,6 +841,112 @@ class Database:
         self.conn.commit()
         updated = self.get_reservation(row["id"])
         return True, "Guest removed successfully.", updated
+
+    def admin_remove_guest_by_name(
+        self,
+        event_id: int,
+        name: str,
+        surname: str,
+    ) -> Tuple[bool, str, Optional[Reservation]]:
+        clean_name = (name or "").strip()
+        clean_surname = (surname or "").strip()
+        if not clean_name or not clean_surname:
+            return False, "Both name and surname are required.", None
+
+        full_name = f"{clean_name} {clean_surname}".strip()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                a.id AS attendee_id,
+                a.full_name,
+                COALESCE(a.gender, 'unknown') AS gender,
+                r.*
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            WHERE r.event_id = ?
+              AND r.status IN (?, ?)
+              AND (
+                    LOWER(TRIM(a.full_name)) = LOWER(TRIM(?))
+                    OR (LOWER(TRIM(a.name)) = LOWER(TRIM(?)) AND LOWER(TRIM(a.surname)) = LOWER(TRIM(?)))
+              )
+            ORDER BY a.id DESC
+            LIMIT 1
+            """,
+            (event_id, STATUS_PENDING, STATUS_APPROVED, full_name, clean_name, clean_surname),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False, "Guest not found for selected event.", None
+
+        event = self.get_event(row["event_id"])
+        if not event:
+            return False, "Event not found for reservation.", None
+
+        gender = row["gender"] if row["gender"] in {"boy", "girl"} else "unknown"
+        unit_price = self._reservation_unit_price(row, event, gender)
+        new_quantity = int(row["quantity"]) - 1
+
+        if gender == "boy":
+            new_boys = max(0, int(row["boys"]) - 1)
+            new_girls = int(row["girls"])
+        elif gender == "girl":
+            new_boys = int(row["boys"])
+            new_girls = max(0, int(row["girls"]) - 1)
+        elif int(row["boys"]) > 0:
+            new_boys = int(row["boys"]) - 1
+            new_girls = int(row["girls"])
+        else:
+            new_boys = int(row["boys"])
+            new_girls = max(0, int(row["girls"]) - 1)
+
+        cursor.execute("DELETE FROM attendees WHERE id = ?", (row["attendee_id"],))
+        if row["hold_applied"] == 1:
+            qty_column = self._tier_qty_column(row["ticket_type"])
+            cursor.execute(
+                f"UPDATE events SET {qty_column} = {qty_column} + 1 WHERE id = ?",
+                (row["event_id"],),
+            )
+
+        if new_quantity <= 0:
+            cursor.execute(
+                """
+                UPDATE reservations
+                SET quantity = 0, boys = 0, girls = 0, total_price = 0,
+                    status = ?, hold_applied = 0
+                WHERE id = ?
+                """,
+                (STATUS_CANCELLED, row["id"]),
+            )
+            reservation_cols = self._table_columns("reservations")
+            self._update_legacy_reservation_fields(
+                cursor=cursor,
+                reservation_id=row["id"],
+                reservation_cols=reservation_cols,
+                quantity=0,
+                total_price=0.0,
+            )
+        else:
+            new_total = max(0.0, float(row["total_price"]) - float(unit_price))
+            cursor.execute(
+                """
+                UPDATE reservations
+                SET quantity = ?, boys = ?, girls = ?, total_price = ?
+                WHERE id = ?
+                """,
+                (new_quantity, new_boys, new_girls, new_total, row["id"]),
+            )
+            reservation_cols = self._table_columns("reservations")
+            self._update_legacy_reservation_fields(
+                cursor=cursor,
+                reservation_id=row["id"],
+                reservation_cols=reservation_cols,
+                quantity=new_quantity,
+                total_price=new_total,
+            )
+
+        self.conn.commit()
+        return True, "Guest removed successfully.", self.get_reservation(row["id"])
 
     def admin_rename_guest(self, attendee_id: int, full_name: str) -> Tuple[bool, str]:
         cursor = self.conn.cursor()
@@ -814,6 +1043,25 @@ class Database:
             (attendee_id,),
         )
         return cursor.fetchone()
+
+    def list_guest_name_pairs(self) -> List[Tuple[str, str]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT name, surname, full_name
+            FROM attendees
+            ORDER BY id
+            """
+        )
+        rows = []
+        for row in cursor.fetchall():
+            first, last = self._name_parts(
+                name=row["name"],
+                surname=row["surname"],
+                full_name=row["full_name"],
+            )
+            rows.append((first, last))
+        return rows
 
     def list_active_reservations(self, search: Optional[str] = None, limit: int = 12) -> List[sqlite3.Row]:
         query = """

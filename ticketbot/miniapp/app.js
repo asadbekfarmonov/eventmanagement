@@ -27,18 +27,24 @@ const adminEl = {
   guestsSort: document.getElementById('admin-guests-sort'),
   guestsRefresh: document.getElementById('admin-guests-refresh'),
   guestsList: document.getElementById('admin-guests-list'),
-  resSearch: document.getElementById('admin-res-search'),
-  resRefresh: document.getElementById('admin-res-refresh'),
-  reservationSelect: document.getElementById('admin-reservation-select'),
+  addEventSelect: document.getElementById('admin-add-event-select'),
   guestGender: document.getElementById('admin-guest-gender'),
   guestName: document.getElementById('admin-guest-name'),
+  guestSurname: document.getElementById('admin-guest-surname'),
   guestAdd: document.getElementById('admin-guest-add'),
+  removeEventSelect: document.getElementById('admin-remove-event-select'),
+  removeName: document.getElementById('admin-remove-name'),
+  removeSurname: document.getElementById('admin-remove-surname'),
+  removeByName: document.getElementById('admin-guest-remove-by-name'),
+  importEventSelect: document.getElementById('admin-import-event-select'),
+  importGender: document.getElementById('admin-import-gender'),
+  importFile: document.getElementById('admin-import-file'),
+  importUpload: document.getElementById('admin-import-upload'),
+  exportDownload: document.getElementById('admin-export-download'),
   eventsRefresh: document.getElementById('admin-events-refresh'),
   eventSelect: document.getElementById('admin-event-select'),
   eventSave: document.getElementById('admin-event-save'),
   title: document.getElementById('admin-ev-title'),
-  datetime: document.getElementById('admin-ev-datetime'),
-  location: document.getElementById('admin-ev-location'),
   caption: document.getElementById('admin-ev-caption'),
   ebBoy: document.getElementById('admin-ev-eb-boy'),
   ebGirl: document.getElementById('admin-ev-eb-girl'),
@@ -63,7 +69,6 @@ const adminState = {
   guestsSort: 'newest',
   guestsSearch: '',
   guests: [],
-  reservations: [],
   events: [],
   selectedEventId: null,
 };
@@ -290,11 +295,21 @@ async function adminPost(path, body = {}) {
   return data;
 }
 
+async function adminUpload(path, formData) {
+  if (!tgId) throw new Error('Cannot detect Telegram user id in Mini App.');
+  formData.set('tg_id', String(tgId));
+  const res = await fetch(path, {
+    method: 'POST',
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw data;
+  return data;
+}
+
 function fillAdminEventForm(event) {
   if (!event) return;
   adminEl.title.value = event.title || '';
-  adminEl.datetime.value = event.event_datetime || '';
-  adminEl.location.value = event.location || '';
   adminEl.caption.value = event.caption || '';
   const p = event.prices || {};
   adminEl.ebBoy.value = p.early_boy ?? 0;
@@ -359,7 +374,7 @@ function renderAdminGuests() {
           attendee_id: guest.attendee_id,
         });
         setAdminStatus(res.message || 'Guest removed.');
-        await Promise.all([loadAdminGuests(), loadAdminReservations()]);
+        await loadAdminGuests();
       } catch (err) {
         setAdminStatus(apiErrorText(err, 'Failed to remove guest.'), true);
       }
@@ -369,33 +384,28 @@ function renderAdminGuests() {
   }
 }
 
-function renderAdminReservations() {
-  adminEl.reservationSelect.innerHTML = '';
-  if (!adminState.reservations.length) {
+function populateEventSelect(selectEl, events) {
+  if (!selectEl) return;
+  const prev = Number(selectEl.value || 0);
+  selectEl.innerHTML = '';
+  for (const event of events) {
     const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = 'No active reservations';
-    adminEl.reservationSelect.appendChild(opt);
-    return;
+    opt.value = String(event.id);
+    opt.textContent = `#${event.id} ${event.title}`;
+    selectEl.appendChild(opt);
   }
-  for (const reservation of adminState.reservations) {
-    const opt = document.createElement('option');
-    opt.value = reservation.reservation_code;
-    opt.textContent = `${reservation.reservation_code} | ${reservation.event_title} | ${reservation.buyer_name} ${reservation.buyer_surname}`;
-    adminEl.reservationSelect.appendChild(opt);
-  }
+  if (!events.length) return;
+  const fallback = events[0].id;
+  const next = events.some((ev) => ev.id === prev) ? prev : fallback;
+  selectEl.value = String(next);
 }
 
 function renderAdminEvents() {
   const prev = adminState.selectedEventId;
-  adminEl.eventSelect.innerHTML = '';
-
-  for (const event of adminState.events) {
-    const opt = document.createElement('option');
-    opt.value = String(event.id);
-    opt.textContent = `#${event.id} ${event.title} (${event.event_datetime})`;
-    adminEl.eventSelect.appendChild(opt);
-  }
+  populateEventSelect(adminEl.eventSelect, adminState.events);
+  populateEventSelect(adminEl.addEventSelect, adminState.events);
+  populateEventSelect(adminEl.removeEventSelect, adminState.events);
+  populateEventSelect(adminEl.importEventSelect, adminState.events);
 
   if (!adminState.events.length) return;
   const selected = adminState.events.find((e) => e.id === prev) || adminState.events[0];
@@ -414,15 +424,6 @@ async function loadAdminGuests() {
   renderAdminGuests();
 }
 
-async function loadAdminReservations() {
-  const data = await adminGet('/api/admin/reservations', {
-    search: adminEl.resSearch.value.trim(),
-    limit: 25,
-  });
-  adminState.reservations = Array.isArray(data.items) ? data.items : [];
-  renderAdminReservations();
-}
-
 async function loadAdminEvents() {
   const data = await adminGet('/api/admin/events');
   adminState.events = Array.isArray(data.items) ? data.items : [];
@@ -430,7 +431,7 @@ async function loadAdminEvents() {
 }
 
 async function refreshAdminAll() {
-  await Promise.all([loadAdminGuests(), loadAdminReservations(), loadAdminEvents()]);
+  await Promise.all([loadAdminGuests(), loadAdminEvents()]);
 }
 
 async function ensureAdmin() {
@@ -456,29 +457,95 @@ async function openAdminMode() {
 }
 
 async function addAdminGuest() {
-  const reservationCode = adminEl.reservationSelect.value;
+  const eventId = Number(adminEl.addEventSelect.value || 0);
   const gender = adminEl.guestGender.value;
-  const fullName = adminEl.guestName.value.trim();
-  if (!reservationCode) {
-    setAdminStatus('Choose reservation first.', true);
+  const name = adminEl.guestName.value.trim();
+  const surname = adminEl.guestSurname.value.trim();
+  if (!eventId) {
+    setAdminStatus('Choose event first.', true);
     return;
   }
-  if (fullName.split(' ').length < 2) {
-    setAdminStatus('Name must be in format Name Surname.', true);
+  if (!name || !surname) {
+    setAdminStatus('Name and surname are required.', true);
     return;
   }
   try {
-    const res = await adminPost('/api/admin/guest/add', {
-      reservation_code: reservationCode,
+    const res = await adminPost('/api/admin/guest/add_by_event', {
+      event_id: eventId,
       gender,
-      full_name: fullName,
+      name,
+      surname,
     });
     adminEl.guestName.value = '';
+    adminEl.guestSurname.value = '';
     setAdminStatus(res.message || 'Guest added.');
-    await Promise.all([loadAdminGuests(), loadAdminReservations()]);
+    await Promise.all([loadAdminGuests(), loadAdminEvents()]);
   } catch (err) {
     setAdminStatus(apiErrorText(err, 'Failed to add guest.'), true);
   }
+}
+
+async function removeAdminGuestByName() {
+  const eventId = Number(adminEl.removeEventSelect.value || 0);
+  const name = adminEl.removeName.value.trim();
+  const surname = adminEl.removeSurname.value.trim();
+  if (!eventId) {
+    setAdminStatus('Choose event first.', true);
+    return;
+  }
+  if (!name || !surname) {
+    setAdminStatus('Name and surname are required for removal.', true);
+    return;
+  }
+  try {
+    const res = await adminPost('/api/admin/guest/remove_by_name', {
+      event_id: eventId,
+      name,
+      surname,
+    });
+    adminEl.removeName.value = '';
+    adminEl.removeSurname.value = '';
+    setAdminStatus(res.message || 'Guest removed.');
+    await Promise.all([loadAdminGuests(), loadAdminEvents()]);
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Failed to remove guest.'), true);
+  }
+}
+
+async function importGuestsXlsx() {
+  const eventId = Number(adminEl.importEventSelect.value || 0);
+  const gender = adminEl.importGender.value || 'girl';
+  const file = adminEl.importFile.files && adminEl.importFile.files[0];
+  if (!eventId) {
+    setAdminStatus('Choose event first.', true);
+    return;
+  }
+  if (!file) {
+    setAdminStatus('Choose .xlsx file first.', true);
+    return;
+  }
+  const formData = new FormData();
+  formData.set('event_id', String(eventId));
+  formData.set('gender', gender);
+  formData.set('file', file);
+  try {
+    const res = await adminUpload('/api/admin/guest/import_xlsx', formData);
+    const msg = `Import complete. Added: ${res.added || 0}, Skipped: ${res.skipped || 0}.`;
+    setAdminStatus(msg);
+    await Promise.all([loadAdminGuests(), loadAdminEvents()]);
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Failed to import guests.'), true);
+  }
+}
+
+function exportGuestsXlsx() {
+  if (!tgId) {
+    setAdminStatus('Cannot detect Telegram user id in Mini App.', true);
+    return;
+  }
+  const url = new URL('/api/admin/guest/export_xlsx', window.location.origin);
+  url.searchParams.set('tg_id', String(tgId));
+  window.open(url.toString(), '_blank', 'noopener,noreferrer');
 }
 
 async function saveAdminEvent() {
@@ -490,8 +557,6 @@ async function saveAdminEvent() {
 
   const updates = {
     title: adminEl.title.value.trim(),
-    datetime: adminEl.datetime.value.trim(),
-    location: adminEl.location.value.trim(),
     caption: adminEl.caption.value.trim(),
     early_boy: adminEl.ebBoy.value,
     early_girl: adminEl.ebGirl.value,
@@ -572,18 +637,17 @@ if (adminEl.guestsSearch) {
     }
   });
 }
-if (adminEl.resRefresh) {
-  adminEl.resRefresh.addEventListener('click', async () => {
-    try {
-      await loadAdminReservations();
-      setAdminStatus('Reservations refreshed.');
-    } catch (err) {
-      setAdminStatus(apiErrorText(err, 'Failed to load reservations.'), true);
-    }
-  });
-}
 if (adminEl.guestAdd) {
   adminEl.guestAdd.addEventListener('click', addAdminGuest);
+}
+if (adminEl.removeByName) {
+  adminEl.removeByName.addEventListener('click', removeAdminGuestByName);
+}
+if (adminEl.importUpload) {
+  adminEl.importUpload.addEventListener('click', importGuestsXlsx);
+}
+if (adminEl.exportDownload) {
+  adminEl.exportDownload.addEventListener('click', exportGuestsXlsx);
 }
 if (adminEl.eventsRefresh) {
   adminEl.eventsRefresh.addEventListener('click', async () => {
