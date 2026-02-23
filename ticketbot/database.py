@@ -788,6 +788,74 @@ class Database:
         cursor.execute(query, tuple(params))
         return cursor.fetchall()
 
+    def get_guest(self, attendee_id: int) -> Optional[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                a.id AS attendee_id,
+                a.full_name,
+                COALESCE(a.gender, 'unknown') AS gender,
+                r.id AS reservation_id,
+                r.code AS reservation_code,
+                r.status AS reservation_status,
+                e.id AS event_id,
+                e.title AS event_title,
+                e.event_datetime,
+                u.tg_id AS buyer_tg_id,
+                u.name AS buyer_name,
+                u.surname AS buyer_surname
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            JOIN events e ON e.id = r.event_id
+            JOIN users u ON u.id = r.user_id
+            WHERE a.id = ?
+            """,
+            (attendee_id,),
+        )
+        return cursor.fetchone()
+
+    def list_active_reservations(self, search: Optional[str] = None, limit: int = 12) -> List[sqlite3.Row]:
+        query = """
+            SELECT
+                r.id AS reservation_id,
+                r.code AS reservation_code,
+                r.status AS reservation_status,
+                r.quantity,
+                r.boys,
+                r.girls,
+                r.total_price,
+                r.created_at,
+                e.id AS event_id,
+                e.title AS event_title,
+                e.event_datetime,
+                u.tg_id AS buyer_tg_id,
+                u.name AS buyer_name,
+                u.surname AS buyer_surname
+            FROM reservations r
+            JOIN events e ON e.id = r.event_id
+            JOIN users u ON u.id = r.user_id
+            WHERE r.status IN (?, ?)
+        """
+        params: List[Any] = [STATUS_PENDING, STATUS_APPROVED]
+        if search:
+            pattern = f"%{search.lower()}%"
+            query += """
+                AND (
+                    LOWER(r.code) LIKE ?
+                    OR LOWER(e.title) LIKE ?
+                    OR LOWER(u.name) LIKE ?
+                    OR LOWER(u.surname) LIKE ?
+                    OR CAST(u.tg_id AS TEXT) LIKE ?
+                )
+            """
+            params.extend([pattern, pattern, pattern, pattern, pattern])
+        query += " ORDER BY r.created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = self.conn.cursor()
+        cursor.execute(query, tuple(params))
+        return cursor.fetchall()
+
     def cancel_reservation_for_user(self, user_id: int, reservation_code: str) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()
         cursor.execute(

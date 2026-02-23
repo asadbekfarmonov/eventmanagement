@@ -3,7 +3,7 @@ import json
 from io import StringIO
 from typing import Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -49,7 +49,13 @@ from ticketbot.services import AdminService, EventService, ReservationService, U
     ADMIN_REJECT_NOTE,
     ADMIN_PRICE_EDIT_CHOOSE,
     ADMIN_PRICE_EDIT_VALUE,
-) = range(27)
+    ADMIN_GUEST_PANEL,
+    ADMIN_GUEST_SEARCH_TEXT,
+    ADMIN_GUEST_RENAME_TEXT,
+    ADMIN_GUEST_ADD_NAME_TEXT,
+    ADMIN_EVENT_EDIT_PANEL,
+    ADMIN_EVENT_EDIT_VALUE,
+) = range(33)
 
 
 class TelegramBot:
@@ -79,6 +85,8 @@ class TelegramBot:
             entry_points=[
                 CommandHandler("events", self.events_list),
                 CommandHandler("book", self.open_mini_app),
+                MessageHandler(filters.Regex(r"^Browse Events$"), self.events_list),
+                MessageHandler(filters.Regex(r"^Open Booking App$"), self.open_mini_app),
                 MessageHandler(filters.StatusUpdate.WEB_APP_DATA, self.webapp_booking_data),
             ],
             states={
@@ -152,17 +160,46 @@ class TelegramBot:
             fallbacks=[],
         )
 
+        admin_guest_conv = ConversationHandler(
+            entry_points=[
+                CommandHandler("admin_guests", self.admin_guests_command),
+                CallbackQueryHandler(self.admin_guests_open_from_panel, pattern=r"^admin:guests$"),
+                CallbackQueryHandler(self.admin_guests_callback, pattern=r"^adminguests:"),
+            ],
+            states={
+                ADMIN_GUEST_PANEL: [CallbackQueryHandler(self.admin_guests_callback, pattern=r"^adminguests:")],
+                ADMIN_GUEST_SEARCH_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.admin_guests_search_text)],
+                ADMIN_GUEST_RENAME_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.admin_guest_rename_text)],
+                ADMIN_GUEST_ADD_NAME_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.admin_guest_add_name_text)],
+            },
+            fallbacks=[],
+        )
+
+        admin_event_edit_conv = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.event_edit_pick, pattern=r"^eventedit:pick:"),
+                CallbackQueryHandler(self.event_edit_action, pattern=r"^eventedit:"),
+            ],
+            states={
+                ADMIN_EVENT_EDIT_PANEL: [CallbackQueryHandler(self.event_edit_action, pattern=r"^eventedit:")],
+                ADMIN_EVENT_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.event_edit_value)],
+            },
+            fallbacks=[],
+        )
+
         app.add_handler(profile_conv)
         app.add_handler(booking_conv)
         app.add_handler(admin_create_conv)
         app.add_handler(admin_reject_conv)
         app.add_handler(admin_price_edit_conv)
+        app.add_handler(admin_guest_conv)
+        app.add_handler(admin_event_edit_conv)
 
         app.add_handler(CommandHandler("mytickets", self.my_tickets))
+        app.add_handler(MessageHandler(filters.Regex(r"^My Tickets$"), self.my_tickets))
         app.add_handler(CommandHandler("cancel", self.cancel_reservation))
         app.add_handler(CommandHandler("admin_stats", self.admin_stats_command))
         app.add_handler(CommandHandler("admin_find", self.admin_find_command))
-        app.add_handler(CommandHandler("admin_guests", self.admin_guests_command))
         app.add_handler(CommandHandler("admin_guest_add", self.admin_guest_add_command))
         app.add_handler(CommandHandler("admin_guest_remove", self.admin_guest_remove_command))
         app.add_handler(CommandHandler("admin_guest_rename", self.admin_guest_rename_command))
@@ -174,7 +211,6 @@ class TelegramBot:
         app.add_handler(CallbackQueryHandler(self.admin_approve, pattern=r"^review:approve:"))
         app.add_handler(CallbackQueryHandler(self.admin_reject_template, pattern=r"^review:reject:tpl:"))
         app.add_handler(CallbackQueryHandler(self.admin_stats_sort, pattern=r"^adminstats:sort:"))
-        app.add_handler(CallbackQueryHandler(self.admin_guests_sort, pattern=r"^adminguests:sort:"))
 
         return app
 
@@ -271,6 +307,15 @@ class TelegramBot:
             ]
         )
 
+    def _main_menu_keyboard(self) -> ReplyKeyboardMarkup:
+        return ReplyKeyboardMarkup(
+            [
+                ["Browse Events", "Open Booking App"],
+                ["My Tickets"],
+            ],
+            resize_keyboard=True,
+        )
+
     def _render_event_stats(self, sort_by: str = "date", search: Optional[str] = None) -> str:
         rows = self.admin.list_event_stats(sort_by=sort_by, search=search, limit=15)
         if not rows:
@@ -324,6 +369,147 @@ class TelegramBot:
         lines.append("/admin_guest_remove <attendee_id>")
         lines.append("/admin_guest_rename <attendee_id> <Name Surname>")
         return "\n".join(lines)
+
+    def _render_guest_panel(self, sort_by: str = "newest", search: Optional[str] = None):
+        rows = self.admin.list_guests(sort_by=sort_by, search=search, limit=8)
+        if not rows:
+            text = f"Guests manager (sort: {sort_by})"
+            if search:
+                text += f'\nSearch: "{search}"'
+            text += "\nNo guests found."
+        else:
+            lines = [f"Guests manager (sort: {sort_by})"]
+            if search:
+                lines.append(f'Search: "{search}"')
+            for row in rows:
+                lines.append(
+                    f"#{row['attendee_id']} {row['full_name']} [{row['gender']}] | "
+                    f"{row['reservation_code']} | {row['reservation_status']}"
+                )
+                lines.append(f"{row['event_title']} ({row['event_datetime']})")
+            text = "\n".join(lines)
+        return text, rows
+
+    def _guest_panel_keyboard(self, rows, sort_by: str = "newest", search: Optional[str] = None) -> InlineKeyboardMarkup:
+        keyboard = [
+            [
+                InlineKeyboardButton("Newest", callback_data="adminguests:sort:newest"),
+                InlineKeyboardButton("Name", callback_data="adminguests:sort:name"),
+                InlineKeyboardButton("Event", callback_data="adminguests:sort:event"),
+            ],
+            [
+                InlineKeyboardButton("Reservation", callback_data="adminguests:sort:reservation"),
+                InlineKeyboardButton("Status", callback_data="adminguests:sort:status"),
+            ],
+            [
+                InlineKeyboardButton("Search", callback_data="adminguests:search:start"),
+                InlineKeyboardButton("Clear Search", callback_data="adminguests:search:clear"),
+            ],
+            [InlineKeyboardButton("Add Guest", callback_data="adminguests:add:start")],
+        ]
+        for row in rows:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        f"Open #{row['attendee_id']} {row['full_name'][:24]}",
+                        callback_data=f"adminguests:open:{row['attendee_id']}",
+                    )
+                ]
+            )
+        keyboard.append([InlineKeyboardButton("Refresh", callback_data=f"adminguests:sort:{sort_by}")])
+        return InlineKeyboardMarkup(keyboard)
+
+    def _render_guest_detail(self, row) -> str:
+        return (
+            f"Guest #{row['attendee_id']}\n"
+            f"Name: {row['full_name']}\n"
+            f"Gender: {row['gender']}\n"
+            f"Reservation: {row['reservation_code']} ({row['reservation_status']})\n"
+            f"Event: {row['event_title']} ({row['event_datetime']})\n"
+            f"Buyer: {row['buyer_name']} {row['buyer_surname']} | tg:{row['buyer_tg_id']}"
+        )
+
+    def _guest_detail_keyboard(self, attendee_id: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Rename", callback_data=f"adminguests:rename:{attendee_id}"),
+                    InlineKeyboardButton("Remove", callback_data=f"adminguests:remove:{attendee_id}"),
+                ],
+                [InlineKeyboardButton("Back", callback_data="adminguests:back")],
+            ]
+        )
+
+    def _reservation_picker_text(self, rows) -> str:
+        if not rows:
+            return "No active reservations found (pending/approved)."
+        lines = ["Select reservation for adding guest:"]
+        for row in rows:
+            lines.append(
+                f"{row['reservation_code']} | {row['reservation_status']} | "
+                f"{row['event_title']} ({row['event_datetime']})"
+            )
+            lines.append(
+                f"Buyer: {row['buyer_name']} {row['buyer_surname']} | "
+                f"Qty {row['quantity']} (boys {row['boys']}, girls {row['girls']})"
+            )
+        return "\n".join(lines)
+
+    def _reservation_picker_keyboard(self, rows) -> InlineKeyboardMarkup:
+        keyboard = []
+        for row in rows:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        f"{row['reservation_code']} | {row['event_title'][:20]}",
+                        callback_data=f"adminguests:add:res:{row['reservation_id']}",
+                    )
+                ]
+            )
+        keyboard.append([InlineKeyboardButton("Back", callback_data="adminguests:back")])
+        return InlineKeyboardMarkup(keyboard)
+
+    def _event_edit_text(self, event) -> str:
+        return (
+            f"Edit Event #{event.id}\n"
+            f"Title: {event.title}\n"
+            f"Date: {event.event_datetime}\n"
+            f"Location: {event.location}\n"
+            f"Caption: {event.caption}\n\n"
+            f"Early: b {event.early_bird_price:.2f} | g {event.early_bird_price_girl:.2f} | qty {event.early_bird_qty}\n"
+            f"Tier-1: b {event.regular_tier1_price:.2f} | g {event.regular_tier1_price_girl:.2f} | qty {event.regular_tier1_qty}\n"
+            f"Tier-2: b {event.regular_tier2_price:.2f} | g {event.regular_tier2_price_girl:.2f} | qty {event.regular_tier2_qty}"
+        )
+
+    def _event_edit_keyboard(self, event_id: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Title", callback_data=f"eventedit:set:{event_id}:title"),
+                    InlineKeyboardButton("Date/Time", callback_data=f"eventedit:set:{event_id}:datetime"),
+                ],
+                [
+                    InlineKeyboardButton("Location", callback_data=f"eventedit:set:{event_id}:location"),
+                    InlineKeyboardButton("Caption", callback_data=f"eventedit:set:{event_id}:caption"),
+                ],
+                [
+                    InlineKeyboardButton("EB Boy", callback_data=f"eventedit:set:{event_id}:early_boy"),
+                    InlineKeyboardButton("EB Girl", callback_data=f"eventedit:set:{event_id}:early_girl"),
+                    InlineKeyboardButton("EB Qty", callback_data=f"eventedit:set:{event_id}:early_qty"),
+                ],
+                [
+                    InlineKeyboardButton("T1 Boy", callback_data=f"eventedit:set:{event_id}:tier1_boy"),
+                    InlineKeyboardButton("T1 Girl", callback_data=f"eventedit:set:{event_id}:tier1_girl"),
+                    InlineKeyboardButton("T1 Qty", callback_data=f"eventedit:set:{event_id}:tier1_qty"),
+                ],
+                [
+                    InlineKeyboardButton("T2 Boy", callback_data=f"eventedit:set:{event_id}:tier2_boy"),
+                    InlineKeyboardButton("T2 Girl", callback_data=f"eventedit:set:{event_id}:tier2_girl"),
+                    InlineKeyboardButton("T2 Qty", callback_data=f"eventedit:set:{event_id}:tier2_qty"),
+                ],
+                [InlineKeyboardButton("Refresh", callback_data=f"eventedit:pick:{event_id}")],
+            ]
+        )
 
     async def _notify_user_after_review(self, reservation, approved: bool, note: str) -> None:
         user = self.users.get_by_id(reservation.user_id)
@@ -427,7 +613,8 @@ class TelegramBot:
         user = self.users.get(tg_id)
         if user:
             await update.message.reply_text(
-                "Welcome back. Use /book for modern booking UI, /events for classic flow, and /mytickets for history."
+                "Welcome back. Use menu buttons below for booking and tickets.",
+                reply_markup=self._main_menu_keyboard(),
             )
             return ConversationHandler.END
         await update.message.reply_text("Welcome. Let's set up your profile. What's your name?")
@@ -452,7 +639,10 @@ class TelegramBot:
             context.user_data["profile_surname"],
             phone,
         )
-        await update.message.reply_text("Profile saved. Use /book (modern UI) or /events (classic flow).")
+        await update.message.reply_text(
+            "Profile saved. Use the menu buttons below.",
+            reply_markup=self._main_menu_keyboard(),
+        )
         return ConversationHandler.END
 
     async def edit_profile(self, update: Update, _context):
@@ -867,13 +1057,13 @@ class TelegramBot:
         keyboard = [
             [InlineKeyboardButton("Create event", callback_data="admin:create")],
             [InlineKeyboardButton("Events list", callback_data="admin:list")],
+            [InlineKeyboardButton("Edit events", callback_data="admin:eventsedit")],
             [InlineKeyboardButton("Analytics", callback_data="admin:analytics")],
             [InlineKeyboardButton("Guests", callback_data="admin:guests")],
             [InlineKeyboardButton("Blocked users", callback_data="admin:blocked")],
         ]
         await update.message.reply_text(
-            "Admin panel:\n"
-            "Quick commands: /admin_guests, /admin_event_show <id>, /admin_event_set <id> <field> <value>",
+            "Admin panel: use buttons below. Text input is only needed for names/search and value updates.",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
         return ADMIN_EVENT_TITLE
@@ -906,12 +1096,29 @@ class TelegramBot:
             )
             return ConversationHandler.END
 
+        if query.data == "admin:eventsedit":
+            events_list = self.events.list_open()
+            if not events_list:
+                await query.edit_message_text("No events to edit.")
+                return ConversationHandler.END
+            keyboard = []
+            for event in events_list[:15]:
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            f"Edit #{event.id} {event.title[:28]}",
+                            callback_data=f"eventedit:pick:{event.id}",
+                        )
+                    ]
+                )
+            await query.edit_message_text("Select event to edit:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
+
         if query.data == "admin:guests":
-            context.user_data["admin_guest_search"] = None
-            await query.edit_message_text(
-                self._render_guest_list(sort_by="newest"),
-                reply_markup=self._guest_sort_keyboard(),
-            )
+            context.user_data["guest_sort"] = "newest"
+            context.user_data["guest_search"] = None
+            text, rows = self._render_guest_panel(sort_by="newest")
+            await query.edit_message_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_by="newest"))
             return ConversationHandler.END
 
         if query.data == "admin:blocked":
@@ -1008,19 +1215,18 @@ class TelegramBot:
         await update.message.reply_text("\n".join(lines))
         return ConversationHandler.END
 
-    async def admin_guests_sort(self, update: Update, context):
+    async def admin_guests_open_from_panel(self, update: Update, context):
         query = update.callback_query
         await query.answer()
         if not self.is_admin(update.effective_user.id):
             await query.message.reply_text("Access denied.")
-            return
+            return ConversationHandler.END
 
-        sort_key = query.data.split(":")[-1]
-        search = context.user_data.get("admin_guest_search")
-        await query.edit_message_text(
-            self._render_guest_list(sort_by=sort_key, search=search),
-            reply_markup=self._guest_sort_keyboard(),
-        )
+        context.user_data["guest_sort"] = "newest"
+        context.user_data["guest_search"] = None
+        text, rows = self._render_guest_panel(sort_by="newest", search=None)
+        await query.edit_message_text(text, reply_markup=self._guest_panel_keyboard(rows, "newest", None))
+        return ADMIN_GUEST_PANEL
 
     async def admin_guests_command(self, update: Update, context):
         if not self.is_admin(update.effective_user.id):
@@ -1037,12 +1243,163 @@ class TelegramBot:
             else:
                 search = " ".join(context.args).strip() or None
 
-        context.user_data["admin_guest_search"] = search
-        await update.message.reply_text(
-            self._render_guest_list(sort_by=sort_key, search=search),
-            reply_markup=self._guest_sort_keyboard(),
-        )
-        return ConversationHandler.END
+        context.user_data["guest_sort"] = sort_key
+        context.user_data["guest_search"] = search
+        text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+        await update.message.reply_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+        return ADMIN_GUEST_PANEL
+
+    async def admin_guests_callback(self, update: Update, context):
+        query = update.callback_query
+        await query.answer()
+        if not self.is_admin(update.effective_user.id):
+            await query.message.reply_text("Access denied.")
+            return ConversationHandler.END
+
+        parts = query.data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        sort_key = context.user_data.get("guest_sort", "newest")
+        search = context.user_data.get("guest_search")
+
+        if action == "sort" and len(parts) > 2:
+            sort_key = parts[2]
+            context.user_data["guest_sort"] = sort_key
+            text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+            await query.edit_message_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+            return ADMIN_GUEST_PANEL
+
+        if action == "search" and len(parts) > 2:
+            mode = parts[2]
+            if mode == "start":
+                await query.message.reply_text("Send search text for guests/reservation/event/buyer.")
+                return ADMIN_GUEST_SEARCH_TEXT
+            context.user_data["guest_search"] = None
+            text, rows = self._render_guest_panel(sort_by=sort_key, search=None)
+            await query.edit_message_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, None))
+            return ADMIN_GUEST_PANEL
+
+        if action == "open" and len(parts) > 2 and parts[2].isdigit():
+            attendee_id = int(parts[2])
+            row = self.admin.get_guest(attendee_id)
+            if not row:
+                await query.message.reply_text("Guest not found.")
+                return ADMIN_GUEST_PANEL
+            await query.edit_message_text(
+                self._render_guest_detail(row),
+                reply_markup=self._guest_detail_keyboard(attendee_id),
+            )
+            return ADMIN_GUEST_PANEL
+
+        if action == "rename" and len(parts) > 2 and parts[2].isdigit():
+            context.user_data["guest_rename_id"] = int(parts[2])
+            await query.message.reply_text('Send new guest name in format "Name Surname".')
+            return ADMIN_GUEST_RENAME_TEXT
+
+        if action == "remove" and len(parts) > 2 and parts[2].isdigit():
+            attendee_id = int(parts[2])
+            result = self.admin.remove_guest(attendee_id=attendee_id)
+            await query.message.reply_text(result.message)
+            text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+            await query.message.reply_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+            return ADMIN_GUEST_PANEL
+
+        if action == "add" and len(parts) > 2:
+            mode = parts[2]
+            if mode == "start":
+                rows = self.admin.list_active_reservations(limit=10)
+                await query.edit_message_text(
+                    self._reservation_picker_text(rows),
+                    reply_markup=self._reservation_picker_keyboard(rows),
+                )
+                return ADMIN_GUEST_PANEL
+            if mode == "res" and len(parts) > 3 and parts[3].isdigit():
+                reservation = self.reservations.get_by_id(int(parts[3]))
+                if not reservation:
+                    await query.message.reply_text("Reservation not found.")
+                    return ADMIN_GUEST_PANEL
+                context.user_data["guest_add_reservation_code"] = reservation.code
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton("Boy", callback_data="adminguests:add:gender:boy"),
+                            InlineKeyboardButton("Girl", callback_data="adminguests:add:gender:girl"),
+                        ],
+                        [InlineKeyboardButton("Back", callback_data="adminguests:back")],
+                    ]
+                )
+                await query.edit_message_text(
+                    f"Selected reservation: {reservation.code}\nChoose gender for new guest:",
+                    reply_markup=keyboard,
+                )
+                return ADMIN_GUEST_PANEL
+            if mode == "gender" and len(parts) > 3:
+                gender = parts[3]
+                if gender not in {"boy", "girl"}:
+                    await query.message.reply_text("Invalid gender.")
+                    return ADMIN_GUEST_PANEL
+                context.user_data["guest_add_gender"] = gender
+                await query.message.reply_text('Send guest name in format "Name Surname".')
+                return ADMIN_GUEST_ADD_NAME_TEXT
+
+        text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+        await query.message.reply_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+        return ADMIN_GUEST_PANEL
+
+    async def admin_guests_search_text(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        context.user_data["guest_search"] = update.message.text.strip() or None
+        sort_key = context.user_data.get("guest_sort", "newest")
+        search = context.user_data.get("guest_search")
+        text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+        await update.message.reply_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+        return ADMIN_GUEST_PANEL
+
+    async def admin_guest_rename_text(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        attendee_id = context.user_data.get("guest_rename_id")
+        if not attendee_id:
+            await update.message.reply_text("No guest selected for rename.")
+            return ADMIN_GUEST_PANEL
+        full_name = update.message.text.strip()
+        if len(full_name.split()) < 2:
+            await update.message.reply_text('Name must be in format "Name Surname".')
+            return ADMIN_GUEST_RENAME_TEXT
+        result = self.admin.rename_guest(attendee_id=attendee_id, full_name=full_name)
+        context.user_data.pop("guest_rename_id", None)
+        await update.message.reply_text(result.message)
+        sort_key = context.user_data.get("guest_sort", "newest")
+        search = context.user_data.get("guest_search")
+        text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+        await update.message.reply_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+        return ADMIN_GUEST_PANEL
+
+    async def admin_guest_add_name_text(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        reservation_code = context.user_data.get("guest_add_reservation_code")
+        gender = context.user_data.get("guest_add_gender")
+        if not reservation_code or not gender:
+            await update.message.reply_text("Guest add context missing. Start again from Guests panel.")
+            return ADMIN_GUEST_PANEL
+        full_name = update.message.text.strip()
+        if len(full_name.split()) < 2:
+            await update.message.reply_text('Name must be in format "Name Surname".')
+            return ADMIN_GUEST_ADD_NAME_TEXT
+
+        result = self.admin.add_guest(reservation_code=reservation_code, full_name=full_name, gender=gender)
+        context.user_data.pop("guest_add_reservation_code", None)
+        context.user_data.pop("guest_add_gender", None)
+        await update.message.reply_text(result.message)
+        sort_key = context.user_data.get("guest_sort", "newest")
+        search = context.user_data.get("guest_search")
+        text, rows = self._render_guest_panel(sort_by=sort_key, search=search)
+        await update.message.reply_text(text, reply_markup=self._guest_panel_keyboard(rows, sort_key, search))
+        return ADMIN_GUEST_PANEL
 
     async def admin_guest_add_command(self, update: Update, context):
         if not self.is_admin(update.effective_user.id):
@@ -1128,17 +1485,10 @@ class TelegramBot:
             await update.message.reply_text("Event not found.")
             return ConversationHandler.END
 
-        text = (
-            f"Event #{event.id}\n"
-            f"Title: {event.title}\n"
-            f"Date: {event.event_datetime}\n"
-            f"Location: {event.location}\n"
-            f"Caption: {event.caption}\n\n"
-            f"Early Bird: boys {event.early_bird_price:.2f}, girls {event.early_bird_price_girl:.2f}, qty {event.early_bird_qty}\n"
-            f"Tier-1: boys {event.regular_tier1_price:.2f}, girls {event.regular_tier1_price_girl:.2f}, qty {event.regular_tier1_qty}\n"
-            f"Tier-2: boys {event.regular_tier2_price:.2f}, girls {event.regular_tier2_price_girl:.2f}, qty {event.regular_tier2_qty}"
+        await update.message.reply_text(
+            self._event_edit_text(event),
+            reply_markup=self._event_edit_keyboard(event.id),
         )
-        await update.message.reply_text(text)
         return ConversationHandler.END
 
     async def admin_event_set_command(self, update: Update, context):
@@ -1162,6 +1512,77 @@ class TelegramBot:
         ok, message = self.admin.set_event_fields(event_id, {field: value})
         await update.message.reply_text(message)
         return ConversationHandler.END
+
+    async def event_edit_pick(self, update: Update, _context):
+        query = update.callback_query
+        await query.answer()
+        if not self.is_admin(update.effective_user.id):
+            await query.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        event_id = int(query.data.split(":")[-1])
+        event = self.events.get(event_id)
+        if not event:
+            await query.edit_message_text("Event not found.")
+            return ConversationHandler.END
+        await query.edit_message_text(
+            self._event_edit_text(event),
+            reply_markup=self._event_edit_keyboard(event_id),
+        )
+        _context.user_data["event_edit_event_id"] = event_id
+        return ADMIN_EVENT_EDIT_PANEL
+
+    async def event_edit_action(self, update: Update, context):
+        query = update.callback_query
+        await query.answer()
+        if not self.is_admin(update.effective_user.id):
+            await query.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        parts = query.data.split(":")
+        if len(parts) >= 4 and parts[1] == "set" and parts[2].isdigit():
+            event_id = int(parts[2])
+            field = parts[3]
+            context.user_data["event_edit_event_id"] = event_id
+            context.user_data["event_edit_field"] = field
+            await query.message.reply_text(f"Send new value for {field}.")
+            return ADMIN_EVENT_EDIT_VALUE
+
+        if len(parts) >= 3 and parts[1] == "pick" and parts[2].isdigit():
+            event_id = int(parts[2])
+            event = self.events.get(event_id)
+            if not event:
+                await query.edit_message_text("Event not found.")
+                return ConversationHandler.END
+            await query.edit_message_text(
+                self._event_edit_text(event),
+                reply_markup=self._event_edit_keyboard(event_id),
+            )
+            return ADMIN_EVENT_EDIT_PANEL
+
+        await query.message.reply_text("Unknown event edit action.")
+        return ADMIN_EVENT_EDIT_PANEL
+
+    async def event_edit_value(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        event_id = context.user_data.get("event_edit_event_id")
+        field = context.user_data.get("event_edit_field")
+        if not event_id or not field:
+            await update.message.reply_text("Event edit context missing.")
+            return ConversationHandler.END
+        value = update.message.text.strip()
+        ok, message = self.admin.set_event_fields(event_id, {field: value})
+        await update.message.reply_text(message)
+        if not ok:
+            return ADMIN_EVENT_EDIT_VALUE
+        event = self.events.get(event_id)
+        if not event:
+            return ConversationHandler.END
+        await update.message.reply_text(
+            self._event_edit_text(event),
+            reply_markup=self._event_edit_keyboard(event_id),
+        )
+        return ADMIN_EVENT_EDIT_PANEL
 
     def _parse_non_negative_float(self, text: str) -> Optional[float]:
         try:

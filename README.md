@@ -172,6 +172,11 @@ Backups are saved to `/opt/eventmanagement/backups` and old backups (older than 
 - `/mytickets` - show all reservations and statuses.
 - `/cancel <reservation_code>` - cancel your reservation.
 
+Users can use menu buttons after `/start`:
+- `Browse Events`
+- `Open Booking App`
+- `My Tickets`
+
 Users can also cancel via inline `Cancel` button in `/mytickets`.
 
 ## Admin Commands
@@ -186,6 +191,10 @@ Users can also cancel via inline `Cancel` button in `/mytickets`.
 - `/admin_guest_rename <attendee_id> <Name Surname>` - rename guest.
 - `/admin_event_show <event_id>` - show event details (prices/qty/text).
 - `/admin_event_set <event_id> <field> <value>` - edit event fields.
+
+Admin can do most actions via buttons:
+- `/admin` -> `Guests` for guest list/search/sort/open/add/remove/rename.
+- `/admin` -> `Edit events` for button-driven event field updates.
 
 Sort options:
 - `admin_stats`: `date`, `title`, `approved`, `pending`, `sold`, `revenue`

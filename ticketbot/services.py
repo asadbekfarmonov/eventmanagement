@@ -170,6 +170,12 @@ class AdminService:
     ):
         return self.db.list_guests(sort_by=sort_by, search=search, limit=limit)
 
+    def get_guest(self, attendee_id: int):
+        return self.db.get_guest(attendee_id)
+
+    def list_active_reservations(self, search: Optional[str] = None, limit: int = 12):
+        return self.db.list_active_reservations(search=search, limit=limit)
+
     def add_guest(self, reservation_code: str, full_name: str, gender: str) -> ActionResult:
         ok, message, reservation = self.db.admin_add_guest(reservation_code, full_name, gender)
         return ActionResult(ok, message, reservation)
