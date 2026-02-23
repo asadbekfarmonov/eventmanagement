@@ -15,6 +15,9 @@
 
   <main class="app-shell">
     <header class="hero">
+      <div class="hero-top">
+        <button id="admin-open" type="button" class="admin-btn">Admin</button>
+      </div>
       <p class="eyebrow">Budapest Events</p>
       <h1>Book In Seconds</h1>
       <p class="sub">Choose event, set group, add names, then continue payment in Telegram chat.</p>
@@ -63,6 +66,105 @@
       <button id="submit-booking" class="primary" type="button" disabled>Continue In Telegram</button>
       <p id="status" class="hint"></p>
       <textarea id="debug-payload" hidden></textarea>
+    </section>
+
+    <section class="panel" id="admin-area" hidden>
+      <div class="panel-head">
+        <h2>Admin Dashboard</h2>
+        <button id="admin-refresh-all" type="button">Refresh all</button>
+      </div>
+      <p id="admin-ident" class="hint"></p>
+      <p id="admin-status" class="hint"></p>
+
+      <section class="admin-block">
+        <div class="panel-head">
+          <h3>Guests</h3>
+          <button id="admin-guests-refresh" type="button">Refresh</button>
+        </div>
+        <div class="grid-2">
+          <label>
+            Search
+            <input id="admin-guests-search" type="text" placeholder="Guest/reservation/event/buyer" />
+          </label>
+          <label>
+            Sort
+            <select id="admin-guests-sort">
+              <option value="newest">Newest</option>
+              <option value="name">Name</option>
+              <option value="event">Event</option>
+              <option value="reservation">Reservation</option>
+              <option value="status">Status</option>
+            </select>
+          </label>
+        </div>
+        <div id="admin-guests-list" class="admin-cards"></div>
+      </section>
+
+      <section class="admin-block">
+        <h3>Add Guest</h3>
+        <div class="grid-2">
+          <label>
+            Reservation Search
+            <input id="admin-res-search" type="text" placeholder="Code/event/buyer" />
+          </label>
+          <label>
+            Reservation
+            <select id="admin-reservation-select"></select>
+          </label>
+        </div>
+        <div class="grid-2">
+          <label>
+            Gender
+            <select id="admin-guest-gender">
+              <option value="boy">Boy</option>
+              <option value="girl">Girl</option>
+            </select>
+          </label>
+          <label>
+            Full Name
+            <input id="admin-guest-name" type="text" placeholder="Name Surname" />
+          </label>
+        </div>
+        <div class="admin-actions">
+          <button id="admin-res-refresh" type="button">Load Reservations</button>
+          <button id="admin-guest-add" class="primary" type="button">Add Guest</button>
+        </div>
+      </section>
+
+      <section class="admin-block">
+        <div class="panel-head">
+          <h3>Edit Event</h3>
+          <button id="admin-events-refresh" type="button">Reload events</button>
+        </div>
+        <label>
+          Event
+          <select id="admin-event-select"></select>
+        </label>
+        <div class="grid-2">
+          <label>Title<input id="admin-ev-title" type="text" /></label>
+          <label>Date/Time<input id="admin-ev-datetime" type="text" placeholder="YYYY-MM-DD HH:MM" /></label>
+        </div>
+        <div class="grid-2">
+          <label>Location<input id="admin-ev-location" type="text" /></label>
+          <label>Caption<input id="admin-ev-caption" type="text" /></label>
+        </div>
+        <div class="admin-grid3">
+          <label>EB Boy<input id="admin-ev-eb-boy" type="number" min="0" step="0.01" /></label>
+          <label>EB Girl<input id="admin-ev-eb-girl" type="number" min="0" step="0.01" /></label>
+          <label>EB Qty<input id="admin-ev-eb-qty" type="number" min="0" step="1" /></label>
+        </div>
+        <div class="admin-grid3">
+          <label>T1 Boy<input id="admin-ev-t1-boy" type="number" min="0" step="0.01" /></label>
+          <label>T1 Girl<input id="admin-ev-t1-girl" type="number" min="0" step="0.01" /></label>
+          <label>T1 Qty<input id="admin-ev-t1-qty" type="number" min="0" step="1" /></label>
+        </div>
+        <div class="admin-grid3">
+          <label>T2 Boy<input id="admin-ev-t2-boy" type="number" min="0" step="0.01" /></label>
+          <label>T2 Girl<input id="admin-ev-t2-girl" type="number" min="0" step="0.01" /></label>
+          <label>T2 Qty<input id="admin-ev-t2-qty" type="number" min="0" step="1" /></label>
+        </div>
+        <button id="admin-event-save" class="primary" type="button">Save Event Changes</button>
+      </section>
     </section>
   </main>
 

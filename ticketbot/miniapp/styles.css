@@ -67,6 +67,24 @@ body {
   animation: riseIn 0.5s ease;
 }
 
+.hero-top {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+.admin-btn {
+  border: 1px solid #9db3c7;
+  background: linear-gradient(120deg, #ecf6ff, #ffffff);
+  color: #0d2740;
+  font-weight: 700;
+}
+
+.admin-btn.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(14, 165, 164, 0.2);
+}
+
 .eyebrow {
   margin: 0;
   text-transform: uppercase;
@@ -234,6 +252,69 @@ input {
   gap: 8px;
 }
 
+.admin-block {
+  border: 1px solid #d4e2ee;
+  border-radius: 12px;
+  padding: 10px;
+  margin-top: 10px;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+}
+
+.admin-cards {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.admin-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: #fff;
+}
+
+.admin-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.admin-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.admin-card-meta {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-inline-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-inline-actions button {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.admin-grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .summary-card {
   border: 1px dashed #b8cad8;
   border-radius: 12px;
@@ -265,5 +346,11 @@ input {
 @media (min-width: 740px) {
   .event-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 739px) {
+  .admin-grid3 {
+    grid-template-columns: 1fr;
   }
 }

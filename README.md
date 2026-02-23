@@ -168,7 +168,7 @@ Backups are saved to `/opt/eventmanagement/backups` and old backups (older than 
 - Admin users are controlled with `ADMIN_IDS` env var (numeric Telegram IDs).
 - Mini App button uses `WEB_APP_URL` env var (must be a public `https://` URL).
 - Guest Mini App route: `/`
-- Admin Mini App route: `/admin`
+- Admin dashboard is inside the same Mini App (`/`) behind the `Admin` button and admin ID check.
 
 ## User Commands
 
@@ -188,7 +188,7 @@ Users can also cancel via inline `Cancel` button in `/mytickets`.
 ## Admin Commands
 
 - `/admin` - create event, view event list, blocked users.
-- `/adminapp` - open Admin Mini App dashboard.
+- `/adminapp` - open Mini App directly in admin mode.
 - `/admin_stats [sort] [search]` - analytics with counts/revenue and optional search.
 - `/export <event_id>` - export reservations CSV.
 - `/admin_find [sort] <query>` - search reservations by code, event, buyer, phone, tg id.
@@ -202,7 +202,7 @@ Users can also cancel via inline `Cancel` button in `/mytickets`.
 Admin can do most actions via buttons:
 - `/admin` -> `Guests` for guest list/search/sort/open/add/remove/rename.
 - `/admin` -> `Edit events` for button-driven event field updates.
-- `/admin` -> `Open Admin App` for full web dashboard.
+- `/admin` -> `Open Admin App` (same Mini App, auto-opens admin section).
 
 Sort options:
 - `admin_stats`: `date`, `title`, `approved`, `pending`, `sold`, `revenue`
@@ -278,4 +278,4 @@ Mini App sends booking draft to bot via `web_app_data`. Then user continues paym
 2. Run bot and Mini App server as above.
 3. Use the same tunnel/public URL in `WEB_APP_URL`.
 4. In Telegram, run `/admin` and tap `Open Admin App` (or run `/adminapp`).
-5. Admin Mini App route is `https://<your-domain>/admin`.
+5. It opens `https://<your-domain>/?open_admin=1` and unlocks admin section only for admin Telegram IDs.

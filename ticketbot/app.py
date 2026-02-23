@@ -311,7 +311,7 @@ class TelegramBot:
     def _admin_mini_app_markup(self) -> Optional[InlineKeyboardMarkup]:
         if not self.config.web_app_url:
             return None
-        admin_url = self.config.web_app_url.rstrip("/") + "/admin"
+        admin_url = self.config.web_app_url.rstrip("/") + "/?open_admin=1"
         return InlineKeyboardMarkup(
             [
                 [
@@ -1092,7 +1092,11 @@ class TelegramBot:
             [InlineKeyboardButton("Guests", callback_data="admin:guests")],
             [InlineKeyboardButton("Blocked users", callback_data="admin:blocked")],
         ]
-        admin_app_url = self.config.web_app_url.rstrip("/") + "/admin" if self.config.web_app_url else None
+        admin_app_url = (
+            self.config.web_app_url.rstrip("/") + "/?open_admin=1"
+            if self.config.web_app_url
+            else None
+        )
         if admin_app_url:
             keyboard.insert(
                 0,
