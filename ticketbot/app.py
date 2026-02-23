@@ -625,15 +625,26 @@ class TelegramBot:
                 )
 
     async def start(self, update: Update, _context):
+        intro = (
+            "🎉 Welcome to the official Budapest Tunderi bot.\n\n"
+            "Here you can:\n"
+            "🎟 Buy tickets for our events\n"
+            "📋 Join the guest list\n"
+            "🍾 Request table reservations\n"
+            "📩 Get the latest event updates\n\n"
+            "Choose a section below and follow the instructions.\n"
+            "If you have any questions, you can message us directly."
+        )
         tg_id = update.effective_user.id
         user = self.users.get(tg_id)
         if user:
             await update.message.reply_text(
-                "Welcome back. Use menu buttons below for booking and tickets.",
+                f"{intro}\n\nWelcome back. Use menu buttons below for booking and tickets.",
                 reply_markup=self._main_menu_keyboard(),
             )
             return ConversationHandler.END
-        await update.message.reply_text("Welcome. Let's set up your profile. What's your name?")
+        await update.message.reply_text(intro)
+        await update.message.reply_text("Let's set up your profile. What's your name?")
         return PROFILE_NAME
 
     async def profile_name(self, update: Update, context):
