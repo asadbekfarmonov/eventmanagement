@@ -52,6 +52,10 @@ bash deploy/railway/start_combined.sh
 - `https://<your-service>.up.railway.app/health` should return `{"status":"ok"}`
 - In Telegram run `/book` and test booking.
 
+If logs show an `Updater` AttributeError on Python 3.13, pin runtime to Python 3.12:
+- This repo includes `.python-version` set to `3.12`.
+- If needed, also set Railway variable `NIXPACKS_PYTHON_VERSION=3.12` and redeploy.
+
 Mini App visibility checklist:
 - `WEB_APP_URL` must be set.
 - URL must be `https://`.
