@@ -323,6 +323,20 @@ function fillAdminEventForm(event) {
   adminEl.t2Qty.value = p.tier2_qty ?? 0;
 }
 
+function clearAdminEventForm() {
+  adminEl.title.value = '';
+  adminEl.caption.value = '';
+  adminEl.ebBoy.value = 0;
+  adminEl.ebGirl.value = 0;
+  adminEl.ebQty.value = 0;
+  adminEl.t1Boy.value = 0;
+  adminEl.t1Girl.value = 0;
+  adminEl.t1Qty.value = 0;
+  adminEl.t2Boy.value = 0;
+  adminEl.t2Girl.value = 0;
+  adminEl.t2Qty.value = 0;
+}
+
 function renderAdminGuests() {
   adminEl.guestsList.innerHTML = '';
   if (!adminState.guests.length) {
@@ -384,34 +398,64 @@ function renderAdminGuests() {
   }
 }
 
-function populateEventSelect(selectEl, events) {
+function populateEventSelect(selectEl, events, options = {}) {
+  const allowCreate = Boolean(options.allowCreate);
+  const preferId = Number(options.preferId || 0);
   if (!selectEl) return;
-  const prev = Number(selectEl.value || 0);
+  const prevRaw = selectEl.value;
+  const prev = Number(prevRaw || 0);
   selectEl.innerHTML = '';
+  if (allowCreate) {
+    const createOpt = document.createElement('option');
+    createOpt.value = '';
+    createOpt.textContent = '+ Create New Event';
+    selectEl.appendChild(createOpt);
+  }
   for (const event of events) {
     const opt = document.createElement('option');
     opt.value = String(event.id);
     opt.textContent = `#${event.id} ${event.title}`;
     selectEl.appendChild(opt);
   }
-  if (!events.length) return;
-  const fallback = events[0].id;
-  const next = events.some((ev) => ev.id === prev) ? prev : fallback;
-  selectEl.value = String(next);
+  if (!events.length) {
+    if (allowCreate) selectEl.value = '';
+    return;
+  }
+
+  let next = 0;
+  if (preferId > 0 && events.some((ev) => ev.id === preferId)) {
+    next = preferId;
+  } else if (allowCreate && prevRaw === '') {
+    next = 0;
+  } else if (events.some((ev) => ev.id === prev)) {
+    next = prev;
+  } else {
+    next = events[0].id;
+  }
+  selectEl.value = next > 0 ? String(next) : '';
 }
 
 function renderAdminEvents() {
   const prev = adminState.selectedEventId;
-  populateEventSelect(adminEl.eventSelect, adminState.events);
+  populateEventSelect(adminEl.eventSelect, adminState.events, { allowCreate: true, preferId: prev });
   populateEventSelect(adminEl.addEventSelect, adminState.events);
   populateEventSelect(adminEl.removeEventSelect, adminState.events);
   populateEventSelect(adminEl.importEventSelect, adminState.events);
 
   if (!adminState.events.length) {
     adminState.selectedEventId = null;
+    clearAdminEventForm();
     return;
   }
-  const selected = adminState.events.find((e) => e.id === prev) || adminState.events[0];
+
+  const eventId = Number(adminEl.eventSelect.value || 0);
+  if (!eventId) {
+    adminState.selectedEventId = null;
+    clearAdminEventForm();
+    return;
+  }
+
+  const selected = adminState.events.find((e) => e.id === eventId) || adminState.events[0];
   adminState.selectedEventId = selected.id;
   adminEl.eventSelect.value = String(selected.id);
   fillAdminEventForm(selected);
@@ -678,6 +722,11 @@ if (adminEl.eventsRefresh) {
 if (adminEl.eventSelect) {
   adminEl.eventSelect.addEventListener('change', () => {
     const eventId = Number(adminEl.eventSelect.value || 0);
+    if (!eventId) {
+      adminState.selectedEventId = null;
+      clearAdminEventForm();
+      return;
+    }
     adminState.selectedEventId = eventId;
     const event = adminState.events.find((item) => item.id === eventId);
     fillAdminEventForm(event || null);
