@@ -1,0 +1,175 @@
+:root {
+  --ink: #0b1220;
+  --muted: #46556c;
+  --line: #d4deea;
+  --paper: #f4f9fc;
+  --card: #ffffff;
+  --accent: #0a8f87;
+  --accent2: #0c5f59;
+  --danger: #b42318;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at 10% -10%, #ccfff4 0, rgba(204, 255, 244, 0) 42%),
+    radial-gradient(circle at 100% 0%, #ffeab9 0, rgba(255, 234, 185, 0) 38%),
+    var(--paper);
+}
+
+.bg {
+  position: fixed;
+  width: 280px;
+  height: 280px;
+  border-radius: 999px;
+  opacity: 0.25;
+  filter: blur(34px);
+  z-index: -1;
+}
+
+.glow-a { top: -90px; left: -90px; background: #45d7ca; }
+.glow-b { right: -90px; bottom: -90px; background: #ffbc65; }
+
+.shell {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 18px 14px 40px;
+}
+
+.hero h1 {
+  margin: 2px 0;
+  font-size: clamp(26px, 6vw, 44px);
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent2);
+  margin: 0;
+}
+
+.sub, .hint {
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  margin-top: 12px;
+  box-shadow: 0 8px 18px rgba(7, 33, 52, 0.08);
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+h2 {
+  margin: 0 0 10px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+input, select, button {
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+input, select {
+  width: 100%;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover { border-color: #b8c7d8; }
+
+.primary {
+  background: linear-gradient(120deg, var(--accent), var(--accent2));
+  color: #fff;
+  border: none;
+  font-weight: 700;
+}
+
+.cards {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(180deg, #fff, #fbfdff);
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.card .meta {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.card .actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.status {
+  min-height: 22px;
+  margin: 10px 2px 0;
+  color: var(--muted);
+}
+
+.status.error { color: var(--danger); }
+
+@media (max-width: 760px) {
+  .grid2, .grid3 {
+    grid-template-columns: 1fr;
+  }
+}

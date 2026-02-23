@@ -198,6 +198,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("mytickets", self.my_tickets))
         app.add_handler(MessageHandler(filters.Regex(r"^My Tickets$"), self.my_tickets))
         app.add_handler(CommandHandler("cancel", self.cancel_reservation))
+        app.add_handler(CommandHandler("adminapp", self.open_admin_mini_app))
         app.add_handler(CommandHandler("admin_stats", self.admin_stats_command))
         app.add_handler(CommandHandler("admin_find", self.admin_find_command))
         app.add_handler(CommandHandler("admin_guest_add", self.admin_guest_add_command))
@@ -302,6 +303,21 @@ class TelegramBot:
                     InlineKeyboardButton(
                         "Open Booking App",
                         web_app=WebAppInfo(url=self.config.web_app_url),
+                    )
+                ]
+            ]
+        )
+
+    def _admin_mini_app_markup(self) -> Optional[InlineKeyboardMarkup]:
+        if not self.config.web_app_url:
+            return None
+        admin_url = self.config.web_app_url.rstrip("/") + "/admin"
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Open Admin App",
+                        web_app=WebAppInfo(url=admin_url),
                     )
                 ]
             ]
@@ -671,6 +687,20 @@ class TelegramBot:
             "Open modern booking app:",
             reply_markup=markup,
         )
+        return ConversationHandler.END
+
+    async def open_admin_mini_app(self, update: Update, _context):
+        tg_id = update.effective_user.id
+        if not self.is_admin(tg_id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+
+        markup = self._admin_mini_app_markup()
+        if not markup:
+            await update.message.reply_text("Admin Mini App URL is not configured. Set WEB_APP_URL.")
+            return ConversationHandler.END
+
+        await update.message.reply_text("Open Admin Mini App:", reply_markup=markup)
         return ConversationHandler.END
 
     async def webapp_booking_data(self, update: Update, context):
@@ -1062,8 +1092,14 @@ class TelegramBot:
             [InlineKeyboardButton("Guests", callback_data="admin:guests")],
             [InlineKeyboardButton("Blocked users", callback_data="admin:blocked")],
         ]
+        admin_app_url = self.config.web_app_url.rstrip("/") + "/admin" if self.config.web_app_url else None
+        if admin_app_url:
+            keyboard.insert(
+                0,
+                [InlineKeyboardButton("Open Admin App", web_app=WebAppInfo(url=admin_app_url))],
+            )
         await update.message.reply_text(
-            "Admin panel: use buttons below. Text input is only needed for names/search and value updates.",
+            "Admin panel: use buttons below. Open Admin App for full dashboard UI.",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
         return ADMIN_EVENT_TITLE

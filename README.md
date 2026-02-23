@@ -167,6 +167,8 @@ Backups are saved to `/opt/eventmanagement/backups` and old backups (older than 
 - DB schema migrations run automatically on startup.
 - Admin users are controlled with `ADMIN_IDS` env var (numeric Telegram IDs).
 - Mini App button uses `WEB_APP_URL` env var (must be a public `https://` URL).
+- Guest Mini App route: `/`
+- Admin Mini App route: `/admin`
 
 ## User Commands
 
@@ -186,6 +188,7 @@ Users can also cancel via inline `Cancel` button in `/mytickets`.
 ## Admin Commands
 
 - `/admin` - create event, view event list, blocked users.
+- `/adminapp` - open Admin Mini App dashboard.
 - `/admin_stats [sort] [search]` - analytics with counts/revenue and optional search.
 - `/export <event_id>` - export reservations CSV.
 - `/admin_find [sort] <query>` - search reservations by code, event, buyer, phone, tg id.
@@ -199,6 +202,7 @@ Users can also cancel via inline `Cancel` button in `/mytickets`.
 Admin can do most actions via buttons:
 - `/admin` -> `Guests` for guest list/search/sort/open/add/remove/rename.
 - `/admin` -> `Edit events` for button-driven event field updates.
+- `/admin` -> `Open Admin App` for full web dashboard.
 
 Sort options:
 - `admin_stats`: `date`, `title`, `approved`, `pending`, `sold`, `revenue`
@@ -267,3 +271,11 @@ WEB_APP_URL=https://<your-ngrok-domain>
 7. Restart bot and run `/book` in Telegram.
 
 Mini App sends booking draft to bot via `web_app_data`. Then user continues payment proof + rules in chat.
+
+## Admin Mini App Local Test
+
+1. Ensure your Telegram user id is in `ADMIN_IDS`.
+2. Run bot and Mini App server as above.
+3. Use the same tunnel/public URL in `WEB_APP_URL`.
+4. In Telegram, run `/admin` and tap `Open Admin App` (or run `/adminapp`).
+5. Admin Mini App route is `https://<your-domain>/admin`.

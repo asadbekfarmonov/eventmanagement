@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -15,6 +15,7 @@ WEB_DIR = BASE_DIR / "miniapp"
 
 load_dotenv()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/bot.db")
+ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 db = Database(DATABASE_PATH)
 
 app = FastAPI(title="TicketBot Mini App Server")
@@ -40,9 +41,50 @@ class QuoteRequest(BaseModel):
     girls: int = Field(ge=0)
 
 
+class AdminGuestAddRequest(BaseModel):
+    tg_id: int
+    reservation_code: str
+    gender: str
+    full_name: str
+
+
+class AdminGuestRemoveRequest(BaseModel):
+    tg_id: int
+    attendee_id: int
+
+
+class AdminGuestRenameRequest(BaseModel):
+    tg_id: int
+    attendee_id: int
+    full_name: str
+
+
+class AdminEventUpdateRequest(BaseModel):
+    tg_id: int
+    event_id: int
+    updates: Dict[str, Any]
+
+
+def _require_admin(tg_id: Optional[int]) -> int:
+    if tg_id is None:
+        raise HTTPException(status_code=401, detail="Missing tg_id.")
+    if tg_id not in ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Admin access denied.")
+    return tg_id
+
+
+def _row_dict(row) -> Dict[str, Any]:
+    return dict(row) if row is not None else {}
+
+
 @app.get("/")
 def root() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/admin")
+def admin_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "admin.html")
 
 
 @app.get("/health")
@@ -86,6 +128,93 @@ def quote(payload: QuoteRequest) -> Dict[str, Any]:
         "quantity": quantity,
         "total_price": total,
     }
+
+
+@app.get("/api/admin/bootstrap")
+def admin_bootstrap(tg_id: int) -> Dict[str, Any]:
+    _require_admin(tg_id)
+    return {"ok": True, "tg_id": tg_id}
+
+
+@app.get("/api/admin/guests")
+def admin_guests(
+    tg_id: int,
+    sort_by: str = "newest",
+    search: Optional[str] = None,
+    limit: int = 40,
+) -> Dict[str, Any]:
+    _require_admin(tg_id)
+    rows = db.list_guests(sort_by=sort_by, search=search, limit=limit)
+    return {"items": [_row_dict(r) for r in rows]}
+
+
+@app.get("/api/admin/reservations")
+def admin_reservations(tg_id: int, search: Optional[str] = None, limit: int = 25) -> Dict[str, Any]:
+    _require_admin(tg_id)
+    rows = db.list_active_reservations(search=search, limit=limit)
+    return {"items": [_row_dict(r) for r in rows]}
+
+
+@app.get("/api/admin/events")
+def admin_events(tg_id: int) -> Dict[str, Any]:
+    _require_admin(tg_id)
+    items = []
+    for event in db.list_events():
+        payload = _event_payload(event)
+        payload["prices"] = {
+            "early_boy": event.early_bird_price,
+            "early_girl": event.early_bird_price_girl,
+            "early_qty": event.early_bird_qty,
+            "tier1_boy": event.regular_tier1_price,
+            "tier1_girl": event.regular_tier1_price_girl,
+            "tier1_qty": event.regular_tier1_qty,
+            "tier2_boy": event.regular_tier2_price,
+            "tier2_girl": event.regular_tier2_price_girl,
+            "tier2_qty": event.regular_tier2_qty,
+        }
+        items.append(payload)
+    return {"items": items}
+
+
+@app.post("/api/admin/guest/add")
+def admin_guest_add(payload: AdminGuestAddRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message, reservation = db.admin_add_guest(
+        reservation_code=payload.reservation_code.strip(),
+        full_name=payload.full_name.strip(),
+        gender_raw=payload.gender.strip().lower(),
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}
+
+
+@app.post("/api/admin/guest/remove")
+def admin_guest_remove(payload: AdminGuestRemoveRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message, reservation = db.admin_remove_guest(payload.attendee_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}
+
+
+@app.post("/api/admin/guest/rename")
+def admin_guest_rename(payload: AdminGuestRenameRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message = db.admin_rename_guest(payload.attendee_id, payload.full_name.strip())
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message}
+
+
+@app.post("/api/admin/event/update")
+def admin_event_update(payload: AdminEventUpdateRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message = db.set_event_fields(event_id=payload.event_id, updates=payload.updates)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    event = db.get_event(payload.event_id)
+    return {"ok": True, "message": message, "event": event.__dict__ if event else None}
 
 
 if __name__ == "__main__":
