@@ -162,6 +162,29 @@ class AdminService:
     ):
         return self.db.search_reservations(query_text=query_text, sort_by=sort_by, limit=limit)
 
+    def list_guests(
+        self,
+        sort_by: str = "newest",
+        search: Optional[str] = None,
+        limit: int = 25,
+    ):
+        return self.db.list_guests(sort_by=sort_by, search=search, limit=limit)
+
+    def add_guest(self, reservation_code: str, full_name: str, gender: str) -> ActionResult:
+        ok, message, reservation = self.db.admin_add_guest(reservation_code, full_name, gender)
+        return ActionResult(ok, message, reservation)
+
+    def remove_guest(self, attendee_id: int) -> ActionResult:
+        ok, message, reservation = self.db.admin_remove_guest(attendee_id)
+        return ActionResult(ok, message, reservation)
+
+    def rename_guest(self, attendee_id: int, full_name: str) -> ActionResult:
+        ok, message = self.db.admin_rename_guest(attendee_id, full_name)
+        return ActionResult(ok, message, None)
+
+    def set_event_fields(self, event_id: int, updates: dict) -> Tuple[bool, str]:
+        return self.db.set_event_fields(event_id, updates)
+
     def price_field_labels(self) -> List[Tuple[str, str]]:
         return [
             ("early_boy", "Early Boys"),

@@ -162,12 +162,19 @@ class TelegramBot:
         app.add_handler(CommandHandler("cancel", self.cancel_reservation))
         app.add_handler(CommandHandler("admin_stats", self.admin_stats_command))
         app.add_handler(CommandHandler("admin_find", self.admin_find_command))
+        app.add_handler(CommandHandler("admin_guests", self.admin_guests_command))
+        app.add_handler(CommandHandler("admin_guest_add", self.admin_guest_add_command))
+        app.add_handler(CommandHandler("admin_guest_remove", self.admin_guest_remove_command))
+        app.add_handler(CommandHandler("admin_guest_rename", self.admin_guest_rename_command))
+        app.add_handler(CommandHandler("admin_event_set", self.admin_event_set_command))
+        app.add_handler(CommandHandler("admin_event_show", self.admin_event_show_command))
         app.add_handler(CommandHandler("export", self.export_event))
 
         app.add_handler(CallbackQueryHandler(self.inline_cancel, pattern=r"^cancel:"))
         app.add_handler(CallbackQueryHandler(self.admin_approve, pattern=r"^review:approve:"))
         app.add_handler(CallbackQueryHandler(self.admin_reject_template, pattern=r"^review:reject:tpl:"))
         app.add_handler(CallbackQueryHandler(self.admin_stats_sort, pattern=r"^adminstats:sort:"))
+        app.add_handler(CallbackQueryHandler(self.admin_guests_sort, pattern=r"^adminguests:sort:"))
 
         return app
 
@@ -233,6 +240,23 @@ class TelegramBot:
             ]
         )
 
+    def _guest_sort_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Sort Newest", callback_data="adminguests:sort:newest"),
+                    InlineKeyboardButton("Sort Name", callback_data="adminguests:sort:name"),
+                ],
+                [
+                    InlineKeyboardButton("Sort Event", callback_data="adminguests:sort:event"),
+                    InlineKeyboardButton("Sort Status", callback_data="adminguests:sort:status"),
+                ],
+                [
+                    InlineKeyboardButton("Sort Reservation", callback_data="adminguests:sort:reservation"),
+                ],
+            ]
+        )
+
     def _mini_app_markup(self) -> Optional[InlineKeyboardMarkup]:
         if not self.config.web_app_url:
             return None
@@ -272,6 +296,33 @@ class TelegramBot:
                 f"{row['held_tickets']} | Revenue approved: {float(row['approved_revenue']):.2f} | "
                 f"Pending value: {float(row['pending_revenue']):.2f}"
             )
+        return "\n".join(lines)
+
+    def _render_guest_list(self, sort_by: str = "newest", search: Optional[str] = None) -> str:
+        rows = self.admin.list_guests(sort_by=sort_by, search=search, limit=20)
+        if not rows:
+            if search:
+                return f'No guests found for "{search}".'
+            return "No guests found."
+
+        lines = [f"Guests list (sort: {sort_by})"]
+        if search:
+            lines.append(f'Search: "{search}"')
+        for row in rows:
+            lines.append(
+                f"#{row['attendee_id']} {row['full_name']} [{row['gender']}] | "
+                f"{row['event_title']} ({row['event_datetime']})"
+            )
+            lines.append(
+                f"Res: {row['reservation_code']} ({row['reservation_status']}) | "
+                f"Buyer: {row['buyer_name']} {row['buyer_surname']} | tg:{row['buyer_tg_id']}"
+            )
+
+        lines.append("")
+        lines.append("Actions:")
+        lines.append("/admin_guest_add <reservation_code> <boy|girl> <Name Surname>")
+        lines.append("/admin_guest_remove <attendee_id>")
+        lines.append("/admin_guest_rename <attendee_id> <Name Surname>")
         return "\n".join(lines)
 
     async def _notify_user_after_review(self, reservation, approved: bool, note: str) -> None:
@@ -817,9 +868,14 @@ class TelegramBot:
             [InlineKeyboardButton("Create event", callback_data="admin:create")],
             [InlineKeyboardButton("Events list", callback_data="admin:list")],
             [InlineKeyboardButton("Analytics", callback_data="admin:analytics")],
+            [InlineKeyboardButton("Guests", callback_data="admin:guests")],
             [InlineKeyboardButton("Blocked users", callback_data="admin:blocked")],
         ]
-        await update.message.reply_text("Admin panel:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(
+            "Admin panel:\n"
+            "Quick commands: /admin_guests, /admin_event_show <id>, /admin_event_set <id> <field> <value>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
         return ADMIN_EVENT_TITLE
 
     async def admin_select(self, update: Update, context):
@@ -847,6 +903,14 @@ class TelegramBot:
             await query.edit_message_text(
                 self._render_event_stats(sort_by="date"),
                 reply_markup=self._stats_sort_keyboard(),
+            )
+            return ConversationHandler.END
+
+        if query.data == "admin:guests":
+            context.user_data["admin_guest_search"] = None
+            await query.edit_message_text(
+                self._render_guest_list(sort_by="newest"),
+                reply_markup=self._guest_sort_keyboard(),
             )
             return ConversationHandler.END
 
@@ -942,6 +1006,161 @@ class TelegramBot:
             )
 
         await update.message.reply_text("\n".join(lines))
+        return ConversationHandler.END
+
+    async def admin_guests_sort(self, update: Update, context):
+        query = update.callback_query
+        await query.answer()
+        if not self.is_admin(update.effective_user.id):
+            await query.message.reply_text("Access denied.")
+            return
+
+        sort_key = query.data.split(":")[-1]
+        search = context.user_data.get("admin_guest_search")
+        await query.edit_message_text(
+            self._render_guest_list(sort_by=sort_key, search=search),
+            reply_markup=self._guest_sort_keyboard(),
+        )
+
+    async def admin_guests_command(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+
+        allowed_sorts = {"newest", "name", "event", "reservation", "status"}
+        sort_key = "newest"
+        search = None
+        if context.args:
+            if context.args[0].lower() in allowed_sorts:
+                sort_key = context.args[0].lower()
+                search = " ".join(context.args[1:]).strip() or None
+            else:
+                search = " ".join(context.args).strip() or None
+
+        context.user_data["admin_guest_search"] = search
+        await update.message.reply_text(
+            self._render_guest_list(sort_by=sort_key, search=search),
+            reply_markup=self._guest_sort_keyboard(),
+        )
+        return ConversationHandler.END
+
+    async def admin_guest_add_command(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+
+        if len(context.args) < 3:
+            await update.message.reply_text(
+                "Usage: /admin_guest_add <reservation_code> <boy|girl> <Name Surname>"
+            )
+            return ConversationHandler.END
+
+        reservation_code = context.args[0].strip()
+        gender = context.args[1].strip().lower()
+        full_name = " ".join(context.args[2:]).strip()
+        if len(full_name.split()) < 2:
+            await update.message.reply_text('Guest name must be in format "Name Surname".')
+            return ConversationHandler.END
+
+        result = self.admin.add_guest(reservation_code=reservation_code, full_name=full_name, gender=gender)
+        if result.success and result.reservation:
+            await update.message.reply_text(
+                f"{result.message}\n"
+                f"Reservation: {result.reservation.code}\n"
+                f"Boys: {result.reservation.boys} | Girls: {result.reservation.girls}\n"
+                f"Total: {result.reservation.total_price:.2f}"
+            )
+        else:
+            await update.message.reply_text(result.message)
+        return ConversationHandler.END
+
+    async def admin_guest_remove_command(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+
+        if len(context.args) != 1 or not context.args[0].isdigit():
+            await update.message.reply_text("Usage: /admin_guest_remove <attendee_id>")
+            return ConversationHandler.END
+
+        attendee_id = int(context.args[0])
+        result = self.admin.remove_guest(attendee_id=attendee_id)
+        if result.success and result.reservation:
+            await update.message.reply_text(
+                f"{result.message}\n"
+                f"Reservation: {result.reservation.code}\n"
+                f"Boys: {result.reservation.boys} | Girls: {result.reservation.girls}\n"
+                f"Total: {result.reservation.total_price:.2f}"
+            )
+        else:
+            await update.message.reply_text(result.message)
+        return ConversationHandler.END
+
+    async def admin_guest_rename_command(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+
+        if len(context.args) < 2 or not context.args[0].isdigit():
+            await update.message.reply_text("Usage: /admin_guest_rename <attendee_id> <Name Surname>")
+            return ConversationHandler.END
+
+        attendee_id = int(context.args[0])
+        full_name = " ".join(context.args[1:]).strip()
+        if len(full_name.split()) < 2:
+            await update.message.reply_text('Guest name must be in format "Name Surname".')
+            return ConversationHandler.END
+
+        result = self.admin.rename_guest(attendee_id=attendee_id, full_name=full_name)
+        await update.message.reply_text(result.message)
+        return ConversationHandler.END
+
+    async def admin_event_show_command(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        if len(context.args) != 1 or not context.args[0].isdigit():
+            await update.message.reply_text("Usage: /admin_event_show <event_id>")
+            return ConversationHandler.END
+
+        event = self.events.get(int(context.args[0]))
+        if not event:
+            await update.message.reply_text("Event not found.")
+            return ConversationHandler.END
+
+        text = (
+            f"Event #{event.id}\n"
+            f"Title: {event.title}\n"
+            f"Date: {event.event_datetime}\n"
+            f"Location: {event.location}\n"
+            f"Caption: {event.caption}\n\n"
+            f"Early Bird: boys {event.early_bird_price:.2f}, girls {event.early_bird_price_girl:.2f}, qty {event.early_bird_qty}\n"
+            f"Tier-1: boys {event.regular_tier1_price:.2f}, girls {event.regular_tier1_price_girl:.2f}, qty {event.regular_tier1_qty}\n"
+            f"Tier-2: boys {event.regular_tier2_price:.2f}, girls {event.regular_tier2_price_girl:.2f}, qty {event.regular_tier2_qty}"
+        )
+        await update.message.reply_text(text)
+        return ConversationHandler.END
+
+    async def admin_event_set_command(self, update: Update, context):
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Access denied.")
+            return ConversationHandler.END
+        if len(context.args) < 3:
+            await update.message.reply_text(
+                "Usage: /admin_event_set <event_id> <field> <value>\n"
+                "Fields: title, location, datetime, caption, early_boy, early_girl, early_qty, "
+                "tier1_boy, tier1_girl, tier1_qty, tier2_boy, tier2_girl, tier2_qty"
+            )
+            return ConversationHandler.END
+        if not context.args[0].isdigit():
+            await update.message.reply_text("event_id must be numeric.")
+            return ConversationHandler.END
+
+        event_id = int(context.args[0])
+        field = context.args[1].strip().lower()
+        value = " ".join(context.args[2:]).strip()
+        ok, message = self.admin.set_event_fields(event_id, {field: value})
+        await update.message.reply_text(message)
         return ConversationHandler.END
 
     def _parse_non_negative_float(self, text: str) -> Optional[float]:

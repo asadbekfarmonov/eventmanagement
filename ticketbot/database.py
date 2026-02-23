@@ -2,7 +2,7 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from ticketbot.models import Event, Reservation, User
@@ -155,6 +155,8 @@ class Database:
         attendee_cols = self._table_columns("attendees")
         if "full_name" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
+        if "gender" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN gender TEXT NOT NULL DEFAULT 'unknown'")
         cursor.execute(
             """
             UPDATE attendees
@@ -162,8 +164,37 @@ class Database:
             WHERE full_name = ''
             """
         )
+        self._backfill_attendee_genders(cursor)
 
         self.conn.commit()
+
+    def _backfill_attendee_genders(self, cursor: sqlite3.Cursor) -> None:
+        reservation_rows = cursor.execute(
+            "SELECT id, boys, girls FROM reservations ORDER BY id"
+        ).fetchall()
+        for reservation in reservation_rows:
+            attendee_rows = cursor.execute(
+                """
+                SELECT id
+                FROM attendees
+                WHERE reservation_id = ?
+                ORDER BY id
+                """,
+                (reservation["id"],),
+            ).fetchall()
+            boys = int(reservation["boys"] or 0)
+            girls = int(reservation["girls"] or 0)
+            for idx, attendee in enumerate(attendee_rows):
+                if idx < boys:
+                    gender = "boy"
+                elif idx < boys + girls:
+                    gender = "girl"
+                else:
+                    gender = "unknown"
+                cursor.execute(
+                    "UPDATE attendees SET gender = ? WHERE id = ? AND (gender IS NULL OR gender = '' OR gender = 'unknown')",
+                    (gender, attendee["id"]),
+                )
 
     def _table_columns(self, table_name: str) -> set:
         cursor = self.conn.cursor()
@@ -195,6 +226,17 @@ class Database:
         if tier_key == "tier2":
             return event.regular_tier2_price, event.regular_tier2_price_girl
         raise ValueError("Unknown ticket type")
+
+    def _normalize_gender(self, value: str) -> Optional[str]:
+        mapping = {
+            "boy": "boy",
+            "male": "boy",
+            "m": "boy",
+            "girl": "girl",
+            "female": "girl",
+            "f": "girl",
+        }
+        return mapping.get((value or "").strip().lower())
 
     def _release_hold(self, reservation_row: sqlite3.Row, cursor: sqlite3.Cursor) -> None:
         if reservation_row["hold_applied"] != 1:
@@ -427,13 +469,14 @@ class Database:
         )
         reservation_id = cursor.lastrowid
 
-        for full_name in attendees:
+        for attendee_index, full_name in enumerate(attendees):
+            attendee_gender = "boy" if attendee_index < boys else "girl"
             cursor.execute(
                 """
-                INSERT INTO attendees (reservation_id, name, surname, full_name)
-                VALUES (?, ?, '', ?)
+                INSERT INTO attendees (reservation_id, name, surname, full_name, gender)
+                VALUES (?, ?, '', ?, ?)
                 """,
-                (reservation_id, full_name, full_name),
+                (reservation_id, full_name, full_name, attendee_gender),
             )
 
         qty_column = self._tier_qty_column(active_tier["key"])
@@ -496,9 +539,253 @@ class Database:
     def list_attendees(self, reservation_id: int) -> List[sqlite3.Row]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, reservation_id, full_name, status FROM attendees WHERE reservation_id = ?",
+            "SELECT id, reservation_id, full_name, gender, status FROM attendees WHERE reservation_id = ? ORDER BY id",
             (reservation_id,),
         )
+        return cursor.fetchall()
+
+    def _reservation_row_by_code(self, reservation_code: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+        cursor.execute("SELECT * FROM reservations WHERE code = ?", (reservation_code,))
+        return cursor.fetchone()
+
+    def _reservation_row_by_id(self, reservation_id: int, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+        cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
+        return cursor.fetchone()
+
+    def _reservation_unit_price(self, reservation_row: sqlite3.Row, event: Event, gender: str) -> float:
+        boy_price, girl_price = self._tier_prices(event, reservation_row["ticket_type"])
+        if gender == "boy":
+            return float(boy_price)
+        if gender == "girl":
+            return float(girl_price)
+        quantity = int(reservation_row["quantity"] or 0)
+        total_price = float(reservation_row["total_price"] or 0)
+        return (total_price / quantity) if quantity > 0 else 0.0
+
+    def _update_legacy_reservation_fields(
+        self,
+        cursor: sqlite3.Cursor,
+        reservation_id: int,
+        reservation_cols: set,
+        quantity: int,
+        total_price: float,
+    ) -> None:
+        updates: Dict[str, Any] = {}
+        if "price_per_ticket" in reservation_cols:
+            updates["price_per_ticket"] = (total_price / quantity) if quantity > 0 else 0.0
+        if "paid_tickets" in reservation_cols:
+            updates["paid_tickets"] = quantity
+        if not updates:
+            return
+        assignments = ", ".join([f"{col} = ?" for col in updates.keys()])
+        params = list(updates.values()) + [reservation_id]
+        cursor.execute(f"UPDATE reservations SET {assignments} WHERE id = ?", tuple(params))
+
+    def admin_add_guest(
+        self,
+        reservation_code: str,
+        full_name: str,
+        gender_raw: str,
+    ) -> Tuple[bool, str, Optional[Reservation]]:
+        gender = self._normalize_gender(gender_raw)
+        if gender is None:
+            return False, "Gender must be boy or girl.", None
+
+        cursor = self.conn.cursor()
+        reservation_row = self._reservation_row_by_code(reservation_code, cursor)
+        if not reservation_row:
+            return False, "Reservation code not found.", None
+        if reservation_row["status"] not in {STATUS_PENDING, STATUS_APPROVED}:
+            return False, "Guest can be added only to pending/approved reservations.", None
+
+        event = self.get_event(reservation_row["event_id"])
+        if not event:
+            return False, "Event not found for reservation.", None
+
+        qty_column = self._tier_qty_column(reservation_row["ticket_type"])
+        if reservation_row["hold_applied"] == 1:
+            cursor.execute(
+                f"UPDATE events SET {qty_column} = {qty_column} - 1 WHERE id = ? AND {qty_column} > 0",
+                (reservation_row["event_id"],),
+            )
+            if cursor.rowcount == 0:
+                self.conn.rollback()
+                return False, "Current tier has no remaining tickets for adding guest.", None
+
+        add_price = self._reservation_unit_price(reservation_row, event, gender)
+        new_quantity = int(reservation_row["quantity"]) + 1
+        new_boys = int(reservation_row["boys"]) + (1 if gender == "boy" else 0)
+        new_girls = int(reservation_row["girls"]) + (1 if gender == "girl" else 0)
+        new_total = float(reservation_row["total_price"]) + float(add_price)
+
+        cursor.execute(
+            """
+            UPDATE reservations
+            SET quantity = ?, boys = ?, girls = ?, total_price = ?
+            WHERE id = ?
+            """,
+            (new_quantity, new_boys, new_girls, new_total, reservation_row["id"]),
+        )
+        reservation_cols = self._table_columns("reservations")
+        self._update_legacy_reservation_fields(
+            cursor=cursor,
+            reservation_id=reservation_row["id"],
+            reservation_cols=reservation_cols,
+            quantity=new_quantity,
+            total_price=new_total,
+        )
+        cursor.execute(
+            """
+            INSERT INTO attendees (reservation_id, name, surname, full_name, gender)
+            VALUES (?, ?, '', ?, ?)
+            """,
+            (reservation_row["id"], full_name, full_name, gender),
+        )
+        self.conn.commit()
+        updated = self.get_reservation(reservation_row["id"])
+        return True, "Guest added successfully.", updated
+
+    def admin_remove_guest(self, attendee_id: int) -> Tuple[bool, str, Optional[Reservation]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                a.id AS attendee_id,
+                a.full_name,
+                COALESCE(a.gender, 'unknown') AS gender,
+                r.*
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            WHERE a.id = ?
+            """,
+            (attendee_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False, "Attendee not found.", None
+        if row["status"] not in {STATUS_PENDING, STATUS_APPROVED}:
+            return False, "Guest can be removed only from pending/approved reservations.", None
+        if int(row["quantity"]) <= 1:
+            return False, "Cannot remove last guest. Cancel reservation instead.", None
+
+        event = self.get_event(row["event_id"])
+        if not event:
+            return False, "Event not found for reservation.", None
+
+        gender = row["gender"] if row["gender"] in {"boy", "girl"} else "unknown"
+        unit_price = self._reservation_unit_price(row, event, gender)
+        new_quantity = int(row["quantity"]) - 1
+
+        if gender == "boy":
+            new_boys = max(0, int(row["boys"]) - 1)
+            new_girls = int(row["girls"])
+        elif gender == "girl":
+            new_boys = int(row["boys"])
+            new_girls = max(0, int(row["girls"]) - 1)
+        elif int(row["boys"]) > 0:
+            new_boys = int(row["boys"]) - 1
+            new_girls = int(row["girls"])
+        else:
+            new_boys = int(row["boys"])
+            new_girls = max(0, int(row["girls"]) - 1)
+
+        new_total = max(0.0, float(row["total_price"]) - float(unit_price))
+        cursor.execute("DELETE FROM attendees WHERE id = ?", (attendee_id,))
+
+        if row["hold_applied"] == 1:
+            qty_column = self._tier_qty_column(row["ticket_type"])
+            cursor.execute(
+                f"UPDATE events SET {qty_column} = {qty_column} + 1 WHERE id = ?",
+                (row["event_id"],),
+            )
+
+        cursor.execute(
+            """
+            UPDATE reservations
+            SET quantity = ?, boys = ?, girls = ?, total_price = ?
+            WHERE id = ?
+            """,
+            (new_quantity, new_boys, new_girls, new_total, row["id"]),
+        )
+        reservation_cols = self._table_columns("reservations")
+        self._update_legacy_reservation_fields(
+            cursor=cursor,
+            reservation_id=row["id"],
+            reservation_cols=reservation_cols,
+            quantity=new_quantity,
+            total_price=new_total,
+        )
+        self.conn.commit()
+        updated = self.get_reservation(row["id"])
+        return True, "Guest removed successfully.", updated
+
+    def admin_rename_guest(self, attendee_id: int, full_name: str) -> Tuple[bool, str]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE attendees
+            SET full_name = ?, name = ?, surname = ''
+            WHERE id = ?
+            """,
+            (full_name, full_name, attendee_id),
+        )
+        self.conn.commit()
+        if cursor.rowcount <= 0:
+            return False, "Attendee not found."
+        return True, "Guest name updated."
+
+    def list_guests(
+        self,
+        sort_by: str = "newest",
+        search: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[sqlite3.Row]:
+        order_map = {
+            "newest": "a.id DESC",
+            "name": "a.full_name COLLATE NOCASE ASC, a.id DESC",
+            "event": "e.event_datetime DESC, a.id DESC",
+            "reservation": "r.code ASC, a.id DESC",
+            "status": "r.status ASC, a.id DESC",
+        }
+        order_clause = order_map.get(sort_by, order_map["newest"])
+        query = """
+            SELECT
+                a.id AS attendee_id,
+                a.full_name,
+                COALESCE(a.gender, 'unknown') AS gender,
+                r.id AS reservation_id,
+                r.code AS reservation_code,
+                r.status AS reservation_status,
+                e.id AS event_id,
+                e.title AS event_title,
+                e.event_datetime,
+                u.tg_id AS buyer_tg_id,
+                u.name AS buyer_name,
+                u.surname AS buyer_surname
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            JOIN events e ON e.id = r.event_id
+            JOIN users u ON u.id = r.user_id
+            WHERE 1 = 1
+        """
+        params: List[Any] = []
+        if search:
+            pattern = f"%{search.lower()}%"
+            query += """
+                AND (
+                    LOWER(a.full_name) LIKE ?
+                    OR LOWER(r.code) LIKE ?
+                    OR LOWER(e.title) LIKE ?
+                    OR LOWER(u.name) LIKE ?
+                    OR LOWER(u.surname) LIKE ?
+                    OR CAST(u.tg_id AS TEXT) LIKE ?
+                )
+            """
+            params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
+        query += f" ORDER BY {order_clause} LIMIT ?"
+        params.append(limit)
+        cursor = self.conn.cursor()
+        cursor.execute(query, tuple(params))
         return cursor.fetchall()
 
     def cancel_reservation_for_user(self, user_id: int, reservation_code: str) -> Tuple[bool, str, Optional[Reservation]]:
@@ -594,6 +881,65 @@ class Database:
         )
         self.conn.commit()
         return cursor.rowcount > 0
+
+    def set_event_fields(self, event_id: int, updates: Dict[str, Any]) -> Tuple[bool, str]:
+        field_map = {
+            "title": "title",
+            "location": "location",
+            "datetime": "event_datetime",
+            "caption": "caption",
+            "photo": "photo_file_id",
+            "early_boy": "early_bird_price",
+            "early_girl": "early_bird_price_girl",
+            "early_qty": "early_bird_qty",
+            "tier1_boy": "regular_tier1_price",
+            "tier1_girl": "regular_tier1_price_girl",
+            "tier1_qty": "regular_tier1_qty",
+            "tier2_boy": "regular_tier2_price",
+            "tier2_girl": "regular_tier2_price_girl",
+            "tier2_qty": "regular_tier2_qty",
+        }
+        if not updates:
+            return False, "No fields provided."
+
+        assignments: List[str] = []
+        params: List[Any] = []
+        for key, value in updates.items():
+            if key not in field_map:
+                return False, f"Unsupported field: {key}"
+            column = field_map[key]
+            if key == "datetime":
+                try:
+                    self.parse_event_datetime(str(value))
+                except ValueError:
+                    return False, "Invalid datetime format. Use YYYY-MM-DD HH:MM"
+            if key.endswith("_qty"):
+                try:
+                    ivalue = int(value)
+                except (TypeError, ValueError):
+                    return False, f"{key} must be integer."
+                if ivalue < 0:
+                    return False, f"{key} must be non-negative."
+                value = ivalue
+            if key in {"early_boy", "early_girl", "tier1_boy", "tier1_girl", "tier2_boy", "tier2_girl"}:
+                try:
+                    fvalue = float(value)
+                except (TypeError, ValueError):
+                    return False, f"{key} must be number."
+                if fvalue < 0:
+                    return False, f"{key} must be non-negative."
+                value = fvalue
+
+            assignments.append(f"{column} = ?")
+            params.append(value)
+
+        params.append(event_id)
+        cursor = self.conn.cursor()
+        cursor.execute(f"UPDATE events SET {', '.join(assignments)} WHERE id = ?", tuple(params))
+        self.conn.commit()
+        if cursor.rowcount <= 0:
+            return False, "Event not found."
+        return True, "Event updated."
 
     def list_blocked_users(self) -> List[sqlite3.Row]:
         cursor = self.conn.cursor()

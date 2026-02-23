@@ -52,6 +52,12 @@ bash deploy/railway/start_combined.sh
 - `https://<your-service>.up.railway.app/health` should return `{"status":"ok"}`
 - In Telegram run `/book` and test booking.
 
+Mini App visibility checklist:
+- `WEB_APP_URL` must be set.
+- URL must be `https://`.
+- In BotFather, set Mini App domain to the same domain.
+- Restart service after changing vars.
+
 ### About Two Services
 
 - `Procfile` and scripts for split mode are included:
@@ -174,10 +180,17 @@ Users can also cancel via inline `Cancel` button in `/mytickets`.
 - `/admin_stats [sort] [search]` - analytics with counts/revenue and optional search.
 - `/export <event_id>` - export reservations CSV.
 - `/admin_find [sort] <query>` - search reservations by code, event, buyer, phone, tg id.
+- `/admin_guests [sort] [search]` - list guests across all reservations.
+- `/admin_guest_add <reservation_code> <boy|girl> <Name Surname>` - add guest to reservation.
+- `/admin_guest_remove <attendee_id>` - remove guest from reservation.
+- `/admin_guest_rename <attendee_id> <Name Surname>` - rename guest.
+- `/admin_event_show <event_id>` - show event details (prices/qty/text).
+- `/admin_event_set <event_id> <field> <value>` - edit event fields.
 
 Sort options:
 - `admin_stats`: `date`, `title`, `approved`, `pending`, `sold`, `revenue`
 - `admin_find`: `newest`, `amount`, `status`, `event_date`
+- `admin_guests`: `newest`, `name`, `event`, `reservation`, `status`
 
 ## Booking Workflow
 

@@ -200,6 +200,71 @@ class DatabaseTests(unittest.TestCase):
         by_name = self.db.search_reservations("test", sort_by="status", limit=10)
         self.assertTrue(any(r["code"] == reservation.code for r in by_name))
 
+    def test_admin_guest_add_remove_rename_and_list(self):
+        event_id = self._create_event(early_qty=5, t1_qty=0, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=1,
+            attendees=["A One", "B Two"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+
+        ok_add, _msg_add, updated_after_add = self.db.admin_add_guest(
+            reservation_code=reservation.code,
+            full_name="C Three",
+            gender_raw="boy",
+        )
+        self.assertTrue(ok_add)
+        self.assertEqual(updated_after_add.quantity, 3)
+        self.assertEqual(updated_after_add.boys, 2)
+        self.assertEqual(updated_after_add.girls, 1)
+        self.assertAlmostEqual(updated_after_add.total_price, 7600.0)
+
+        event_after_add = self.db.get_event(event_id)
+        self.assertEqual(event_after_add.early_bird_qty, 2)
+
+        guests = self.db.list_guests(sort_by="newest", search=reservation.code, limit=10)
+        self.assertTrue(any(g["reservation_code"] == reservation.code for g in guests))
+
+        newest_attendee_id = guests[0]["attendee_id"]
+        ok_rename, _msg_rename = self.db.admin_rename_guest(newest_attendee_id, "Renamed Guest")
+        self.assertTrue(ok_rename)
+
+        ok_remove, _msg_remove, updated_after_remove = self.db.admin_remove_guest(newest_attendee_id)
+        self.assertTrue(ok_remove)
+        self.assertEqual(updated_after_remove.quantity, 2)
+        self.assertEqual(updated_after_remove.boys, 1)
+        self.assertEqual(updated_after_remove.girls, 1)
+        self.assertAlmostEqual(updated_after_remove.total_price, 5100.0)
+
+        event_after_remove = self.db.get_event(event_id)
+        self.assertEqual(event_after_remove.early_bird_qty, 3)
+
+    def test_set_event_fields_updates_info_and_prices(self):
+        event_id = self._create_event(early_qty=5, t1_qty=2, t2_qty=1)
+        new_dt = self._future_time_str(180)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "caption": "Updated caption text",
+                "location": "Updated location",
+                "early_boy": "2700",
+                "tier1_qty": "9",
+                "datetime": new_dt,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        event = self.db.get_event(event_id)
+        self.assertEqual(event.caption, "Updated caption text")
+        self.assertEqual(event.location, "Updated location")
+        self.assertEqual(event.early_bird_price, 2700.0)
+        self.assertEqual(event.regular_tier1_qty, 9)
+        self.assertEqual(event.event_datetime, new_dt)
+
     def test_migrates_legacy_schema_for_new_fields(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy.db")
         conn = sqlite3.connect(legacy_path)
@@ -262,6 +327,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("admin_note", reservation_cols)
         self.assertIn("hold_applied", reservation_cols)
         self.assertIn("full_name", attendee_cols)
+        self.assertIn("gender", attendee_cols)
 
         migrated_db.upsert_user(777, "Legacy", "User", "000")
         legacy_user = migrated_db.get_user(777)

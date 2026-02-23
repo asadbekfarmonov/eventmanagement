@@ -23,6 +23,17 @@ body {
   min-height: 100vh;
 }
 
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .bg-shape {
   position: fixed;
   width: 280px;
@@ -53,6 +64,7 @@ body {
 
 .hero {
   padding: 12px 6px 18px;
+  animation: riseIn 0.5s ease;
 }
 
 .eyebrow {
@@ -75,6 +87,22 @@ h1 {
   color: var(--muted);
 }
 
+.steps {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.steps span {
+  font-size: 12px;
+  border: 1px solid #c3d4e4;
+  color: #1f3346;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
 .panel {
   background: color-mix(in srgb, var(--card) 92%, #f1f8ff 8%);
   border: 1px solid var(--line);
@@ -82,6 +110,19 @@ h1 {
   padding: 14px;
   margin-top: 12px;
   box-shadow: 0 10px 25px rgba(12, 30, 58, 0.06);
+  animation: riseIn 0.45s ease both;
+}
+
+#group-panel {
+  animation-delay: 0.05s;
+}
+
+#attendees-panel {
+  animation-delay: 0.1s;
+}
+
+#summary-panel {
+  animation-delay: 0.15s;
 }
 
 .panel-head {
@@ -134,7 +175,7 @@ button:hover {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 11px;
-  background: #fff;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -146,7 +187,7 @@ button:hover {
 
 .event-card.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(14, 165, 164, 0.2);
+  box-shadow: 0 0 0 2px rgba(14, 165, 164, 0.2), 0 10px 22px rgba(0, 102, 102, 0.1);
 }
 
 .event-title {
@@ -197,7 +238,7 @@ input {
   border: 1px dashed #b8cad8;
   border-radius: 12px;
   padding: 12px;
-  background: #fcfeff;
+  background: linear-gradient(180deg, #fcfeff, #f8fcff);
   line-height: 1.4;
 }
 
