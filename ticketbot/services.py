@@ -1,20 +1,15 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ticketbot.database import Database
 from ticketbot.models import Event, Reservation, User
 
 
 @dataclass
-class ReservationRequest:
-    user_id: int
-    event_id: int
-    ticket_type: str
-    quantity: int
-    price_per_ticket: float
-    boys: int
-    girls: int
-    attendees: List[dict]
+class ActionResult:
+    success: bool
+    message: str
+    reservation: Optional[Reservation] = None
 
 
 class UserService:
@@ -26,6 +21,9 @@ class UserService:
 
     def get(self, tg_id: int) -> Optional[User]:
         return self.db.get_user(tg_id)
+
+    def get_by_id(self, user_id: int) -> Optional[User]:
+        return self.db.get_user_by_id(user_id)
 
     def is_blocked(self, tg_id: int) -> bool:
         return self.db.is_blocked(tg_id)
@@ -46,43 +44,93 @@ class EventService:
         title: str,
         event_datetime: str,
         location: str,
-        early_bird_price: float,
-        regular_price: float,
-        early_bird_qty: int,
-        capacity: Optional[int],
+        caption: str,
+        photo_file_id: str,
+        early_boy_price: float,
+        early_girl_price: float,
+        early_qty: int,
+        tier1_boy_price: float,
+        tier1_girl_price: float,
+        tier1_qty: int,
+        tier2_boy_price: float,
+        tier2_girl_price: float,
+        tier2_qty: int,
     ) -> int:
+        self.db.parse_event_datetime(event_datetime)
         return self.db.create_event(
             title=title,
             event_datetime=event_datetime,
             location=location,
-            early_bird_price=early_bird_price,
-            regular_price=regular_price,
-            early_bird_qty=early_bird_qty,
-            capacity=capacity,
+            caption=caption,
+            photo_file_id=photo_file_id,
+            early_boy_price=early_boy_price,
+            early_girl_price=early_girl_price,
+            early_qty=early_qty,
+            tier1_boy_price=tier1_boy_price,
+            tier1_girl_price=tier1_girl_price,
+            tier1_qty=tier1_qty,
+            tier2_boy_price=tier2_boy_price,
+            tier2_girl_price=tier2_girl_price,
+            tier2_qty=tier2_qty,
         )
+
+    def active_tier(self, event: Event):
+        return self.db.active_tier(event)
+
+    def total_remaining(self, event: Event) -> int:
+        return self.db.total_remaining(event)
 
 
 class ReservationService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def create(self, request: ReservationRequest) -> Reservation:
-        return self.db.reserve_event(
-            user_id=request.user_id,
-            event_id=request.event_id,
-            ticket_type=request.ticket_type,
-            quantity=request.quantity,
-            price_per_ticket=request.price_per_ticket,
-            boys=request.boys,
-            girls=request.girls,
-            attendees=request.attendees,
+    def create_pending(
+        self,
+        user_id: int,
+        event_id: int,
+        boys: int,
+        girls: int,
+        attendees: List[str],
+        payment_file_id: str,
+        payment_file_type: str,
+    ) -> Reservation:
+        return self.db.create_pending_reservation(
+            user_id=user_id,
+            event_id=event_id,
+            boys=boys,
+            girls=girls,
+            attendees=attendees,
+            payment_file_id=payment_file_id,
+            payment_file_type=payment_file_type,
         )
 
     def list_for_user(self, user_id: int) -> List[Reservation]:
         return self.db.list_reservations_for_user(user_id)
 
-    def cancel(self, reservation_id: int) -> None:
-        self.db.cancel_reservation(reservation_id)
+    def get_by_code(self, code: str) -> Optional[Reservation]:
+        return self.db.get_reservation_by_code(code)
+
+    def get_by_id(self, reservation_id: int) -> Optional[Reservation]:
+        try:
+            return self.db.get_reservation(reservation_id)
+        except Exception:
+            return None
+
+    def list_attendees(self, reservation_id: int) -> List[str]:
+        return [row["full_name"] for row in self.db.list_attendees(reservation_id)]
+
+    def cancel_by_code(self, user_id: int, reservation_code: str) -> ActionResult:
+        ok, message, reservation = self.db.cancel_reservation_for_user(user_id, reservation_code)
+        return ActionResult(ok, message, reservation)
+
+    def approve_by_admin(self, reservation_id: int, admin_tg_id: int) -> ActionResult:
+        ok, message, reservation = self.db.approve_reservation(reservation_id, admin_tg_id)
+        return ActionResult(ok, message, reservation)
+
+    def reject_by_admin(self, reservation_id: int, admin_tg_id: int, note: str) -> ActionResult:
+        ok, message, reservation = self.db.reject_reservation(reservation_id, admin_tg_id, note)
+        return ActionResult(ok, message, reservation)
 
 
 class AdminService:
@@ -94,3 +142,32 @@ class AdminService:
 
     def export_event_csv(self, event_id: int) -> List[List[str]]:
         return self.db.export_event_csv(event_id)
+
+    def set_event_price(self, event_id: int, price_field: str, value: float) -> bool:
+        return self.db.set_event_price(event_id, price_field, value)
+
+    def list_event_stats(
+        self,
+        sort_by: str = "date",
+        search: Optional[str] = None,
+        limit: int = 30,
+    ):
+        return self.db.list_event_stats(sort_by=sort_by, search=search, limit=limit)
+
+    def search_reservations(
+        self,
+        query_text: str,
+        sort_by: str = "newest",
+        limit: int = 20,
+    ):
+        return self.db.search_reservations(query_text=query_text, sort_by=sort_by, limit=limit)
+
+    def price_field_labels(self) -> List[Tuple[str, str]]:
+        return [
+            ("early_boy", "Early Boys"),
+            ("early_girl", "Early Girls"),
+            ("tier1_boy", "Tier-1 Boys"),
+            ("tier1_girl", "Tier-1 Girls"),
+            ("tier2_boy", "Tier-2 Boys"),
+            ("tier2_girl", "Tier-2 Girls"),
+        ]

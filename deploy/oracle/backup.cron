@@ -1,0 +1,2 @@
+# Daily backup at 03:30 server time
+30 3 * * * /opt/eventmanagement/deploy/oracle/backup_db.sh >> /var/log/eventbot-backup.log 2>&1

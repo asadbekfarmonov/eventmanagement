@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Event Booking</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="app-shell">
+    <header class="hero">
+      <p class="eyebrow">Budapest Events</p>
+      <h1>Book In Seconds</h1>
+      <p class="sub">Choose event, set group, add names, then continue payment in Telegram chat.</p>
+    </header>
+
+    <section class="panel" id="events-panel">
+      <div class="panel-head">
+        <h2>1. Select Event</h2>
+        <button id="refresh-events" type="button">Refresh</button>
+      </div>
+      <div id="events-list" class="event-grid"></div>
+      <p id="events-empty" class="hint" hidden>No open events yet.</p>
+    </section>
+
+    <section class="panel" id="group-panel">
+      <h2>2. Group Details</h2>
+      <div class="grid-2">
+        <label>
+          Boys
+          <input id="boys" type="number" min="0" value="0" />
+        </label>
+        <label>
+          Girls
+          <input id="girls" type="number" min="0" value="0" />
+        </label>
+      </div>
+      <p class="hint">Attendee fields update automatically.</p>
+    </section>
+
+    <section class="panel" id="attendees-panel">
+      <h2>3. Attendee Names</h2>
+      <div id="attendees-list" class="attendees"></div>
+    </section>
+
+    <section class="panel" id="summary-panel">
+      <h2>4. Booking Summary</h2>
+      <div id="summary" class="summary-card">
+        <p>Select event and attendee counts.</p>
+      </div>
+      <button id="submit-booking" class="primary" type="button" disabled>Continue In Telegram</button>
+      <p id="status" class="hint"></p>
+      <textarea id="debug-payload" hidden></textarea>
+    </section>
+  </main>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
