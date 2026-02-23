@@ -86,7 +86,7 @@ class TelegramBot:
                 CommandHandler("events", self.events_list),
                 CommandHandler("book", self.open_mini_app),
                 MessageHandler(filters.Regex(r"^Browse Events$"), self.events_list),
-                MessageHandler(filters.Regex(r"^Open Booking App$"), self.open_mini_app),
+                MessageHandler(filters.Regex(r"^(Open Booking App|Menu)$"), self.open_mini_app),
                 MessageHandler(filters.StatusUpdate.WEB_APP_DATA, self.webapp_booking_data),
             ],
             states={
@@ -301,7 +301,7 @@ class TelegramBot:
             [
                 [
                     InlineKeyboardButton(
-                        "Open Booking App",
+                        "Menu",
                         web_app=WebAppInfo(url=self.config.web_app_url),
                     )
                 ]
@@ -326,7 +326,7 @@ class TelegramBot:
     def _main_menu_keyboard(self) -> ReplyKeyboardMarkup:
         return ReplyKeyboardMarkup(
             [
-                ["Browse Events", "Open Booking App"],
+                ["Browse Events", "Menu"],
                 ["My Tickets"],
             ],
             resize_keyboard=True,
@@ -639,13 +639,24 @@ class TelegramBot:
         user = self.users.get(tg_id)
         if user:
             await update.message.reply_text(
-                f"{intro}\n\nWelcome back. Use menu buttons below for booking and tickets.",
+                f"{intro}\n\nWelcome back. Tap Menu below to start booking.",
                 reply_markup=self._main_menu_keyboard(),
             )
             return ConversationHandler.END
-        await update.message.reply_text(intro)
-        await update.message.reply_text("Let's set up your profile. What's your name?")
-        return PROFILE_NAME
+
+        profile_name = (update.effective_user.first_name or "Guest").strip() or "Guest"
+        profile_surname = (update.effective_user.last_name or "-").strip() or "-"
+        self.users.upsert(
+            tg_id=tg_id,
+            name=profile_name,
+            surname=profile_surname,
+            phone="-",
+        )
+        await update.message.reply_text(
+            f"{intro}\n\nTap Menu below to start booking.",
+            reply_markup=self._main_menu_keyboard(),
+        )
+        return ConversationHandler.END
 
     async def profile_name(self, update: Update, context):
         context.user_data["profile_name"] = update.message.text.strip()
