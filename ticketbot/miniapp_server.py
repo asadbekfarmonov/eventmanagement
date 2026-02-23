@@ -1,7 +1,9 @@
 import os
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -65,6 +67,23 @@ class AdminEventUpdateRequest(BaseModel):
     tg_id: int
     event_id: int
     updates: Dict[str, Any]
+
+
+class AdminEventCreateSimpleRequest(BaseModel):
+    tg_id: int
+    title: str
+    caption: str = ""
+    early_boy: float = Field(ge=0)
+    early_girl: float = Field(ge=0)
+    early_qty: int = Field(ge=0)
+    tier1_boy: float = Field(ge=0)
+    tier1_girl: float = Field(ge=0)
+    tier1_qty: int = Field(ge=0)
+    tier2_boy: float = Field(ge=0)
+    tier2_girl: float = Field(ge=0)
+    tier2_qty: int = Field(ge=0)
+    location: Optional[str] = None
+    event_datetime: Optional[str] = None
 
 
 class AdminGuestAddByEventRequest(BaseModel):
@@ -339,6 +358,56 @@ def admin_event_update(payload: AdminEventUpdateRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=message)
     event = db.get_event(payload.event_id)
     return {"ok": True, "message": message, "event": event.__dict__ if event else None}
+
+
+@app.post("/api/admin/event/create_simple")
+def admin_event_create_simple(payload: AdminEventCreateSimpleRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required.")
+
+    total_qty = int(payload.early_qty) + int(payload.tier1_qty) + int(payload.tier2_qty)
+    if total_qty <= 0:
+        raise HTTPException(status_code=400, detail="At least one ticket quantity must be greater than 0.")
+
+    location = (payload.location or "Budapest").strip() or "Budapest"
+    if payload.event_datetime:
+        event_datetime = payload.event_datetime.strip()
+        try:
+            db.parse_event_datetime(event_datetime)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid datetime format. Use YYYY-MM-DD HH:MM") from exc
+    else:
+        default_dt = (datetime.now(ZoneInfo("Europe/Budapest")) + timedelta(days=7)).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        event_datetime = default_dt.strftime("%Y-%m-%d %H:%M")
+
+    event_id = db.create_event(
+        title=title,
+        event_datetime=event_datetime,
+        location=location,
+        caption=payload.caption.strip(),
+        photo_file_id="",
+        early_boy_price=float(payload.early_boy),
+        early_girl_price=float(payload.early_girl),
+        early_qty=int(payload.early_qty),
+        tier1_boy_price=float(payload.tier1_boy),
+        tier1_girl_price=float(payload.tier1_girl),
+        tier1_qty=int(payload.tier1_qty),
+        tier2_boy_price=float(payload.tier2_boy),
+        tier2_girl_price=float(payload.tier2_girl),
+        tier2_qty=int(payload.tier2_qty),
+    )
+    event = db.get_event(event_id)
+    return {
+        "ok": True,
+        "message": "Event created.",
+        "event": event.__dict__ if event else None,
+    }
 
 
 if __name__ == "__main__":

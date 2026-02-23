@@ -407,7 +407,10 @@ function renderAdminEvents() {
   populateEventSelect(adminEl.removeEventSelect, adminState.events);
   populateEventSelect(adminEl.importEventSelect, adminState.events);
 
-  if (!adminState.events.length) return;
+  if (!adminState.events.length) {
+    adminState.selectedEventId = null;
+    return;
+  }
   const selected = adminState.events.find((e) => e.id === prev) || adminState.events[0];
   adminState.selectedEventId = selected.id;
   adminEl.eventSelect.value = String(selected.id);
@@ -550,14 +553,11 @@ function exportGuestsXlsx() {
 
 async function saveAdminEvent() {
   const eventId = Number(adminEl.eventSelect.value || 0);
-  if (!eventId) {
-    setAdminStatus('Select event first.', true);
-    return;
-  }
-
-  const updates = {
-    title: adminEl.title.value.trim(),
-    caption: adminEl.caption.value.trim(),
+  const title = adminEl.title.value.trim();
+  const caption = adminEl.caption.value.trim();
+  const payload = {
+    title,
+    caption,
     early_boy: adminEl.ebBoy.value,
     early_girl: adminEl.ebGirl.value,
     early_qty: adminEl.ebQty.value,
@@ -569,15 +569,31 @@ async function saveAdminEvent() {
     tier2_qty: adminEl.t2Qty.value,
   };
 
+  if (!title) {
+    setAdminStatus('Title is required.', true);
+    return;
+  }
+
   try {
-    const res = await adminPost('/api/admin/event/update', {
-      event_id: eventId,
-      updates,
-    });
-    setAdminStatus(res.message || 'Event updated.');
+    let res;
+    if (eventId) {
+      res = await adminPost('/api/admin/event/update', {
+        event_id: eventId,
+        updates: payload,
+      });
+      setAdminStatus(res.message || 'Event updated.');
+    } else {
+      res = await adminPost('/api/admin/event/create_simple', payload);
+      setAdminStatus(res.message || 'Event created.');
+    }
     await loadAdminEvents();
+    if (res && res.event && res.event.id) {
+      adminState.selectedEventId = Number(res.event.id);
+      adminEl.eventSelect.value = String(res.event.id);
+      fillAdminEventForm(res.event);
+    }
   } catch (err) {
-    setAdminStatus(apiErrorText(err, 'Failed to update event.'), true);
+    setAdminStatus(apiErrorText(err, 'Failed to save event.'), true);
   }
 }
 

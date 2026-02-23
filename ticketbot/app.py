@@ -3,7 +3,7 @@ import json
 from io import StringIO
 from typing import Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -323,15 +323,6 @@ class TelegramBot:
             ]
         )
 
-    def _main_menu_keyboard(self) -> ReplyKeyboardMarkup:
-        return ReplyKeyboardMarkup(
-            [
-                ["Browse Events", "Menu"],
-                ["My Tickets"],
-            ],
-            resize_keyboard=True,
-        )
-
     def _render_event_stats(self, sort_by: str = "date", search: Optional[str] = None) -> str:
         rows = self.admin.list_event_stats(sort_by=sort_by, search=search, limit=15)
         if not rows:
@@ -639,8 +630,7 @@ class TelegramBot:
         user = self.users.get(tg_id)
         if user:
             await update.message.reply_text(
-                f"{intro}\n\nWelcome back. Tap Menu below to start booking.",
-                reply_markup=self._main_menu_keyboard(),
+                f"{intro}\n\nUse the Menu button to start booking.",
             )
             return ConversationHandler.END
 
@@ -653,8 +643,7 @@ class TelegramBot:
             phone="-",
         )
         await update.message.reply_text(
-            f"{intro}\n\nTap Menu below to start booking.",
-            reply_markup=self._main_menu_keyboard(),
+            f"{intro}\n\nUse the Menu button to start booking.",
         )
         return ConversationHandler.END
 
@@ -678,8 +667,7 @@ class TelegramBot:
             phone,
         )
         await update.message.reply_text(
-            "Profile saved. Use the menu buttons below.",
-            reply_markup=self._main_menu_keyboard(),
+            "Profile saved. Use the Menu button to continue.",
         )
         return ConversationHandler.END
 

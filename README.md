@@ -178,11 +178,6 @@ Backups are saved to `/opt/eventmanagement/backups` and old backups (older than 
 - `/mytickets` - show all reservations and statuses.
 - `/cancel <reservation_code>` - cancel your reservation.
 
-Users can use menu buttons after `/start`:
-- `Browse Events`
-- `Menu`
-- `My Tickets`
-
 Users can also cancel via inline `Cancel` button in `/mytickets`.
 
 ## Admin Commands
