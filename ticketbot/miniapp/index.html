@@ -25,7 +25,8 @@
         <span>1 Event</span>
         <span>2 Group</span>
         <span>3 Names</span>
-        <span>4 Confirm</span>
+        <span>4 Payment Proof</span>
+        <span>5 Book</span>
       </div>
     </header>
 
@@ -59,13 +60,23 @@
     </section>
 
     <section class="panel" id="summary-panel">
-      <h2>4. Booking Summary</h2>
+      <h2>4-5. Continue In Telegram</h2>
       <div id="summary" class="summary-card">
         <p>Select event and attendee counts.</p>
       </div>
+      <p class="hint">Step 4: upload payment proof in Telegram. Step 5: review summary and tap Book.</p>
       <button id="submit-booking" class="primary" type="button" disabled>Continue In Telegram</button>
       <p id="status" class="hint"></p>
       <textarea id="debug-payload" hidden></textarea>
+    </section>
+
+    <section class="panel" id="tickets-panel">
+      <div class="panel-head">
+        <h2>My Tickets</h2>
+        <button id="tickets-refresh" type="button">Refresh</button>
+      </div>
+      <div id="tickets-list" class="admin-cards"></div>
+      <p id="tickets-empty" class="hint" hidden>No tickets yet.</p>
     </section>
 
     <section class="panel" id="admin-area" hidden>

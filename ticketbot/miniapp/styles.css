@@ -261,6 +261,12 @@ textarea {
   gap: 8px;
 }
 
+.attendee-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .admin-block {
   border: 1px solid #d4e2ee;
   border-radius: 12px;
@@ -360,6 +366,10 @@ textarea {
 }
 
 @media (max-width: 739px) {
+  .attendee-row {
+    grid-template-columns: 1fr;
+  }
+
   .admin-grid3 {
     grid-template-columns: 1fr;
   }

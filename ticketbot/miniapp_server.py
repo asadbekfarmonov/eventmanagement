@@ -39,6 +39,15 @@ def _event_payload(event) -> Dict[str, Any]:
     }
 
 
+def _tier_label(tier_key: str) -> str:
+    labels = {
+        "early": "Early Bird",
+        "tier1": "Regular Tier-1",
+        "tier2": "Regular Tier-2",
+    }
+    return labels.get(tier_key, tier_key)
+
+
 class QuoteRequest(BaseModel):
     event_id: int
     boys: int = Field(ge=0)
@@ -135,6 +144,47 @@ def list_events() -> Dict[str, Any]:
         payload = _event_payload(event)
         if payload["tier"]:
             items.append(payload)
+    return {"items": items}
+
+
+@app.get("/api/me")
+def me(tg_id: int) -> Dict[str, Any]:
+    user = db.get_user(tg_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
+    return {
+        "profile": {
+            "tg_id": user.tg_id,
+            "name": user.name,
+            "surname": user.surname,
+            "phone": user.phone,
+        }
+    }
+
+
+@app.get("/api/my_tickets")
+def my_tickets(tg_id: int, limit: int = 20) -> Dict[str, Any]:
+    user = db.get_user(tg_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
+    rows = db.list_reservations_for_user(user.id)[: max(1, min(limit, 100))]
+    items = []
+    for reservation in rows:
+        event = db.get_event(reservation.event_id)
+        attendees = db.list_attendees(reservation.id)
+        items.append(
+            {
+                "code": reservation.code,
+                "event_id": reservation.event_id,
+                "event_title": event.title if event else f"Event #{reservation.event_id}",
+                "status": reservation.status,
+                "tier_label": _tier_label(reservation.ticket_type),
+                "boys": reservation.boys,
+                "girls": reservation.girls,
+                "total_price": reservation.total_price,
+                "attendees": [row["full_name"] for row in attendees],
+            }
+        )
     return {"items": items}
 
 

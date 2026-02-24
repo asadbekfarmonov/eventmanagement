@@ -16,6 +16,9 @@ const statusEl = document.getElementById('status');
 const submitBtn = document.getElementById('submit-booking');
 const refreshBtn = document.getElementById('refresh-events');
 const debugPayloadEl = document.getElementById('debug-payload');
+const ticketsListEl = document.getElementById('tickets-list');
+const ticketsEmptyEl = document.getElementById('tickets-empty');
+const ticketsRefreshEl = document.getElementById('tickets-refresh');
 
 const adminEl = {
   open: document.getElementById('admin-open'),
@@ -62,6 +65,7 @@ const state = {
   selectedEventId: null,
   boys: 0,
   girls: 0,
+  userProfile: null,
 };
 
 const adminState = {
@@ -100,8 +104,19 @@ function totalCount() {
   return state.boys + state.girls;
 }
 
-function attendeeInputs() {
-  return Array.from(attendeesListEl.querySelectorAll('input'));
+function attendeeRows() {
+  return Array.from(attendeesListEl.querySelectorAll('.attendee-row'));
+}
+
+function attendeeEntries() {
+  return attendeeRows().map((row) => ({
+    first: (row.querySelector('input[data-part="first"]')?.value || '').trim(),
+    surname: (row.querySelector('input[data-part="surname"]')?.value || '').trim(),
+  }));
+}
+
+function attendeeFullNames() {
+  return attendeeEntries().map((entry) => `${entry.first} ${entry.surname}`.trim());
 }
 
 function selectedEvent() {
@@ -123,7 +138,7 @@ function renderSummary() {
 
   summaryEl.innerHTML = [
     `<strong>${event.title}</strong>`,
-    `<div>${event.event_datetime} | ${event.location}</div>`,
+    `<div>${event.caption || ''}</div>`,
     `<div>Tier: ${event.tier.name}</div>`,
     '<hr>',
     `<div>Boys: ${state.boys} x ${money(event.tier.boy_price)}</div>`,
@@ -132,28 +147,51 @@ function renderSummary() {
     `<div class="hint">Attendees required: ${qty}</div>`,
   ].join('');
 
-  const names = attendeeInputs().map((x) => x.value.trim());
-  const namesReady = names.length === qty && names.every((name) => name.includes(' '));
+  const rows = attendeeEntries();
+  const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   submitBtn.disabled = !(qty > 0 && namesReady);
 }
 
 function rebuildAttendees() {
   const qty = totalCount();
-  const prev = attendeeInputs().map((x) => x.value.trim());
+  const prev = attendeeEntries();
   attendeesListEl.innerHTML = '';
 
   for (let i = 0; i < qty; i += 1) {
-    const wrap = document.createElement('label');
-    wrap.textContent = `Attendee #${i + 1} full name`;
+    const row = document.createElement('div');
+    row.className = 'attendee-row';
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = 'Name Surname';
-    input.value = prev[i] || '';
-    input.addEventListener('input', renderSummary);
+    const firstWrap = document.createElement('label');
+    firstWrap.textContent = `Attendee #${i + 1} Name`;
+    const firstInput = document.createElement('input');
+    firstInput.type = 'text';
+    firstInput.placeholder = 'Name';
+    firstInput.dataset.part = 'first';
 
-    wrap.appendChild(input);
-    attendeesListEl.appendChild(wrap);
+    const surnameWrap = document.createElement('label');
+    surnameWrap.textContent = 'Surname';
+    const surnameInput = document.createElement('input');
+    surnameInput.type = 'text';
+    surnameInput.placeholder = 'Surname';
+    surnameInput.dataset.part = 'surname';
+
+    const existing = prev[i] || {};
+    if (existing.first || existing.surname) {
+      firstInput.value = existing.first || '';
+      surnameInput.value = existing.surname || '';
+    } else if (i === 0 && state.userProfile) {
+      firstInput.value = state.userProfile.name || '';
+      surnameInput.value = state.userProfile.surname || '';
+    }
+
+    firstInput.addEventListener('input', renderSummary);
+    surnameInput.addEventListener('input', renderSummary);
+
+    firstWrap.appendChild(firstInput);
+    surnameWrap.appendChild(surnameInput);
+    row.appendChild(firstWrap);
+    row.appendChild(surnameWrap);
+    attendeesListEl.appendChild(row);
   }
 
   if (qty === 0) {
@@ -184,7 +222,7 @@ function renderEvents() {
     card.dataset.id = String(event.id);
     card.innerHTML = `
       <p class="event-title">${event.title}</p>
-      <p class="event-meta">${event.event_datetime}<br>${event.location}</p>
+      <p class="event-meta">${event.caption || ''}</p>
       <p class="event-price">${event.tier.name} | Boys ${money(event.tier.boy_price)} | Girls ${money(event.tier.girl_price)}</p>
     `;
     card.addEventListener('click', () => selectEvent(event.id));
@@ -212,7 +250,8 @@ async function fetchEvents() {
 function getPayload() {
   const event = selectedEvent();
   if (!event) return null;
-  const attendees = attendeeInputs().map((x) => x.value.trim());
+  const attendees = attendeeFullNames();
+  const attendeeParts = attendeeEntries();
   const qty = totalCount();
   const total = state.boys * Number(event.tier.boy_price || 0) + state.girls * Number(event.tier.girl_price || 0);
 
@@ -222,6 +261,7 @@ function getPayload() {
     boys: state.boys,
     girls: state.girls,
     attendees,
+    attendee_parts: attendeeParts,
     tier_key: event.tier.key,
     tier_name: event.tier.name,
     boy_price: Number(event.tier.boy_price || 0),
@@ -245,7 +285,7 @@ function submitDraft() {
 
   for (const fullName of payload.attendees) {
     if (!fullName || fullName.split(' ').length < 2) {
-      setStatus('Each attendee must be in format Name Surname.', true);
+      setStatus('Each attendee must have name and surname.', true);
       return;
     }
   }
@@ -258,6 +298,53 @@ function submitDraft() {
     debugPayloadEl.hidden = false;
     debugPayloadEl.value = text;
     setStatus('Not running inside Telegram. Payload preview shown below.');
+  }
+}
+
+function renderTickets(items) {
+  ticketsListEl.innerHTML = '';
+  ticketsEmptyEl.hidden = items.length > 0;
+  if (!items.length) return;
+  for (const item of items) {
+    const card = document.createElement('div');
+    card.className = 'admin-card';
+    card.innerHTML = `
+      <p class="admin-card-title">${item.code} | ${item.status}</p>
+      <p class="admin-card-meta">${item.event_title}</p>
+      <p class="admin-card-meta">Tier: ${item.tier_label} | Boys: ${item.boys} | Girls: ${item.girls} | Total: ${money(item.total_price)}</p>
+    `;
+    ticketsListEl.appendChild(card);
+  }
+}
+
+async function loadMeAndTickets() {
+  if (!tgId) return;
+  try {
+    const meUrl = new URL('/api/me', window.location.origin);
+    meUrl.searchParams.set('tg_id', String(tgId));
+    const meResp = await fetch(meUrl.toString(), { cache: 'no-store' });
+    if (meResp.ok) {
+      const meData = await meResp.json();
+      state.userProfile = meData.profile || null;
+      rebuildAttendees();
+    }
+  } catch (_err) {
+    // Optional mini app personalization; ignore failures.
+  }
+
+  try {
+    const ticketsUrl = new URL('/api/my_tickets', window.location.origin);
+    ticketsUrl.searchParams.set('tg_id', String(tgId));
+    const resp = await fetch(ticketsUrl.toString(), { cache: 'no-store' });
+    if (!resp.ok) {
+      ticketsEmptyEl.hidden = false;
+      return;
+    }
+    const data = await resp.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    renderTickets(items);
+  } catch (_err) {
+    ticketsEmptyEl.hidden = false;
   }
 }
 
@@ -735,10 +822,14 @@ if (adminEl.eventSelect) {
 if (adminEl.eventSave) {
   adminEl.eventSave.addEventListener('click', saveAdminEvent);
 }
+if (ticketsRefreshEl) {
+  ticketsRefreshEl.addEventListener('click', loadMeAndTickets);
+}
 
 initTelegram();
 rebuildAttendees();
 fetchEvents();
+loadMeAndTickets();
 if (autoOpenAdmin && adminEl.open) {
   openAdminMode().catch((err) => {
     setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);

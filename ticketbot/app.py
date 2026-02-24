@@ -534,7 +534,8 @@ class TelegramBot:
             text = (
                 f"Payment rejected.\nReservation: {reservation.code}\n"
                 f"Event: {event_title}\n"
-                f"Reason: {note}"
+                f"Reason: {note}\n"
+                "Please contact our Telegram directly for support."
             )
         await self.application.bot.send_message(chat_id=user.tg_id, text=text)
 
@@ -793,13 +794,7 @@ class TelegramBot:
 
         await update.message.reply_text(
             "Mini App draft received.\n"
-            "Booking summary:\n"
-            f"Event: {event.title}\n"
-            f"Tier: {active_tier['name']}\n"
-            f"Boys: {boys} x {active_tier['boy_price']:.2f}\n"
-            f"Girls: {girls} x {active_tier['girl_price']:.2f}\n"
-            f"Total paid by transfer: {total:.2f}\n\n"
-            "Send payment proof as image or PDF (one file)."
+            "Step 4/5: Send payment proof as image or PDF (one file)."
         )
         return RES_PAYMENT
 
@@ -945,11 +940,7 @@ class TelegramBot:
             context.user_data["total_price"] = total
 
             await update.message.reply_text(
-                "Booking summary:\n"
-                f"Boys: {boys} x {boy_price:.2f}\n"
-                f"Girls: {girls} x {girl_price:.2f}\n"
-                f"Total paid by transfer: {total:.2f}\n\n"
-                "Send payment proof as image or PDF (one file)."
+                "Step 4/5: Send payment proof as image or PDF (one file)."
             )
             return RES_PAYMENT
 
@@ -979,14 +970,27 @@ class TelegramBot:
         context.user_data["payment_file_id"] = file_id
         context.user_data["payment_file_type"] = file_type
 
-        rules_text = (
-            "Rules:\n"
-            "- Reservation is pending until admin approves payment proof.\n"
-            "- If cancelled, contact admin for resolution.\n"
-            "- Fake or invalid proof will be rejected."
+        boys = context.user_data.get("boys", 0)
+        girls = context.user_data.get("girls", 0)
+        boy_price = float(context.user_data.get("boy_price", 0))
+        girl_price = float(context.user_data.get("girl_price", 0))
+        total = float(context.user_data.get("total_price", boys * boy_price + girls * girl_price))
+        event = self.events.get(context.user_data.get("event_id"))
+        event_title = event.title if event else f"Event #{context.user_data.get('event_id')}"
+        tier_key = context.user_data.get("ticket_type", "")
+        tier_label = self._tier_label(tier_key) if tier_key else "N/A"
+
+        summary_text = (
+            "Step 5/5: Booking summary\n"
+            f"Event: {event_title}\n"
+            f"Tier: {tier_label}\n"
+            f"Boys: {boys} x {boy_price:.2f}\n"
+            f"Girls: {girls} x {girl_price:.2f}\n"
+            f"Total paid by transfer: {total:.2f}\n\n"
+            "Tap Book to submit for admin approval."
         )
-        keyboard = [[InlineKeyboardButton("I accept rules", callback_data="rules:accept")]]
-        await update.message.reply_text(rules_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton("Book", callback_data="rules:accept")]]
+        await update.message.reply_text(summary_text, reply_markup=InlineKeyboardMarkup(keyboard))
         return RES_RULES
 
     async def payment_proof_required(self, update: Update, _context):
@@ -1018,7 +1022,7 @@ class TelegramBot:
             return ConversationHandler.END
 
         await query.edit_message_text(
-            f"Reservation submitted.\nCode: {reservation.code}\nStatus: pending admin approval."
+            f"Your booking is pending admin approval.\nCode: {reservation.code}"
         )
         await self._notify_admins_pending(reservation)
         return ConversationHandler.END
