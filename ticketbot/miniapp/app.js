@@ -14,6 +14,7 @@ const girlsEl = document.getElementById('girls');
 const summaryEl = document.getElementById('summary');
 const statusEl = document.getElementById('status');
 const submitBtn = document.getElementById('submit-booking');
+const paymentProofEl = document.getElementById('payment-proof');
 const refreshBtn = document.getElementById('refresh-events');
 const debugPayloadEl = document.getElementById('debug-payload');
 const ticketsListEl = document.getElementById('tickets-list');
@@ -123,6 +124,10 @@ function selectedEvent() {
   return state.events.find((e) => e.id === state.selectedEventId) || null;
 }
 
+function hasPaymentProof() {
+  return Boolean(paymentProofEl && paymentProofEl.files && paymentProofEl.files[0]);
+}
+
 function renderSummary() {
   const event = selectedEvent();
   if (!event) {
@@ -149,7 +154,7 @@ function renderSummary() {
 
   const rows = attendeeEntries();
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
-  submitBtn.disabled = !(qty > 0 && namesReady);
+  submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof());
 }
 
 function rebuildAttendees() {
@@ -271,7 +276,7 @@ function getPayload() {
   };
 }
 
-function submitDraft() {
+async function submitDraft() {
   const payload = getPayload();
   if (!payload) {
     setStatus('Choose an event first.', true);
@@ -290,14 +295,42 @@ function submitDraft() {
     }
   }
 
-  const text = JSON.stringify(payload);
-  if (tg) {
-    tg.sendData(text);
-    setStatus('Draft sent. Return to chat and upload payment proof.');
-  } else {
-    debugPayloadEl.hidden = false;
-    debugPayloadEl.value = text;
-    setStatus('Not running inside Telegram. Payload preview shown below.');
+  if (!tgId) {
+    setStatus('Cannot detect Telegram user id in Mini App.', true);
+    return;
+  }
+  const paymentFile = paymentProofEl && paymentProofEl.files ? paymentProofEl.files[0] : null;
+  if (!paymentFile) {
+    setStatus('Upload payment proof first.', true);
+    return;
+  }
+
+  const formData = new FormData();
+  formData.set('tg_id', String(tgId));
+  formData.set('event_id', String(payload.event_id));
+  formData.set('boys', String(payload.boys));
+  formData.set('girls', String(payload.girls));
+  formData.set('attendees', JSON.stringify(payload.attendees));
+  formData.set('file', paymentFile);
+
+  submitBtn.disabled = true;
+  setStatus('Submitting booking...');
+  try {
+    const resp = await fetch('/api/book_with_payment', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(apiErrorText(data, 'Booking failed.'));
+    }
+    setStatus(`Your booking is pending. Code: ${data.code || '-'}`);
+    if (paymentProofEl) paymentProofEl.value = '';
+    await Promise.all([fetchEvents(), loadMeAndTickets()]);
+  } catch (err) {
+    setStatus(apiErrorText(err, 'Booking failed.'), true);
+  } finally {
+    renderSummary();
   }
 }
 
@@ -740,6 +773,9 @@ girlsEl.addEventListener('input', () => {
 
 submitBtn.addEventListener('click', submitDraft);
 refreshBtn.addEventListener('click', fetchEvents);
+if (paymentProofEl) {
+  paymentProofEl.addEventListener('change', renderSummary);
+}
 
 if (adminEl.open) {
   adminEl.open.addEventListener('click', openAdminMode);

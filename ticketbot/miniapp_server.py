@@ -3,6 +3,10 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional
+import json
+import uuid
+import urllib.request
+import urllib.error
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -20,10 +24,16 @@ WEB_DIR = BASE_DIR / "miniapp"
 load_dotenv()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/bot.db")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
+DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 db = Database(DATABASE_PATH)
 
 app = FastAPI(title="TicketBot Mini App Server")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 def _event_payload(event) -> Dict[str, Any]:
@@ -46,6 +56,80 @@ def _tier_label(tier_key: str) -> str:
         "tier2": "Regular Tier-2",
     }
     return labels.get(tier_key, tier_key)
+
+
+def _bot_api(method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not BOT_TOKEN:
+        return {"ok": False, "description": "BOT_TOKEN is missing"}
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return {"ok": False}
+
+
+def _notify_admins_pending_from_miniapp(reservation) -> None:
+    event = db.get_event(reservation.event_id)
+    user = db.get_user_by_id(reservation.user_id)
+    attendees = db.list_attendees(reservation.id)
+    attendee_lines = "\n".join([f"- {row['full_name']}" for row in attendees]) if attendees else "-"
+    event_title = event.title if event else f"Event #{reservation.event_id}"
+    tier_label = _tier_label(reservation.ticket_type)
+    buyer = "Unknown"
+    if user:
+        buyer = f"{user.name} {user.surname} (tg:{user.tg_id})"
+
+    caption = (
+        "New payment proof pending review\n\n"
+        f"Code: {reservation.code}\n"
+        f"Event: {event_title}\n"
+        f"Tier: {tier_label}\n"
+        f"Boys: {reservation.boys} | Girls: {reservation.girls}\n"
+        f"Total: {reservation.total_price:.2f}\n"
+        f"Buyer: {buyer}\n\n"
+        f"Attendees:\n{attendee_lines}\n\n"
+        f"Payment proof: {reservation.payment_file_id}"
+    )
+    buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "Approve", "callback_data": f"review:approve:{reservation.id}"},
+                {"text": "Reject Unreadable", "callback_data": f"review:reject:tpl:unreadable:{reservation.id}"},
+            ],
+            [
+                {"text": "Reject Amount", "callback_data": f"review:reject:tpl:amount:{reservation.id}"},
+                {"text": "Reject Custom", "callback_data": f"review:reject:custom:{reservation.id}"},
+            ],
+        ]
+    }
+    for admin_id in ADMIN_IDS:
+        _bot_api(
+            "sendMessage",
+            {
+                "chat_id": admin_id,
+                "text": caption,
+                "reply_markup": buttons,
+                "disable_web_page_preview": False,
+            },
+        )
+
+
+def _notify_user_pending_from_miniapp(reservation, tg_id: int) -> None:
+    _bot_api(
+        "sendMessage",
+        {
+            "chat_id": tg_id,
+            "text": f"Your booking is pending admin approval.\nCode: {reservation.code}",
+        },
+    )
 
 
 class QuoteRequest(BaseModel):
@@ -186,6 +270,67 @@ def my_tickets(tg_id: int, limit: int = 20) -> Dict[str, Any]:
             }
         )
     return {"items": items}
+
+
+@app.post("/api/book_with_payment")
+async def book_with_payment(
+    tg_id: int = Form(...),
+    event_id: int = Form(...),
+    boys: int = Form(...),
+    girls: int = Form(...),
+    attendees: str = Form(...),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    user = db.get_user(tg_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
+
+    try:
+        attendees_list = json.loads(attendees)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="attendees must be valid JSON list.") from exc
+    if not isinstance(attendees_list, list):
+        raise HTTPException(status_code=400, detail="attendees must be a list.")
+    normalized_attendees = [str(x).strip() for x in attendees_list]
+    if any(len(name.split()) < 2 for name in normalized_attendees):
+        raise HTTPException(status_code=400, detail='Each attendee must be in format "Name Surname".')
+
+    mime = (file.content_type or "").lower()
+    if not (mime.startswith("image/") or mime == "application/pdf"):
+        raise HTTPException(status_code=400, detail="Only image or PDF is accepted.")
+
+    suffix = ".pdf" if mime == "application/pdf" else ".jpg"
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    stored_path = Path(UPLOAD_DIR) / stored_name
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    stored_path.write_bytes(content)
+
+    proof_url = f"/uploads/{stored_name}"
+    if WEB_APP_URL:
+        proof_url = f"{WEB_APP_URL}{proof_url}"
+
+    try:
+        reservation = db.create_pending_reservation(
+            user_id=user.id,
+            event_id=int(event_id),
+            boys=int(boys),
+            girls=int(girls),
+            attendees=normalized_attendees,
+            payment_file_id=proof_url,
+            payment_file_type="external",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _notify_admins_pending_from_miniapp(reservation)
+    _notify_user_pending_from_miniapp(reservation, tg_id)
+    return {
+        "ok": True,
+        "code": reservation.code,
+        "status": reservation.status,
+    }
 
 
 @app.post("/api/quote")

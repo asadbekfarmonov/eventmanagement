@@ -26,7 +26,7 @@
         <span>2 Group</span>
         <span>3 Names</span>
         <span>4 Booking Review</span>
-        <span>5 Payment Confirmation</span>
+        <span>5 Upload + Book</span>
       </div>
     </header>
 
@@ -64,8 +64,11 @@
       <div id="summary" class="summary-card">
         <p>Select event and attendee counts.</p>
       </div>
-      <p class="hint">Step 5 in Telegram: upload payment proof and tap Book.</p>
-      <button id="submit-booking" class="primary" type="button" disabled>Continue In Telegram</button>
+      <label>
+        5. Upload confirmation of payment (PDF or image)
+        <input id="payment-proof" type="file" accept="application/pdf,image/*" />
+      </label>
+      <button id="submit-booking" class="primary" type="button" disabled>Book</button>
       <p id="status" class="hint"></p>
       <textarea id="debug-payload" hidden></textarea>
     </section>
