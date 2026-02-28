@@ -501,7 +501,6 @@ def admin_guest_remove_by_name(payload: AdminGuestRemoveByNameRequest) -> Dict[s
 async def admin_guest_import_xlsx(
     tg_id: int = Form(...),
     event_id: int = Form(...),
-    gender: str = Form("girl"),
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
     _require_admin(tg_id)
@@ -531,13 +530,11 @@ async def admin_guest_import_xlsx(
         value_name = parsed["name"]
         value_surname = parsed["surname"]
 
-        ok, message, _reservation = db.admin_add_guest_by_event(
+        ok, message, _reservation = db.admin_import_guest_by_event(
             admin_tg_id=tg_id,
             event_id=event_id,
             name=value_name,
             surname=value_surname,
-            gender_raw=gender,
-            allow_missing_surname=True,
         )
         if ok:
             added += 1

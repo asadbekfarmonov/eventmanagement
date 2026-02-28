@@ -37,7 +37,6 @@ const adminEl = {
   guestSurname: document.getElementById('admin-guest-surname'),
   guestAdd: document.getElementById('admin-guest-add'),
   importEventSelect: document.getElementById('admin-import-event-select'),
-  importGender: document.getElementById('admin-import-gender'),
   importFile: document.getElementById('admin-import-file'),
   importUpload: document.getElementById('admin-import-upload'),
   exportDownload: document.getElementById('admin-export-download'),
@@ -569,6 +568,7 @@ function renderAdminGuests() {
   for (const guest of adminState.guests) {
     const safeFullName = escapeHtml(guest.full_name);
     const safeGender = escapeHtml(guest.gender);
+    const genderBadge = guest.gender && guest.gender !== 'unknown' ? ` [${safeGender}]` : '';
     const safeEventTitle = escapeHtml(guest.event_title);
     const safeEventDatetime = escapeHtml(guest.event_datetime);
     const safeCode = escapeHtml(guest.reservation_code);
@@ -579,7 +579,7 @@ function renderAdminGuests() {
     card.className = 'admin-card';
     card.innerHTML = `
       <div class="admin-card-head">
-        <p class="admin-card-title">#${guest.attendee_id} ${safeFullName} [${safeGender}]</p>
+        <p class="admin-card-title">#${guest.attendee_id} ${safeFullName}${genderBadge}</p>
         <div class="admin-inline-actions">
             <button type="button" data-action="remove">Remove</button>
         </div>
@@ -747,7 +747,6 @@ async function addAdminGuest() {
 
 async function importGuestsXlsx() {
   const eventId = Number(adminEl.importEventSelect.value || 0);
-  const gender = adminEl.importGender.value || 'girl';
   const file = adminEl.importFile.files && adminEl.importFile.files[0];
   if (!eventId) {
     setAdminStatus('Choose event first.', true);
@@ -759,7 +758,6 @@ async function importGuestsXlsx() {
   }
   const formData = new FormData();
   formData.set('event_id', String(eventId));
-  formData.set('gender', gender);
   formData.set('file', file);
   try {
     const res = await adminUpload('/api/admin/guest/import_xlsx', formData);

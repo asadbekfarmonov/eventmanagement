@@ -930,6 +930,78 @@ class Database:
         self.conn.commit()
         return True, "Guest added successfully.", self.get_reservation(reservation_id)
 
+    def admin_import_guest_by_event(
+        self,
+        admin_tg_id: int,
+        event_id: int,
+        name: str,
+        surname: str,
+    ) -> Tuple[bool, str, Optional[Reservation]]:
+        clean_name = (name or "").strip()
+        clean_surname = (surname or "").strip()
+        if not clean_name:
+            return False, "Name is required.", None
+
+        event = self.get_event(event_id)
+        if not event:
+            return False, "Event not found.", None
+
+        full_name = f"{clean_name} {clean_surname}".strip()
+        code = f"I{event_id}-{uuid.uuid4().hex[:8].upper()}"
+        cursor = self.conn.cursor()
+        user_id = self._ensure_user_for_tg(admin_tg_id, cursor)
+
+        reservation_cols = self._table_columns("reservations")
+        insert_values: Dict[str, Any] = {
+            "code": code,
+            "user_id": user_id,
+            "event_id": event_id,
+            "ticket_type": "",
+            "quantity": 1,
+            "total_price": 0.0,
+            "boys": 0,
+            "girls": 0,
+            "status": STATUS_APPROVED,
+            "created_at": self._utc_now(),
+        }
+        if "price_per_ticket" in reservation_cols:
+            insert_values["price_per_ticket"] = 0.0
+        if "paid_tickets" in reservation_cols:
+            insert_values["paid_tickets"] = 1
+        if "credit_used_tickets" in reservation_cols:
+            insert_values["credit_used_tickets"] = 0
+        if "credit_source_codes" in reservation_cols:
+            insert_values["credit_source_codes"] = ""
+        if "payment_file_id" in reservation_cols:
+            insert_values["payment_file_id"] = ""
+        if "payment_file_type" in reservation_cols:
+            insert_values["payment_file_type"] = ""
+        if "admin_note" in reservation_cols:
+            insert_values["admin_note"] = "Imported from Excel"
+        if "reviewed_at" in reservation_cols:
+            insert_values["reviewed_at"] = self._utc_now()
+        if "reviewed_by_tg_id" in reservation_cols:
+            insert_values["reviewed_by_tg_id"] = admin_tg_id
+        if "hold_applied" in reservation_cols:
+            insert_values["hold_applied"] = 0
+
+        columns = list(insert_values.keys())
+        placeholders = ", ".join(["?"] * len(columns))
+        cursor.execute(
+            f"INSERT INTO reservations ({', '.join(columns)}) VALUES ({placeholders})",
+            tuple(insert_values[col] for col in columns),
+        )
+        reservation_id = int(cursor.lastrowid)
+        cursor.execute(
+            """
+            INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (reservation_id, clean_name, clean_surname, full_name, "unknown", ""),
+        )
+        self.conn.commit()
+        return True, "Guest imported successfully.", self.get_reservation(reservation_id)
+
     def admin_remove_guest(self, attendee_id: int) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()
         cursor.execute(

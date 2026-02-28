@@ -214,7 +214,6 @@ class MiniAppAdminApiTests(unittest.TestCase):
             data={
                 "tg_id": str(self.admin_tg_id),
                 "event_id": str(self.event_id),
-                "gender": "girl",
             },
             files={
                 "file": (
@@ -234,6 +233,16 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertIn(("Györfi", "Ádám"), pairs)
         self.assertIn(("SingleNameOnly", ""), pairs)
         self.assertIn(("Nigar", "Bayramova"), pairs)
+        event = self.db.get_event(self.event_id)
+        self.assertEqual(event.early_bird_qty, 10)
+
+        guests_resp = self.client.get(
+            "/api/admin/guests",
+            params={"tg_id": self.admin_tg_id, "search": "horváth", "limit": 20},
+        )
+        self.assertEqual(guests_resp.status_code, 200, guests_resp.text)
+        guests = guests_resp.json().get("items", [])
+        self.assertTrue(any(item.get("full_name") == "Horváth Tamás" for item in guests))
 
 
 if __name__ == "__main__":
