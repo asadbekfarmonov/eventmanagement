@@ -14,6 +14,7 @@ STATUS_PENDING = "pending_payment_review"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
 STATUS_CANCELLED = "cancelled"
+LEGACY_PENDING_STATUSES = {"pending"}
 
 
 class Database:
@@ -99,6 +100,7 @@ class Database:
                 name TEXT NOT NULL,
                 surname TEXT NOT NULL,
                 full_name TEXT NOT NULL DEFAULT '',
+                ticket_tier TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'reserved',
                 FOREIGN KEY (reservation_id) REFERENCES reservations(id)
             )
@@ -157,6 +159,8 @@ class Database:
             cursor.execute("ALTER TABLE attendees ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
         if "gender" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN gender TEXT NOT NULL DEFAULT 'unknown'")
+        if "ticket_tier" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN ticket_tier TEXT NOT NULL DEFAULT ''")
         cursor.execute(
             """
             UPDATE attendees
@@ -165,6 +169,17 @@ class Database:
             """
         )
         self._backfill_attendee_genders(cursor)
+        cursor.execute(
+            """
+            UPDATE attendees
+            SET ticket_tier = (
+                SELECT COALESCE(r.ticket_type, '')
+                FROM reservations r
+                WHERE r.id = attendees.reservation_id
+            )
+            WHERE ticket_tier = ''
+            """
+        )
 
         self.conn.commit()
 
@@ -227,6 +242,117 @@ class Database:
             return event.regular_tier2_price, event.regular_tier2_price_girl
         raise ValueError("Unknown ticket type")
 
+    def _tier_sequence(self, event: Event) -> List[Dict[str, Any]]:
+        return [
+            {
+                "key": "early",
+                "name": "Early Bird",
+                "remaining": int(event.early_bird_qty),
+                "boy_price": float(event.early_bird_price),
+                "girl_price": float(event.early_bird_price_girl),
+                "qty_column": "early_bird_qty",
+            },
+            {
+                "key": "tier1",
+                "name": "Regular Tier-1",
+                "remaining": int(event.regular_tier1_qty),
+                "boy_price": float(event.regular_tier1_price),
+                "girl_price": float(event.regular_tier1_price_girl),
+                "qty_column": "regular_tier1_qty",
+            },
+            {
+                "key": "tier2",
+                "name": "Regular Tier-2",
+                "remaining": int(event.regular_tier2_qty),
+                "boy_price": float(event.regular_tier2_price),
+                "girl_price": float(event.regular_tier2_price_girl),
+                "qty_column": "regular_tier2_qty",
+            },
+        ]
+
+    def _allocate_tier_plan(self, event: Event, boys: int, girls: int) -> Dict[str, Any]:
+        quantity = int(boys) + int(girls)
+        if quantity <= 0:
+            raise ValueError("At least one attendee is required")
+
+        total_remaining = self.total_remaining(event)
+        if quantity > total_remaining:
+            raise ValueError("Not enough tickets remaining across all tiers")
+
+        genders = (["boy"] * int(boys)) + (["girl"] * int(girls))
+        tiers = self._tier_sequence(event)
+        tier_remaining = {tier["key"]: int(tier["remaining"]) for tier in tiers}
+        tier_lookup = {tier["key"]: tier for tier in tiers}
+
+        attendee_allocations: List[Dict[str, Any]] = []
+        tier_usage: Dict[str, Dict[str, Any]] = {}
+        total_price = 0.0
+
+        for gender in genders:
+            selected_tier = None
+            for tier in tiers:
+                key = tier["key"]
+                if tier_remaining[key] > 0:
+                    selected_tier = key
+                    tier_remaining[key] -= 1
+                    break
+            if not selected_tier:
+                raise ValueError("Event is sold out")
+
+            tier_info = tier_lookup[selected_tier]
+            unit_price = float(tier_info["boy_price"] if gender == "boy" else tier_info["girl_price"])
+            total_price += unit_price
+            attendee_allocations.append(
+                {
+                    "tier_key": selected_tier,
+                    "gender": gender,
+                    "unit_price": unit_price,
+                }
+            )
+            if selected_tier not in tier_usage:
+                tier_usage[selected_tier] = {
+                    "tier_key": selected_tier,
+                    "tier_name": tier_info["name"],
+                    "count": 0,
+                    "boys": 0,
+                    "girls": 0,
+                    "boy_price": float(tier_info["boy_price"]),
+                    "girl_price": float(tier_info["girl_price"]),
+                    "subtotal": 0.0,
+                }
+            usage = tier_usage[selected_tier]
+            usage["count"] += 1
+            usage["boys"] += 1 if gender == "boy" else 0
+            usage["girls"] += 1 if gender == "girl" else 0
+            usage["subtotal"] += unit_price
+
+        breakdown = [tier_usage[tier["key"]] for tier in tiers if tier["key"] in tier_usage]
+        hold_counts = {key: value["count"] for key, value in tier_usage.items()}
+        primary_tier_key = attendee_allocations[0]["tier_key"] if attendee_allocations else "early"
+        return {
+            "quantity": quantity,
+            "total_price": total_price,
+            "primary_tier_key": primary_tier_key,
+            "attendee_allocations": attendee_allocations,
+            "hold_counts": hold_counts,
+            "breakdown": breakdown,
+        }
+
+    def quote_booking(self, event_id: int, boys: int, girls: int) -> Dict[str, Any]:
+        event = self.get_event(event_id)
+        if not event:
+            raise ValueError("Event not found")
+        plan = self._allocate_tier_plan(event, boys, girls)
+        return {
+            "event_id": event.id,
+            "event_title": event.title,
+            "boys": int(boys),
+            "girls": int(girls),
+            "quantity": plan["quantity"],
+            "total_price": float(plan["total_price"]),
+            "breakdown": plan["breakdown"],
+        }
+
     def _normalize_gender(self, value: str) -> Optional[str]:
         mapping = {
             "boy": "boy",
@@ -269,11 +395,47 @@ class Database:
     def _release_hold(self, reservation_row: sqlite3.Row, cursor: sqlite3.Cursor) -> None:
         if reservation_row["hold_applied"] != 1:
             return
-        qty_column = self._tier_qty_column(reservation_row["ticket_type"])
+        hold_counts = self._reservation_hold_counts(reservation_id=int(reservation_row["id"]), cursor=cursor)
+        if not hold_counts:
+            ticket_type = (reservation_row["ticket_type"] or "").strip()
+            if ticket_type:
+                hold_counts = {ticket_type: int(reservation_row["quantity"] or 0)}
+        for tier_key, qty in hold_counts.items():
+            if qty <= 0:
+                continue
+            qty_column = self._tier_qty_column(tier_key)
+            cursor.execute(
+                f"UPDATE events SET {qty_column} = {qty_column} + ? WHERE id = ?",
+                (int(qty), reservation_row["event_id"]),
+            )
+
+    def _reservation_hold_counts(self, reservation_id: int, cursor: sqlite3.Cursor) -> Dict[str, int]:
         cursor.execute(
-            f"UPDATE events SET {qty_column} = {qty_column} + ? WHERE id = ?",
-            (reservation_row["quantity"], reservation_row["event_id"]),
+            """
+            SELECT COALESCE(ticket_tier, '') AS tier_key, COUNT(*) AS cnt
+            FROM attendees
+            WHERE reservation_id = ?
+            GROUP BY COALESCE(ticket_tier, '')
+            """,
+            (reservation_id,),
         )
+        counts: Dict[str, int] = {}
+        for row in cursor.fetchall():
+            key = (row["tier_key"] or "").strip()
+            if key in {"early", "tier1", "tier2"}:
+                counts[key] = int(row["cnt"])
+        return counts
+
+    def _is_admin_mutable_reservation_status(self, status: str) -> bool:
+        normalized = (status or "").strip().lower()
+        return normalized in {
+            STATUS_PENDING,
+            STATUS_APPROVED,
+            *LEGACY_PENDING_STATUSES,
+            "pending_payment",
+            "pending_review",
+            "pending_payment_approval",
+        }
 
     def upsert_user(self, tg_id: int, name: str, surname: str, phone: str) -> None:
         cursor = self.conn.cursor()
@@ -394,30 +556,15 @@ class Database:
         return cursor.lastrowid
 
     def active_tier(self, event: Event) -> Optional[Dict[str, float]]:
-        if event.early_bird_qty > 0:
-            return {
-                "key": "early",
-                "name": "Early Bird",
-                "boy_price": event.early_bird_price,
-                "girl_price": event.early_bird_price_girl,
-                "remaining": event.early_bird_qty,
-            }
-        if event.regular_tier1_qty > 0:
-            return {
-                "key": "tier1",
-                "name": "Regular Tier-1",
-                "boy_price": event.regular_tier1_price,
-                "girl_price": event.regular_tier1_price_girl,
-                "remaining": event.regular_tier1_qty,
-            }
-        if event.regular_tier2_qty > 0:
-            return {
-                "key": "tier2",
-                "name": "Regular Tier-2",
-                "boy_price": event.regular_tier2_price,
-                "girl_price": event.regular_tier2_price_girl,
-                "remaining": event.regular_tier2_qty,
-            }
+        for tier in self._tier_sequence(event):
+            if tier["remaining"] > 0:
+                return {
+                    "key": tier["key"],
+                    "name": tier["name"],
+                    "boy_price": tier["boy_price"],
+                    "girl_price": tier["girl_price"],
+                    "remaining": tier["remaining"],
+                }
         return None
 
     def total_remaining(self, event: Event) -> int:
@@ -437,19 +584,11 @@ class Database:
         if not event:
             raise ValueError("Event not found")
 
-        active_tier = self.active_tier(event)
-        if not active_tier:
-            raise ValueError("Event is sold out")
-
-        quantity = boys + girls
-        if quantity <= 0:
-            raise ValueError("At least one attendee is required")
-        if quantity > active_tier["remaining"]:
-            raise ValueError("Not enough tickets in current tier")
+        plan = self._allocate_tier_plan(event, boys, girls)
+        quantity = int(plan["quantity"])
         if len(attendees) != quantity:
             raise ValueError("Attendee count does not match boys + girls")
-
-        total_price = boys * active_tier["boy_price"] + girls * active_tier["girl_price"]
+        total_price = float(plan["total_price"])
         code = f"R{event_id}-{uuid.uuid4().hex[:8].upper()}"
 
         cursor = self.conn.cursor()
@@ -459,7 +598,7 @@ class Database:
             "code": code,
             "user_id": user_id,
             "event_id": event_id,
-            "ticket_type": active_tier["key"],
+            "ticket_type": plan["primary_tier_key"],
             "quantity": quantity,
             "total_price": total_price,
             "boys": boys,
@@ -498,20 +637,28 @@ class Database:
         reservation_id = cursor.lastrowid
 
         for attendee_index, full_name in enumerate(attendees):
-            attendee_gender = "boy" if attendee_index < boys else "girl"
+            attendee_plan = plan["attendee_allocations"][attendee_index]
+            attendee_gender = attendee_plan["gender"]
+            attendee_tier = attendee_plan["tier_key"]
+            first_name, surname = self._name_parts("", "", full_name)
             cursor.execute(
                 """
-                INSERT INTO attendees (reservation_id, name, surname, full_name, gender)
-                VALUES (?, ?, '', ?, ?)
+                INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (reservation_id, full_name, full_name, attendee_gender),
+                (reservation_id, first_name, surname, full_name, attendee_gender, attendee_tier),
             )
 
-        qty_column = self._tier_qty_column(active_tier["key"])
-        cursor.execute(
-            f"UPDATE events SET {qty_column} = {qty_column} - ? WHERE id = ?",
-            (quantity, event_id),
-        )
+        hold_counts = plan["hold_counts"]
+        for tier_key, tier_qty in hold_counts.items():
+            qty_column = self._tier_qty_column(tier_key)
+            cursor.execute(
+                f"UPDATE events SET {qty_column} = {qty_column} - ? WHERE id = ? AND {qty_column} >= ?",
+                (int(tier_qty), event_id, int(tier_qty)),
+            )
+            if cursor.rowcount <= 0:
+                self.conn.rollback()
+                raise ValueError("Not enough tickets remaining across all tiers")
 
         self.conn.commit()
         return self.get_reservation(reservation_id)
@@ -567,7 +714,7 @@ class Database:
     def list_attendees(self, reservation_id: int) -> List[sqlite3.Row]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, reservation_id, full_name, gender, status FROM attendees WHERE reservation_id = ? ORDER BY id",
+            "SELECT id, reservation_id, name, surname, full_name, gender, ticket_tier, status FROM attendees WHERE reservation_id = ? ORDER BY id",
             (reservation_id,),
         )
         return cursor.fetchall()
@@ -580,8 +727,18 @@ class Database:
         cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
         return cursor.fetchone()
 
-    def _reservation_unit_price(self, reservation_row: sqlite3.Row, event: Event, gender: str) -> float:
-        boy_price, girl_price = self._tier_prices(event, reservation_row["ticket_type"])
+    def _reservation_unit_price(
+        self,
+        reservation_row: sqlite3.Row,
+        event: Event,
+        gender: str,
+        attendee_tier: Optional[str] = None,
+    ) -> float:
+        tier_key = (attendee_tier or reservation_row["ticket_type"] or "").strip()
+        if tier_key in {"early", "tier1", "tier2"}:
+            boy_price, girl_price = self._tier_prices(event, tier_key)
+        else:
+            boy_price, girl_price = (0.0, 0.0)
         if gender == "boy":
             return float(boy_price)
         if gender == "girl":
@@ -623,14 +780,20 @@ class Database:
         reservation_row = self._reservation_row_by_code(reservation_code, cursor)
         if not reservation_row:
             return False, "Reservation code not found.", None
-        if reservation_row["status"] not in {STATUS_PENDING, STATUS_APPROVED}:
+        if not self._is_admin_mutable_reservation_status(reservation_row["status"]):
             return False, "Guest can be added only to pending/approved reservations.", None
 
         event = self.get_event(reservation_row["event_id"])
         if not event:
             return False, "Event not found for reservation.", None
 
-        qty_column = self._tier_qty_column(reservation_row["ticket_type"])
+        try:
+            add_plan = self._allocate_tier_plan(event, 1 if gender == "boy" else 0, 1 if gender == "girl" else 0)
+        except ValueError:
+            return False, "No tickets left across all tiers for adding guest.", None
+        attendee_tier = add_plan["attendee_allocations"][0]["tier_key"]
+        add_price = float(add_plan["attendee_allocations"][0]["unit_price"])
+        qty_column = self._tier_qty_column(attendee_tier)
         if reservation_row["hold_applied"] == 1:
             cursor.execute(
                 f"UPDATE events SET {qty_column} = {qty_column} - 1 WHERE id = ? AND {qty_column} > 0",
@@ -638,9 +801,7 @@ class Database:
             )
             if cursor.rowcount == 0:
                 self.conn.rollback()
-                return False, "Current tier has no remaining tickets for adding guest.", None
-
-        add_price = self._reservation_unit_price(reservation_row, event, gender)
+                return False, "No tickets left across all tiers for adding guest.", None
         new_quantity = int(reservation_row["quantity"]) + 1
         new_boys = int(reservation_row["boys"]) + (1 if gender == "boy" else 0)
         new_girls = int(reservation_row["girls"]) + (1 if gender == "girl" else 0)
@@ -664,10 +825,10 @@ class Database:
         )
         cursor.execute(
             """
-            INSERT INTO attendees (reservation_id, name, surname, full_name, gender)
-            VALUES (?, ?, '', ?, ?)
+            INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (reservation_row["id"], full_name, full_name, gender),
+            (reservation_row["id"], *self._name_parts("", "", full_name), full_name, gender, attendee_tier),
         )
         self.conn.commit()
         updated = self.get_reservation(reservation_row["id"])
@@ -680,6 +841,7 @@ class Database:
         name: str,
         surname: str,
         gender_raw: str,
+        allow_missing_surname: bool = False,
     ) -> Tuple[bool, str, Optional[Reservation]]:
         gender = self._normalize_gender(gender_raw)
         if gender is None:
@@ -687,7 +849,7 @@ class Database:
 
         clean_name = (name or "").strip()
         clean_surname = (surname or "").strip()
-        if not clean_name or not clean_surname:
+        if not clean_name or (not clean_surname and not allow_missing_surname):
             return False, "Both name and surname are required.", None
 
         event = self.get_event(event_id)
@@ -703,7 +865,7 @@ class Database:
         quantity = 1
         boys = 1 if gender == "boy" else 0
         girls = 1 if gender == "girl" else 0
-        full_name = f"{clean_name} {clean_surname}"
+        full_name = f"{clean_name} {clean_surname}".strip()
 
         cursor = self.conn.cursor()
         user_id = self._ensure_user_for_tg(admin_tg_id, cursor)
@@ -760,10 +922,10 @@ class Database:
         reservation_id = int(cursor.lastrowid)
         cursor.execute(
             """
-            INSERT INTO attendees (reservation_id, name, surname, full_name, gender)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (reservation_id, clean_name, clean_surname, full_name, gender),
+            (reservation_id, clean_name, clean_surname, full_name, gender, active_tier["key"]),
         )
         self.conn.commit()
         return True, "Guest added successfully.", self.get_reservation(reservation_id)
@@ -776,6 +938,7 @@ class Database:
                 a.id AS attendee_id,
                 a.full_name,
                 COALESCE(a.gender, 'unknown') AS gender,
+                COALESCE(a.ticket_tier, '') AS attendee_tier,
                 r.*
             FROM attendees a
             JOIN reservations r ON r.id = a.reservation_id
@@ -786,17 +949,15 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return False, "Attendee not found.", None
-        if row["status"] not in {STATUS_PENDING, STATUS_APPROVED}:
+        if not self._is_admin_mutable_reservation_status(row["status"]):
             return False, "Guest can be removed only from pending/approved reservations.", None
-        if int(row["quantity"]) <= 1:
-            return False, "Cannot remove last guest. Cancel reservation instead.", None
 
         event = self.get_event(row["event_id"])
         if not event:
             return False, "Event not found for reservation.", None
 
         gender = row["gender"] if row["gender"] in {"boy", "girl"} else "unknown"
-        unit_price = self._reservation_unit_price(row, event, gender)
+        unit_price = self._reservation_unit_price(row, event, gender, attendee_tier=row["attendee_tier"])
         new_quantity = int(row["quantity"]) - 1
 
         if gender == "boy":
@@ -816,11 +977,34 @@ class Database:
         cursor.execute("DELETE FROM attendees WHERE id = ?", (attendee_id,))
 
         if row["hold_applied"] == 1:
-            qty_column = self._tier_qty_column(row["ticket_type"])
+            release_tier = row["attendee_tier"] if row["attendee_tier"] in {"early", "tier1", "tier2"} else row["ticket_type"]
+            qty_column = self._tier_qty_column(release_tier)
             cursor.execute(
                 f"UPDATE events SET {qty_column} = {qty_column} + 1 WHERE id = ?",
                 (row["event_id"],),
             )
+
+        if new_quantity <= 0:
+            cursor.execute(
+                """
+                UPDATE reservations
+                SET quantity = 0, boys = 0, girls = 0, total_price = 0,
+                    status = ?, hold_applied = 0
+                WHERE id = ?
+                """,
+                (STATUS_CANCELLED, row["id"]),
+            )
+            reservation_cols = self._table_columns("reservations")
+            self._update_legacy_reservation_fields(
+                cursor=cursor,
+                reservation_id=row["id"],
+                reservation_cols=reservation_cols,
+                quantity=0,
+                total_price=0.0,
+            )
+            self.conn.commit()
+            updated = self.get_reservation(row["id"])
+            return True, "Guest removed and reservation cancelled.", updated
 
         cursor.execute(
             """
@@ -861,11 +1045,12 @@ class Database:
                 a.id AS attendee_id,
                 a.full_name,
                 COALESCE(a.gender, 'unknown') AS gender,
+                COALESCE(a.ticket_tier, '') AS attendee_tier,
                 r.*
             FROM attendees a
             JOIN reservations r ON r.id = a.reservation_id
             WHERE r.event_id = ?
-              AND r.status IN (?, ?)
+              AND LOWER(TRIM(r.status)) IN (?, ?, ?, ?, ?, ?)
               AND (
                     LOWER(TRIM(a.full_name)) = LOWER(TRIM(?))
                     OR (LOWER(TRIM(a.name)) = LOWER(TRIM(?)) AND LOWER(TRIM(a.surname)) = LOWER(TRIM(?)))
@@ -873,7 +1058,18 @@ class Database:
             ORDER BY a.id DESC
             LIMIT 1
             """,
-            (event_id, STATUS_PENDING, STATUS_APPROVED, full_name, clean_name, clean_surname),
+            (
+                event_id,
+                STATUS_PENDING,
+                STATUS_APPROVED,
+                "pending",
+                "pending_payment",
+                "pending_review",
+                "pending_payment_approval",
+                full_name,
+                clean_name,
+                clean_surname,
+            ),
         )
         row = cursor.fetchone()
         if not row:
@@ -884,7 +1080,7 @@ class Database:
             return False, "Event not found for reservation.", None
 
         gender = row["gender"] if row["gender"] in {"boy", "girl"} else "unknown"
-        unit_price = self._reservation_unit_price(row, event, gender)
+        unit_price = self._reservation_unit_price(row, event, gender, attendee_tier=row["attendee_tier"])
         new_quantity = int(row["quantity"]) - 1
 
         if gender == "boy":
@@ -902,7 +1098,8 @@ class Database:
 
         cursor.execute("DELETE FROM attendees WHERE id = ?", (row["attendee_id"],))
         if row["hold_applied"] == 1:
-            qty_column = self._tier_qty_column(row["ticket_type"])
+            release_tier = row["attendee_tier"] if row["attendee_tier"] in {"early", "tier1", "tier2"} else row["ticket_type"]
+            qty_column = self._tier_qty_column(release_tier)
             cursor.execute(
                 f"UPDATE events SET {qty_column} = {qty_column} + 1 WHERE id = ?",
                 (row["event_id"],),
@@ -949,14 +1146,22 @@ class Database:
         return True, "Guest removed successfully.", self.get_reservation(row["id"])
 
     def admin_rename_guest(self, attendee_id: int, full_name: str) -> Tuple[bool, str]:
+        clean = (full_name or "").strip()
+        if not clean:
+            return False, "Full name is required."
+        parts = [part for part in clean.split() if part]
+        first_name = parts[0]
+        surname = " ".join(parts[1:]) if len(parts) > 1 else ""
+        normalized = f"{first_name} {surname}".strip()
+
         cursor = self.conn.cursor()
         cursor.execute(
             """
             UPDATE attendees
-            SET full_name = ?, name = ?, surname = ''
+            SET full_name = ?, name = ?, surname = ?
             WHERE id = ?
             """,
-            (full_name, full_name, attendee_id),
+            (normalized, first_name, surname, attendee_id),
         )
         self.conn.commit()
         if cursor.rowcount <= 0:

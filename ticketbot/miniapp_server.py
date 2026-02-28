@@ -206,6 +206,52 @@ def _row_dict(row) -> Dict[str, Any]:
     return dict(row) if row is not None else {}
 
 
+def _normalize_header_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower().replace("\ufeff", "")
+
+
+def _parse_guest_row(row: tuple, row_index: int) -> Dict[str, Any]:
+    value_name = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
+    value_surname = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+
+    if not value_name and not value_surname:
+        return {"skip": True, "reason": "empty"}
+
+    if row_index == 1:
+        h1 = _normalize_header_cell(value_name)
+        h2 = _normalize_header_cell(value_surname)
+        if h1 in {"name", "first_name", "firstname", "first name", "isim", "имя"} and h2 in {
+            "surname",
+            "last_name",
+            "lastname",
+            "last name",
+            "soyad",
+            "фамилия",
+        }:
+            return {"skip": True, "reason": "header"}
+
+    if value_name and not value_surname and " " in value_name:
+        parts = [p for p in value_name.split() if p]
+        if len(parts) >= 2:
+            value_name = parts[0]
+            value_surname = " ".join(parts[1:])
+
+    if not value_name and value_surname:
+        value_name = value_surname
+        value_surname = ""
+
+    if not value_name:
+        return {"skip": True, "reason": "missing_name"}
+
+    return {
+        "skip": False,
+        "name": value_name,
+        "surname": value_surname,
+    }
+
+
 @app.get("/")
 def root() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
@@ -335,30 +381,15 @@ async def book_with_payment(
 
 @app.post("/api/quote")
 def quote(payload: QuoteRequest) -> Dict[str, Any]:
-    event = db.get_event(payload.event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found.")
-
-    tier = db.active_tier(event)
-    if not tier:
-        raise HTTPException(status_code=409, detail="Event is sold out.")
-
-    quantity = payload.boys + payload.girls
-    if quantity <= 0:
-        raise HTTPException(status_code=400, detail="Total attendees must be at least 1.")
-    if quantity > tier["remaining"]:
-        raise HTTPException(status_code=400, detail="Not enough tickets in current tier.")
-
-    total = payload.boys * tier["boy_price"] + payload.girls * tier["girl_price"]
-    return {
-        "event_id": event.id,
-        "event_title": event.title,
-        "tier": tier,
-        "boys": payload.boys,
-        "girls": payload.girls,
-        "quantity": quantity,
-        "total_price": total,
-    }
+    try:
+        return db.quote_booking(payload.event_id, payload.boys, payload.girls)
+    except ValueError as exc:
+        text = str(exc)
+        if text == "Event not found":
+            raise HTTPException(status_code=404, detail=text) from exc
+        if "sold out" in text.lower() or "not enough tickets" in text.lower():
+            raise HTTPException(status_code=409, detail=text) from exc
+        raise HTTPException(status_code=400, detail=text) from exc
 
 
 @app.get("/api/admin/bootstrap")
@@ -489,19 +520,16 @@ async def admin_guest_import_xlsx(
     errors = []
 
     for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
-        value_name = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
-        value_surname = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
-        if not value_name and not value_surname:
-            continue
-        if row_index == 1 and value_name.lower() in {"name", "first_name"} and value_surname.lower() in {
-            "surname",
-            "last_name",
-        }:
-            continue
-        if not value_name or not value_surname:
+        parsed = _parse_guest_row(row, row_index)
+        if parsed["skip"]:
+            if parsed["reason"] in {"empty", "header"}:
+                continue
             skipped += 1
-            errors.append(f"Row {row_index}: missing name or surname.")
+            errors.append(f"Row {row_index}: invalid name/surname values.")
             continue
+
+        value_name = parsed["name"]
+        value_surname = parsed["surname"]
 
         ok, message, _reservation = db.admin_add_guest_by_event(
             admin_tg_id=tg_id,
@@ -509,6 +537,7 @@ async def admin_guest_import_xlsx(
             name=value_name,
             surname=value_surname,
             gender_raw=gender,
+            allow_missing_surname=True,
         )
         if ok:
             added += 1

@@ -89,6 +89,127 @@ class DatabaseTests(unittest.TestCase):
         active_tier = self.db.active_tier(event_after)
         self.assertEqual(active_tier["key"], "tier1")
 
+    def test_pending_reservation_spills_across_tiers(self):
+        event_id = self._create_event(early_qty=3, t1_qty=3, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=3,
+            girls=2,
+            attendees=["B One", "B Two", "B Three", "G One", "G Two"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        self.assertEqual(reservation.quantity, 5)
+        self.assertAlmostEqual(reservation.total_price, 14700.0)
+        attendees = self.db.list_attendees(reservation.id)
+        self.assertEqual([a["ticket_tier"] for a in attendees], ["early", "early", "early", "tier1", "tier1"])
+
+        event_after = self.db.get_event(event_id)
+        self.assertEqual(event_after.early_bird_qty, 0)
+        self.assertEqual(event_after.regular_tier1_qty, 1)
+
+    def test_quote_booking_returns_tier_breakdown(self):
+        event_id = self._create_event(early_qty=2, t1_qty=2, t2_qty=1)
+        quote = self.db.quote_booking(event_id=event_id, boys=2, girls=2)
+        self.assertEqual(quote["quantity"], 4)
+        self.assertEqual([row["tier_key"] for row in quote["breakdown"]], ["early", "tier1"])
+        self.assertEqual(quote["breakdown"][0]["count"], 2)
+        self.assertEqual(quote["breakdown"][1]["count"], 2)
+        self.assertAlmostEqual(quote["total_price"], 12200.0)
+
+    def test_pending_reservation_fails_when_exceeding_total_remaining(self):
+        event_id = self._create_event(early_qty=1, t1_qty=1, t2_qty=0)
+        with self.assertRaises(ValueError):
+            self.db.create_pending_reservation(
+                user_id=self.user_id,
+                event_id=event_id,
+                boys=3,
+                girls=0,
+                attendees=["A One", "A Two", "A Three"],
+                payment_file_id="proof",
+                payment_file_type="photo",
+            )
+
+    def test_reject_releases_hold_for_spillover_reservation(self):
+        event_id = self._create_event(early_qty=2, t1_qty=2, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=3,
+            girls=0,
+            attendees=["A One", "A Two", "A Three"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        held_event = self.db.get_event(event_id)
+        self.assertEqual(held_event.early_bird_qty, 0)
+        self.assertEqual(held_event.regular_tier1_qty, 1)
+
+        ok, _msg, updated = self.db.reject_reservation(
+            reservation_id=reservation.id,
+            admin_tg_id=999,
+            admin_note="Wrong amount",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(updated.status, STATUS_REJECTED)
+
+        event_after = self.db.get_event(event_id)
+        self.assertEqual(event_after.early_bird_qty, 2)
+        self.assertEqual(event_after.regular_tier1_qty, 2)
+
+    def test_admin_add_guest_uses_next_available_tier(self):
+        event_id = self._create_event(early_qty=1, t1_qty=2, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["A One"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        self.assertAlmostEqual(reservation.total_price, 2500.0)
+
+        ok_add, _msg_add, updated = self.db.admin_add_guest(
+            reservation_code=reservation.code,
+            full_name="A Two",
+            gender_raw="boy",
+        )
+        self.assertTrue(ok_add)
+        self.assertEqual(updated.quantity, 2)
+        self.assertAlmostEqual(updated.total_price, 6000.0)
+        attendees = self.db.list_attendees(reservation.id)
+        self.assertEqual([a["ticket_tier"] for a in attendees], ["early", "tier1"])
+
+    def test_admin_remove_guest_releases_correct_tier_in_spillover(self):
+        event_id = self._create_event(early_qty=2, t1_qty=2, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=3,
+            girls=0,
+            attendees=["A One", "A Two", "A Three"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        # Early 2 + Tier1 1 => 2*2500 + 1*3500 = 8500
+        self.assertAlmostEqual(reservation.total_price, 8500.0)
+        held_event = self.db.get_event(event_id)
+        self.assertEqual(held_event.early_bird_qty, 0)
+        self.assertEqual(held_event.regular_tier1_qty, 1)
+
+        attendees = self.db.list_attendees(reservation.id)
+        tier1_attendee = next(a for a in attendees if a["ticket_tier"] == "tier1")
+        ok_remove, _msg_remove, updated = self.db.admin_remove_guest(tier1_attendee["id"])
+        self.assertTrue(ok_remove)
+        self.assertEqual(updated.quantity, 2)
+        self.assertAlmostEqual(updated.total_price, 5000.0)
+
+        event_after = self.db.get_event(event_id)
+        self.assertEqual(event_after.early_bird_qty, 0)
+        self.assertEqual(event_after.regular_tier1_qty, 2)
+
     def test_reject_releases_hold(self):
         event_id = self._create_event(early_qty=3, t1_qty=0, t2_qty=0)
 
@@ -242,6 +363,50 @@ class DatabaseTests(unittest.TestCase):
 
         event_after_remove = self.db.get_event(event_id)
         self.assertEqual(event_after_remove.early_bird_qty, 3)
+
+    def test_admin_remove_guest_last_attendee_cancels_reservation(self):
+        event_id = self._create_event(early_qty=3, t1_qty=0, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Azat Jolamanov"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        attendees = self.db.list_attendees(reservation.id)
+        self.assertEqual(len(attendees), 1)
+
+        ok_remove, _msg_remove, updated = self.db.admin_remove_guest(attendees[0]["id"])
+        self.assertTrue(ok_remove)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.status, STATUS_CANCELLED)
+        self.assertEqual(updated.quantity, 0)
+        self.assertEqual(len(self.db.list_attendees(reservation.id)), 0)
+
+    def test_admin_rename_guest_updates_name_and_surname_columns(self):
+        event_id = self._create_event(early_qty=3, t1_qty=0, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Old Name"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        attendee_id = self.db.list_attendees(reservation.id)[0]["id"]
+        ok_rename, _msg_rename = self.db.admin_rename_guest(attendee_id, "New Surname")
+        self.assertTrue(ok_rename)
+
+        row = self.db.conn.execute(
+            "SELECT name, surname, full_name FROM attendees WHERE id = ?",
+            (attendee_id,),
+        ).fetchone()
+        self.assertEqual(row["name"], "New")
+        self.assertEqual(row["surname"], "Surname")
+        self.assertEqual(row["full_name"], "New Surname")
 
     def test_set_event_fields_updates_info_and_prices(self):
         event_id = self._create_event(early_qty=5, t1_qty=2, t2_qty=1)

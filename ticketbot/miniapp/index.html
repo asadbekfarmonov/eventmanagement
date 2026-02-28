@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260224c">
 </head>
 <body>
   <div class="bg-shape bg-shape-a"></div>
@@ -17,6 +17,9 @@
     <header class="hero">
       <div class="hero-top">
         <button id="admin-open" type="button" class="admin-btn">Admin</button>
+        <div class="brand-logo-wrap">
+          <img class="brand-logo" src="/static/logo.png?v=20260224c" alt="Budapest Tunderi logo" />
+        </div>
       </div>
       <p class="eyebrow">BUDAPEST TUNDERI</p>
       <h1>Мы создадим атмосферу.</h1>
@@ -151,18 +154,6 @@
       </section>
 
       <section class="admin-block">
-        <h3>Remove Guest</h3>
-        <div class="grid-2">
-          <label>Event<select id="admin-remove-event-select"></select></label>
-          <label>First Name<input id="admin-remove-name" type="text" placeholder="Name" /></label>
-        </div>
-        <div class="grid-2">
-          <label>Surname<input id="admin-remove-surname" type="text" placeholder="Surname" /></label>
-          <button id="admin-guest-remove-by-name" type="button">Remove Guest</button>
-        </div>
-      </section>
-
-      <section class="admin-block">
         <h3>Import Guests (Excel)</h3>
         <div class="grid-2">
           <label>Event<select id="admin-import-event-select"></select></label>
@@ -218,6 +209,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=20260224c" defer></script>
 </body>
 </html>

@@ -36,10 +36,6 @@ const adminEl = {
   guestName: document.getElementById('admin-guest-name'),
   guestSurname: document.getElementById('admin-guest-surname'),
   guestAdd: document.getElementById('admin-guest-add'),
-  removeEventSelect: document.getElementById('admin-remove-event-select'),
-  removeName: document.getElementById('admin-remove-name'),
-  removeSurname: document.getElementById('admin-remove-surname'),
-  removeByName: document.getElementById('admin-guest-remove-by-name'),
   importEventSelect: document.getElementById('admin-import-event-select'),
   importGender: document.getElementById('admin-import-gender'),
   importFile: document.getElementById('admin-import-file'),
@@ -67,6 +63,9 @@ const state = {
   boys: 0,
   girls: 0,
   userProfile: null,
+  quote: null,
+  quoteSeq: 0,
+  quoteLoading: false,
 };
 
 const adminState = {
@@ -80,6 +79,15 @@ const adminState = {
 
 function money(value) {
   return Number(value || 0).toFixed(2);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function setStatus(msg, isError = false) {
@@ -137,24 +145,107 @@ function renderSummary() {
   }
 
   const qty = totalCount();
-  const boysCost = state.boys * Number(event.tier.boy_price || 0);
-  const girlsCost = state.girls * Number(event.tier.girl_price || 0);
-  const total = boysCost + girlsCost;
+
+  const rows = attendeeEntries();
+  const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
+  if (qty <= 0) {
+    summaryEl.innerHTML = [
+      `<strong>${event.title}</strong>`,
+      `<div>${event.caption || ''}</div>`,
+      '<hr>',
+      '<div>Boys: 0</div>',
+      '<div>Girls: 0</div>',
+      '<div><strong>Total: 0.00</strong></div>',
+      '<div class="hint">Attendees required: 0</div>',
+    ].join('');
+    submitBtn.disabled = true;
+    return;
+  }
+
+  if (state.quoteLoading) {
+    summaryEl.innerHTML = [
+      `<strong>${event.title}</strong>`,
+      `<div>${event.caption || ''}</div>`,
+      '<hr>',
+      '<div>Calculating multi-tier quote...</div>',
+    ].join('');
+    submitBtn.disabled = true;
+    return;
+  }
+
+  const quote = state.quote;
+  const quoteMatches = quote
+    && Number(quote.event_id) === Number(event.id)
+    && Number(quote.boys) === Number(state.boys)
+    && Number(quote.girls) === Number(state.girls);
+  if (!quoteMatches) {
+    summaryEl.innerHTML = [
+      `<strong>${event.title}</strong>`,
+      `<div>${event.caption || ''}</div>`,
+      '<hr>',
+      '<div class="hint">Quote is unavailable. Try Refresh or change group details.</div>',
+    ].join('');
+    submitBtn.disabled = true;
+    return;
+  }
+
+  const breakdownRows = Array.isArray(quote.breakdown) ? quote.breakdown : [];
+  const breakdownHtml = breakdownRows.map((row) => {
+    const boysPart = `Boys: ${row.boys} x ${money(row.boy_price)}`;
+    const girlsPart = `Girls: ${row.girls} x ${money(row.girl_price)}`;
+    return `<div>${row.tier_name}: ${boysPart} | ${girlsPart} | Subtotal: ${money(row.subtotal)}</div>`;
+  });
 
   summaryEl.innerHTML = [
     `<strong>${event.title}</strong>`,
     `<div>${event.caption || ''}</div>`,
-    `<div>Tier: ${event.tier.name}</div>`,
     '<hr>',
-    `<div>Boys: ${state.boys} x ${money(event.tier.boy_price)}</div>`,
-    `<div>Girls: ${state.girls} x ${money(event.tier.girl_price)}</div>`,
-    `<div><strong>Total: ${money(total)}</strong></div>`,
+    ...breakdownHtml,
+    `<div><strong>Total: ${money(quote.total_price)}</strong></div>`,
     `<div class="hint">Attendees required: ${qty}</div>`,
   ].join('');
-
-  const rows = attendeeEntries();
-  const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof());
+}
+
+async function refreshQuote() {
+  const event = selectedEvent();
+  const qty = totalCount();
+  state.quote = null;
+  if (!event || qty <= 0) {
+    state.quoteLoading = false;
+    renderSummary();
+    return;
+  }
+
+  const seq = state.quoteSeq + 1;
+  state.quoteSeq = seq;
+  state.quoteLoading = true;
+  renderSummary();
+  try {
+    const resp = await fetch('/api/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_id: event.id,
+        boys: state.boys,
+        girls: state.girls,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (seq !== state.quoteSeq) return;
+    if (!resp.ok) throw data;
+    state.quote = data;
+    setStatus('');
+  } catch (err) {
+    if (seq !== state.quoteSeq) return;
+    setStatus(apiErrorText(err, 'Failed to calculate quote.'), true);
+    state.quote = null;
+  } finally {
+    if (seq === state.quoteSeq) {
+      state.quoteLoading = false;
+      renderSummary();
+    }
+  }
 }
 
 function rebuildAttendees() {
@@ -213,7 +304,7 @@ function selectEvent(eventId) {
     card.classList.toggle('active', Number(card.dataset.id) === eventId);
   }
   setStatus('');
-  renderSummary();
+  refreshQuote();
 }
 
 function renderEvents() {
@@ -258,7 +349,9 @@ function getPayload() {
   const attendees = attendeeFullNames();
   const attendeeParts = attendeeEntries();
   const qty = totalCount();
-  const total = state.boys * Number(event.tier.boy_price || 0) + state.girls * Number(event.tier.girl_price || 0);
+  const total = state.quote && Number(state.quote.event_id) === Number(event.id)
+    ? Number(state.quote.total_price || 0)
+    : 0;
 
   return {
     type: 'booking_draft_v1',
@@ -267,10 +360,10 @@ function getPayload() {
     girls: state.girls,
     attendees,
     attendee_parts: attendeeParts,
-    tier_key: event.tier.key,
-    tier_name: event.tier.name,
-    boy_price: Number(event.tier.boy_price || 0),
-    girl_price: Number(event.tier.girl_price || 0),
+    tier_key: event.tier ? event.tier.key : '',
+    tier_name: event.tier ? event.tier.name : '',
+    boy_price: event.tier ? Number(event.tier.boy_price || 0) : 0,
+    girl_price: event.tier ? Number(event.tier.girl_price || 0) : 0,
     total_price: total,
     quantity: qty,
   };
@@ -293,6 +386,15 @@ async function submitDraft() {
       setStatus('Each attendee must have name and surname.', true);
       return;
     }
+  }
+
+  const quoteReady = state.quote
+    && Number(state.quote.event_id) === Number(payload.event_id)
+    && Number(state.quote.boys) === Number(payload.boys)
+    && Number(state.quote.girls) === Number(payload.girls);
+  if (!quoteReady) {
+    setStatus('Quote is not ready. Please wait a moment and try again.', true);
+    return;
   }
 
   if (!tgId) {
@@ -465,50 +567,42 @@ function renderAdminGuests() {
   }
 
   for (const guest of adminState.guests) {
+    const safeFullName = escapeHtml(guest.full_name);
+    const safeGender = escapeHtml(guest.gender);
+    const safeEventTitle = escapeHtml(guest.event_title);
+    const safeEventDatetime = escapeHtml(guest.event_datetime);
+    const safeCode = escapeHtml(guest.reservation_code);
+    const safeStatus = escapeHtml(guest.reservation_status);
+    const safeBuyerName = escapeHtml(guest.buyer_name);
+    const safeBuyerSurname = escapeHtml(guest.buyer_surname);
     const card = document.createElement('div');
     card.className = 'admin-card';
     card.innerHTML = `
       <div class="admin-card-head">
-        <p class="admin-card-title">#${guest.attendee_id} ${guest.full_name} [${guest.gender}]</p>
+        <p class="admin-card-title">#${guest.attendee_id} ${safeFullName} [${safeGender}]</p>
         <div class="admin-inline-actions">
-          <button data-action="rename">Rename</button>
-          <button data-action="remove">Remove</button>
+            <button type="button" data-action="remove">Remove</button>
         </div>
       </div>
-      <p class="admin-card-meta">${guest.event_title} (${guest.event_datetime})</p>
-      <p class="admin-card-meta">${guest.reservation_code} | ${guest.reservation_status} | ${guest.buyer_name} ${guest.buyer_surname}</p>
+      <div>
+        <p class="admin-card-meta">${safeEventTitle} (${safeEventDatetime})</p>
+        <p class="admin-card-meta">${safeCode} | ${safeStatus} | ${safeBuyerName} ${safeBuyerSurname}</p>
+      </div>
     `;
 
-    const renameBtn = card.querySelector('button[data-action="rename"]');
     const removeBtn = card.querySelector('button[data-action="remove"]');
-
-    renameBtn.addEventListener('click', async () => {
-      const nextName = prompt('Enter new full name (Name Surname):', guest.full_name || '');
-      if (!nextName) return;
-      if (nextName.trim().split(' ').length < 2) {
-        setAdminStatus('Name must be in format Name Surname.', true);
-        return;
-      }
-      try {
-        const res = await adminPost('/api/admin/guest/rename', {
-          attendee_id: guest.attendee_id,
-          full_name: nextName.trim(),
-        });
-        setAdminStatus(res.message || 'Guest renamed.');
-        await loadAdminGuests();
-      } catch (err) {
-        setAdminStatus(apiErrorText(err, 'Failed to rename guest.'), true);
-      }
-    });
+    if (!removeBtn) {
+      adminEl.guestsList.appendChild(card);
+      continue;
+    }
 
     removeBtn.addEventListener('click', async () => {
-      if (!confirm(`Remove ${guest.full_name}?`)) return;
       try {
         const res = await adminPost('/api/admin/guest/remove', {
           attendee_id: guest.attendee_id,
         });
         setAdminStatus(res.message || 'Guest removed.');
-        await loadAdminGuests();
+        await Promise.all([loadAdminGuests(), loadAdminEvents()]);
       } catch (err) {
         setAdminStatus(apiErrorText(err, 'Failed to remove guest.'), true);
       }
@@ -559,7 +653,6 @@ function renderAdminEvents() {
   const prev = adminState.selectedEventId;
   populateEventSelect(adminEl.eventSelect, adminState.events, { allowCreate: true, preferId: prev });
   populateEventSelect(adminEl.addEventSelect, adminState.events);
-  populateEventSelect(adminEl.removeEventSelect, adminState.events);
   populateEventSelect(adminEl.importEventSelect, adminState.events);
 
   if (!adminState.events.length) {
@@ -652,33 +745,6 @@ async function addAdminGuest() {
   }
 }
 
-async function removeAdminGuestByName() {
-  const eventId = Number(adminEl.removeEventSelect.value || 0);
-  const name = adminEl.removeName.value.trim();
-  const surname = adminEl.removeSurname.value.trim();
-  if (!eventId) {
-    setAdminStatus('Choose event first.', true);
-    return;
-  }
-  if (!name || !surname) {
-    setAdminStatus('Name and surname are required for removal.', true);
-    return;
-  }
-  try {
-    const res = await adminPost('/api/admin/guest/remove_by_name', {
-      event_id: eventId,
-      name,
-      surname,
-    });
-    adminEl.removeName.value = '';
-    adminEl.removeSurname.value = '';
-    setAdminStatus(res.message || 'Guest removed.');
-    await Promise.all([loadAdminGuests(), loadAdminEvents()]);
-  } catch (err) {
-    setAdminStatus(apiErrorText(err, 'Failed to remove guest.'), true);
-  }
-}
-
 async function importGuestsXlsx() {
   const eventId = Number(adminEl.importEventSelect.value || 0);
   const gender = adminEl.importGender.value || 'girl';
@@ -697,7 +763,10 @@ async function importGuestsXlsx() {
   formData.set('file', file);
   try {
     const res = await adminUpload('/api/admin/guest/import_xlsx', formData);
-    const msg = `Import complete. Added: ${res.added || 0}, Skipped: ${res.skipped || 0}.`;
+    let msg = `Import complete. Added: ${res.added || 0}, Skipped: ${res.skipped || 0}.`;
+    if (Array.isArray(res.errors) && res.errors.length) {
+      msg += ` ${res.errors.slice(0, 3).join(' | ')}`;
+    }
     setAdminStatus(msg);
     await Promise.all([loadAdminGuests(), loadAdminEvents()]);
   } catch (err) {
@@ -764,11 +833,13 @@ async function saveAdminEvent() {
 boysEl.addEventListener('input', () => {
   state.boys = Math.max(0, Number(boysEl.value || 0));
   rebuildAttendees();
+  refreshQuote();
 });
 
 girlsEl.addEventListener('input', () => {
   state.girls = Math.max(0, Number(girlsEl.value || 0));
   rebuildAttendees();
+  refreshQuote();
 });
 
 submitBtn.addEventListener('click', submitDraft);
@@ -822,9 +893,6 @@ if (adminEl.guestsSearch) {
 }
 if (adminEl.guestAdd) {
   adminEl.guestAdd.addEventListener('click', addAdminGuest);
-}
-if (adminEl.removeByName) {
-  adminEl.removeByName.addEventListener('click', removeAdminGuestByName);
 }
 if (adminEl.importUpload) {
   adminEl.importUpload.addEventListener('click', importGuestsXlsx);

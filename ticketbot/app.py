@@ -1,7 +1,7 @@
 import csv
 import json
 from io import StringIO
-from typing import Optional
+from typing import List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
@@ -244,6 +244,17 @@ class TelegramBot:
             + f"Boys: {active_tier['boy_price']:.2f}\n"
             + f"Girls: {active_tier['girl_price']:.2f}"
         )
+
+    def _quote_breakdown_lines(self, quote: dict) -> List[str]:
+        lines: List[str] = []
+        for row in quote.get("breakdown", []) or []:
+            lines.append(
+                f"{row['tier_name']}: "
+                f"Boys {int(row['boys'])} x {float(row['boy_price']):.2f}, "
+                f"Girls {int(row['girls'])} x {float(row['girl_price']):.2f}, "
+                f"Subtotal {float(row['subtotal']):.2f}"
+            )
+        return lines
 
     def _price_edit_keyboard(self, event_id: int) -> InlineKeyboardMarkup:
         buttons = []
@@ -756,19 +767,9 @@ class TelegramBot:
             await update.message.reply_text("Selected event was not found.")
             return ConversationHandler.END
 
-        active_tier = self.events.active_tier(event)
-        if not active_tier:
-            await update.message.reply_text("This event is sold out.")
-            return ConversationHandler.END
-
         quantity = boys + girls
         if quantity <= 0:
             await update.message.reply_text("Total attendees must be at least 1.")
-            return ConversationHandler.END
-        if quantity > active_tier["remaining"]:
-            await update.message.reply_text(
-                "Current tier does not have enough tickets now. Please reopen booking app."
-            )
             return ConversationHandler.END
         if len(attendees) != quantity:
             await update.message.reply_text("Attendee count must match boys + girls.")
@@ -779,27 +780,28 @@ class TelegramBot:
             await update.message.reply_text('Each attendee must be in format "Name Surname".')
             return ConversationHandler.END
 
+        try:
+            quote = self.db.quote_booking(event.id, boys, girls)
+        except ValueError as exc:
+            await update.message.reply_text(f"Could not calculate booking: {exc}")
+            return ConversationHandler.END
+
         context.user_data["event_id"] = event.id
-        context.user_data["ticket_type"] = active_tier["key"]
-        context.user_data["boy_price"] = active_tier["boy_price"]
-        context.user_data["girl_price"] = active_tier["girl_price"]
         context.user_data["boys"] = boys
         context.user_data["girls"] = girls
         context.user_data["quantity"] = quantity
         context.user_data["attendees"] = cleaned_attendees
         context.user_data["attendee_index"] = quantity
-
-        total = boys * active_tier["boy_price"] + girls * active_tier["girl_price"]
-        context.user_data["total_price"] = total
+        context.user_data["quote"] = quote
+        context.user_data["total_price"] = float(quote["total_price"])
+        breakdown_lines = self._quote_breakdown_lines(quote)
 
         await update.message.reply_text(
             "Mini App draft received.\n"
             "Step 4/5: Booking summary\n"
             f"Event: {event.title}\n"
-            f"Tier: {active_tier['name']}\n"
-            f"Boys: {boys} x {active_tier['boy_price']:.2f}\n"
-            f"Girls: {girls} x {active_tier['girl_price']:.2f}\n"
-            f"Total to pay: {total:.2f}\n\n"
+            + ("\n".join(breakdown_lines) + "\n" if breakdown_lines else "")
+            + f"Total to pay: {float(quote['total_price']):.2f}\n\n"
             "Step 5/5: Send payment proof as image or PDF (one file)."
         )
         return RES_PAYMENT
@@ -882,14 +884,11 @@ class TelegramBot:
             await query.edit_message_text("This event is sold out.")
             return ConversationHandler.END
 
-        context.user_data["ticket_type"] = active_tier["key"]
-        context.user_data["boy_price"] = active_tier["boy_price"]
-        context.user_data["girl_price"] = active_tier["girl_price"]
-
         await query.edit_message_text(
-            f"Current tier: {active_tier['name']}\n"
+            f"Current opening tier: {active_tier['name']}\n"
             f"Boys: {active_tier['boy_price']:.2f}\n"
             f"Girls: {active_tier['girl_price']:.2f}\n\n"
+            "If this tier runs out, booking will continue automatically in next tiers.\n\n"
             "How many boys?"
         )
         return RES_BOYS
@@ -916,10 +915,23 @@ class TelegramBot:
             await update.message.reply_text("Total attendees must be at least 1. Enter boys again.")
             return RES_BOYS
 
+        event_id = context.user_data.get("event_id")
+        event = self.events.get(event_id) if event_id else None
+        if not event:
+            await update.message.reply_text("Event not found. Start booking again with /events.")
+            return ConversationHandler.END
+        try:
+            quote = self.db.quote_booking(event.id, boys, girls)
+        except ValueError as exc:
+            await update.message.reply_text(f"Cannot continue: {exc}\nEnter boys again.")
+            return RES_BOYS
+
         context.user_data["girls"] = girls
         context.user_data["quantity"] = quantity
         context.user_data["attendees"] = []
         context.user_data["attendee_index"] = 0
+        context.user_data["quote"] = quote
+        context.user_data["total_price"] = float(quote["total_price"])
 
         await update.message.reply_text(
             'Enter attendee #1 full name (name + surname), example: "Olzhas Olzhasov"'
@@ -938,18 +950,15 @@ class TelegramBot:
         attendees.append(full_name)
         context.user_data["attendee_index"] += 1
         if context.user_data["attendee_index"] >= context.user_data["quantity"]:
-            boys = context.user_data["boys"]
-            girls = context.user_data["girls"]
-            boy_price = context.user_data["boy_price"]
-            girl_price = context.user_data["girl_price"]
-            total = boys * boy_price + girls * girl_price
+            quote = context.user_data.get("quote") or {}
+            total = float(quote.get("total_price", context.user_data.get("total_price", 0.0)))
             context.user_data["total_price"] = total
+            breakdown_lines = self._quote_breakdown_lines(quote)
 
             await update.message.reply_text(
                 "Step 4/5: Booking summary\n"
-                f"Boys: {boys} x {boy_price:.2f}\n"
-                f"Girls: {girls} x {girl_price:.2f}\n"
-                f"Total to pay: {total:.2f}\n\n"
+                + ("\n".join(breakdown_lines) + "\n" if breakdown_lines else "")
+                + f"Total to pay: {total:.2f}\n\n"
                 "Step 5/5: Send payment proof as image or PDF (one file)."
             )
             return RES_PAYMENT

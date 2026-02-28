@@ -53,6 +53,15 @@ function setStatus(msg, isError = false) {
   el.status.className = isError ? 'status error' : 'status';
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function detailMessage(err, fallback) {
   if (!err) return fallback;
   if (typeof err === 'string') return err;
@@ -110,20 +119,40 @@ function renderGuests() {
     return;
   }
   for (const g of state.guests) {
+    const safeFullName = escapeHtml(g.full_name);
+    const safeGender = escapeHtml(g.gender);
+    const safeEventTitle = escapeHtml(g.event_title);
+    const safeEventDatetime = escapeHtml(g.event_datetime);
+    const safeCode = escapeHtml(g.reservation_code);
+    const safeStatus = escapeHtml(g.reservation_status);
+    const safeBuyerName = escapeHtml(g.buyer_name);
+    const safeBuyerSurname = escapeHtml(g.buyer_surname);
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML = `
-      <h3>#${g.attendee_id} ${g.full_name} <small>[${g.gender}]</small></h3>
-      <div class="meta">${g.event_title} (${g.event_datetime})</div>
-      <div class="meta">${g.reservation_code} | ${g.reservation_status} | Buyer: ${g.buyer_name} ${g.buyer_surname}</div>
+      <h3>#${g.attendee_id} ${safeFullName} <small>[${safeGender}]</small></h3>
+      <div class="meta">${safeEventTitle} (${safeEventDatetime})</div>
+      <div class="meta">${safeCode} | ${safeStatus} | Buyer: ${safeBuyerName} ${safeBuyerSurname}</div>
+      <label>Full Name<input data-act="full-name" type="text" placeholder="Name Surname"></label>
       <div class="actions">
         <button data-act="rename" data-id="${g.attendee_id}">Rename</button>
         <button data-act="remove" data-id="${g.attendee_id}">Remove</button>
       </div>
     `;
-    card.querySelector('[data-act="rename"]').addEventListener('click', async () => {
-      const nextName = prompt('Enter new full name (Name Surname):', g.full_name || '');
-      if (!nextName) return;
+    const renameInput = card.querySelector('[data-act="full-name"]');
+    if (renameInput) renameInput.value = g.full_name || '';
+    const renameBtn = card.querySelector('[data-act="rename"]');
+    const removeBtn = card.querySelector('[data-act="remove"]');
+    if (!renameBtn || !removeBtn) {
+      el.guestsList.appendChild(card);
+      continue;
+    }
+    renameBtn.addEventListener('click', async () => {
+      const nextName = (renameInput?.value || '').trim();
+      if (!nextName || nextName.split(' ').length < 2) {
+        setStatus('Name must be in format Name Surname.', true);
+        return;
+      }
       try {
         const res = await apiPost('/api/admin/guest/rename', { attendee_id: g.attendee_id, full_name: nextName.trim() });
         setStatus(res.message || 'Guest renamed.');
@@ -132,12 +161,11 @@ function renderGuests() {
         setStatus(detailMessage(err, 'Failed to rename guest.'), true);
       }
     });
-    card.querySelector('[data-act="remove"]').addEventListener('click', async () => {
-      if (!confirm(`Remove guest ${g.full_name}?`)) return;
+    removeBtn.addEventListener('click', async () => {
       try {
         const res = await apiPost('/api/admin/guest/remove', { attendee_id: g.attendee_id });
         setStatus(res.message || 'Guest removed.');
-        await loadGuests();
+        await Promise.all([loadGuests(), loadEvents()]);
       } catch (err) {
         setStatus(detailMessage(err, 'Failed to remove guest.'), true);
       }
