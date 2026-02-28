@@ -403,7 +403,7 @@ def admin_guests(
     tg_id: int,
     sort_by: str = "newest",
     search: Optional[str] = None,
-    limit: int = 40,
+    limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     _require_admin(tg_id)
     rows = db.list_guests(sort_by=sort_by, search=search, limit=limit)

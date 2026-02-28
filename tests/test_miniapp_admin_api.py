@@ -244,6 +244,47 @@ class MiniAppAdminApiTests(unittest.TestCase):
         guests = guests_resp.json().get("items", [])
         self.assertTrue(any(item.get("full_name") == "Horváth Tamás" for item in guests))
 
+    def test_admin_guests_without_limit_returns_all_rows(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["name", "surname"])
+        for i in range(45):
+            ws.append([f"Name{i}", f"Surname{i}"])
+        payload = BytesIO()
+        wb.save(payload)
+        payload.seek(0)
+
+        import_resp = self.client.post(
+            "/api/admin/guest/import_xlsx",
+            data={
+                "tg_id": str(self.admin_tg_id),
+                "event_id": str(self.event_id),
+            },
+            files={
+                "file": (
+                    "bulk.xlsx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(import_resp.status_code, 200, import_resp.text)
+        self.assertEqual(import_resp.json().get("added"), 45)
+
+        all_resp = self.client.get(
+            "/api/admin/guests",
+            params={"tg_id": self.admin_tg_id},
+        )
+        self.assertEqual(all_resp.status_code, 200, all_resp.text)
+        self.assertEqual(len(all_resp.json().get("items", [])), 45)
+
+        limited_resp = self.client.get(
+            "/api/admin/guests",
+            params={"tg_id": self.admin_tg_id, "limit": 10},
+        )
+        self.assertEqual(limited_resp.status_code, 200, limited_resp.text)
+        self.assertEqual(len(limited_resp.json().get("items", [])), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

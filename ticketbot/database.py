@@ -1244,7 +1244,7 @@ class Database:
         self,
         sort_by: str = "newest",
         search: Optional[str] = None,
-        limit: int = 25,
+        limit: Optional[int] = None,
     ) -> List[sqlite3.Row]:
         order_map = {
             "newest": "a.id DESC",
@@ -1288,8 +1288,10 @@ class Database:
                 )
             """
             params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
-        query += f" ORDER BY {order_clause} LIMIT ?"
-        params.append(limit)
+        query += f" ORDER BY {order_clause}"
+        if limit is not None and int(limit) > 0:
+            query += " LIMIT ?"
+            params.append(int(limit))
         cursor = self.conn.cursor()
         cursor.execute(query, tuple(params))
         return cursor.fetchall()

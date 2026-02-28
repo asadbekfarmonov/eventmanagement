@@ -678,7 +678,6 @@ async function loadAdminGuests() {
   const data = await adminGet('/api/admin/guests', {
     sort_by: adminState.guestsSort,
     search: adminState.guestsSearch,
-    limit: 40,
   });
   adminState.guests = Array.isArray(data.items) ? data.items : [];
   renderAdminGuests();
