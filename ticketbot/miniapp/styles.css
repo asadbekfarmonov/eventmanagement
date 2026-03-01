@@ -95,9 +95,9 @@ body {
 }
 
 .brand-logo-wrap {
-  border: 1px solid #d4e2ee;
+  border: 1px solid #111111;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
+  background: #000000;
   padding: 5px 8px;
   box-shadow: 0 6px 16px rgba(12, 30, 58, 0.08);
 }
