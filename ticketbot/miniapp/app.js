@@ -43,6 +43,7 @@ const adminEl = {
   eventsRefresh: document.getElementById('admin-events-refresh'),
   eventSelect: document.getElementById('admin-event-select'),
   eventSave: document.getElementById('admin-event-save'),
+  eventDelete: document.getElementById('admin-event-delete'),
   title: document.getElementById('admin-ev-title'),
   caption: document.getElementById('admin-ev-caption'),
   ebBoy: document.getElementById('admin-ev-eb-boy'),
@@ -827,6 +828,29 @@ async function saveAdminEvent() {
   }
 }
 
+async function deleteAdminEvent() {
+  const eventId = Number(adminEl.eventSelect.value || 0);
+  if (!eventId) {
+    setAdminStatus('Select an event first.', true);
+    return;
+  }
+  const target = adminState.events.find((item) => Number(item.id) === eventId);
+  const label = target && target.title ? `"${target.title}"` : `#${eventId}`;
+  const confirmed = window.confirm(
+    `Delete event ${label}? This will permanently remove all related bookings and guests.`,
+  );
+  if (!confirmed) return;
+
+  try {
+    const res = await adminPost('/api/admin/event/delete', { event_id: eventId });
+    setAdminStatus(res.message || 'Event deleted.');
+    adminState.selectedEventId = null;
+    await refreshAdminAll();
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Failed to delete event.'), true);
+  }
+}
+
 boysEl.addEventListener('input', () => {
   state.boys = Math.max(0, Number(boysEl.value || 0));
   rebuildAttendees();
@@ -922,6 +946,9 @@ if (adminEl.eventSelect) {
 }
 if (adminEl.eventSave) {
   adminEl.eventSave.addEventListener('click', saveAdminEvent);
+}
+if (adminEl.eventDelete) {
+  adminEl.eventDelete.addEventListener('click', deleteAdminEvent);
 }
 if (ticketsRefreshEl) {
   ticketsRefreshEl.addEventListener('click', loadMeAndTickets);

@@ -1536,6 +1536,49 @@ class Database:
             return False, "Event not found."
         return True, "Event updated."
 
+    def delete_event(self, event_id: int) -> Tuple[bool, str, Dict[str, int]]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, title FROM events WHERE id = ?", (event_id,))
+        event_row = cursor.fetchone()
+        if not event_row:
+            return False, "Event not found.", {"events": 0, "reservations": 0, "attendees": 0}
+
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM reservations WHERE event_id = ?",
+            (event_id,),
+        )
+        reservation_count = int(cursor.fetchone()["cnt"])
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM attendees
+            WHERE reservation_id IN (SELECT id FROM reservations WHERE event_id = ?)
+            """,
+            (event_id,),
+        )
+        attendee_count = int(cursor.fetchone()["cnt"])
+
+        try:
+            cursor.execute(
+                """
+                DELETE FROM attendees
+                WHERE reservation_id IN (SELECT id FROM reservations WHERE event_id = ?)
+                """,
+                (event_id,),
+            )
+            cursor.execute("DELETE FROM reservations WHERE event_id = ?", (event_id,))
+            cursor.execute("DELETE FROM events WHERE id = ?", (event_id,))
+            self.conn.commit()
+        except sqlite3.Error as exc:
+            self.conn.rollback()
+            return False, f"Failed to delete event: {exc}", {"events": 0, "reservations": 0, "attendees": 0}
+
+        return (
+            True,
+            f"Event deleted. Removed {reservation_count} reservations and {attendee_count} guests.",
+            {"events": 1, "reservations": reservation_count, "attendees": attendee_count},
+        )
+
     def list_blocked_users(self) -> List[sqlite3.Row]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM users WHERE blocked = 1")

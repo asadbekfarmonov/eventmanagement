@@ -162,6 +162,11 @@ class AdminEventUpdateRequest(BaseModel):
     updates: Dict[str, Any]
 
 
+class AdminEventDeleteRequest(BaseModel):
+    tg_id: int
+    event_id: int
+
+
 class AdminEventCreateSimpleRequest(BaseModel):
     tg_id: int
     title: str
@@ -579,6 +584,15 @@ def admin_event_update(payload: AdminEventUpdateRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=message)
     event = db.get_event(payload.event_id)
     return {"ok": True, "message": message, "event": event.__dict__ if event else None}
+
+
+@app.post("/api/admin/event/delete")
+def admin_event_delete(payload: AdminEventDeleteRequest) -> Dict[str, Any]:
+    _require_admin(payload.tg_id)
+    ok, message, deleted = db.delete_event(event_id=payload.event_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "deleted": deleted}
 
 
 @app.post("/api/admin/event/create_simple")

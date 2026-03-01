@@ -200,6 +200,13 @@ button:hover {
   cursor: not-allowed;
 }
 
+.danger-btn {
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, #ffffff 55%);
+  background: #fff5f5;
+  color: #991b1b;
+  font-weight: 700;
+}
+
 .event-grid {
   display: grid;
   grid-template-columns: 1fr;

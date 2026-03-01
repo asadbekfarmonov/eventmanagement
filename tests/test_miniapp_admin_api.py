@@ -285,6 +285,33 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(limited_resp.status_code, 200, limited_resp.text)
         self.assertEqual(len(limited_resp.json().get("items", [])), 10)
 
+    def test_admin_can_delete_event_with_related_reservations_and_attendees(self):
+        reservation = self._create_reservation("Delete Me", status="approved")
+        attendees_before = self.db.conn.execute("SELECT COUNT(*) FROM attendees").fetchone()[0]
+        reservations_before = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertGreaterEqual(attendees_before, 1)
+        self.assertGreaterEqual(reservations_before, 1)
+
+        resp = self.client.post(
+            "/api/admin/event/delete",
+            json={
+                "tg_id": self.admin_tg_id,
+                "event_id": self.event_id,
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(data.get("deleted", {}).get("events"), 1)
+        self.assertGreaterEqual(data.get("deleted", {}).get("reservations", 0), 1)
+        self.assertGreaterEqual(data.get("deleted", {}).get("attendees", 0), 1)
+
+        self.assertIsNone(self.db.get_event(self.event_id))
+        attendees_after = self.db.conn.execute("SELECT COUNT(*) FROM attendees").fetchone()[0]
+        reservations_after = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(attendees_after, 0)
+        self.assertEqual(reservations_after, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
