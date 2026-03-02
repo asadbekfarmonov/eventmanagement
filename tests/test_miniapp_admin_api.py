@@ -1,6 +1,7 @@
 import importlib
 import os
 import tempfile
+import time
 import unittest
 from io import BytesIO
 
@@ -14,13 +15,25 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.db_path = os.path.join(self.temp_dir.name, "miniapp_test.db")
         self.admin_tg_id = 7164876915
         self.user_tg_id = 511308234
-        self._env_keys = ("DATABASE_PATH", "ADMIN_IDS", "BOT_TOKEN", "WEB_APP_URL", "UPLOAD_DIR")
+        self._env_keys = (
+            "DATABASE_PATH",
+            "ADMIN_IDS",
+            "BOT_TOKEN",
+            "WEB_APP_URL",
+            "UPLOAD_DIR",
+            "UPLOAD_MAX_MB",
+            "UPLOAD_RETENTION_DAYS",
+            "UPLOAD_CLEANUP_INTERVAL_SECONDS",
+        )
         self._env_backup = {key: os.environ.get(key) for key in self._env_keys}
         os.environ["DATABASE_PATH"] = self.db_path
         os.environ["ADMIN_IDS"] = str(self.admin_tg_id)
         os.environ["BOT_TOKEN"] = ""
         os.environ["WEB_APP_URL"] = "https://example.invalid"
         os.environ["UPLOAD_DIR"] = os.path.join(self.temp_dir.name, "uploads")
+        os.environ["UPLOAD_MAX_MB"] = "5"
+        os.environ["UPLOAD_RETENTION_DAYS"] = "7"
+        os.environ["UPLOAD_CLEANUP_INTERVAL_SECONDS"] = "3600"
 
         import ticketbot.miniapp_server as miniapp_server
 
@@ -311,6 +324,73 @@ class MiniAppAdminApiTests(unittest.TestCase):
         reservations_after = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
         self.assertEqual(attendees_after, 0)
         self.assertEqual(reservations_after, 0)
+
+    def test_book_with_payment_rejects_large_upload(self):
+        payload = b"x" * (5 * 1024 * 1024 + 1)
+        response = self.client.post(
+            "/api/book_with_payment",
+            data={
+                "tg_id": str(self.user_tg_id),
+                "event_id": str(self.event_id),
+                "boys": "1",
+                "girls": "0",
+                "attendees": '["John Doe"]',
+            },
+            files={
+                "file": (
+                    "proof.pdf",
+                    payload,
+                    "application/pdf",
+                )
+            },
+        )
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertIn("Max allowed size", response.json().get("detail", ""))
+
+    def test_cleanup_upload_storage_removes_orphan_and_old_reviewed_keeps_pending(self):
+        upload_dir = os.environ["UPLOAD_DIR"]
+        os.makedirs(upload_dir, exist_ok=True)
+
+        pending_path = os.path.join(upload_dir, "pending.jpg")
+        reviewed_path = os.path.join(upload_dir, "reviewed.jpg")
+        orphan_path = os.path.join(upload_dir, "orphan.jpg")
+
+        for file_path in (pending_path, reviewed_path, orphan_path):
+            with open(file_path, "wb") as fh:
+                fh.write(b"test")
+
+        pending_res = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=self.event_id,
+            boys=1,
+            girls=0,
+            attendees=["Pending User"],
+            payment_file_id="/uploads/pending.jpg",
+            payment_file_type="external",
+        )
+        reviewed_res = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=self.event_id,
+            boys=1,
+            girls=0,
+            attendees=["Reviewed User"],
+            payment_file_id="/uploads/reviewed.jpg",
+            payment_file_type="external",
+        )
+        ok, _msg, _approved = self.db.approve_reservation(reviewed_res.id, self.admin_tg_id)
+        self.assertTrue(ok)
+
+        old_ts = time.time() - (8 * 24 * 60 * 60)
+        for file_path in (pending_path, reviewed_path, orphan_path):
+            os.utime(file_path, (old_ts, old_ts))
+
+        report = self.server.cleanup_upload_storage(now_ts=time.time())
+        self.assertGreaterEqual(report.get("deleted", 0), 2)
+
+        self.assertTrue(os.path.exists(pending_path), "Pending proof should not be deleted.")
+        self.assertFalse(os.path.exists(reviewed_path), "Old reviewed proof should be deleted.")
+        self.assertFalse(os.path.exists(orphan_path), "Orphan file should be deleted.")
+        self.assertIsNotNone(pending_res)
 
 
 if __name__ == "__main__":

@@ -1728,3 +1728,15 @@ class Database:
                 ]
             )
         return rows
+
+    def list_external_payment_files(self) -> List[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT payment_file_id, status
+            FROM reservations
+            WHERE payment_file_type = 'external'
+              AND TRIM(COALESCE(payment_file_id, '')) <> ''
+            """
+        )
+        return cursor.fetchall()

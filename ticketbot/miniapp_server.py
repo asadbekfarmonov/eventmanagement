@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -7,6 +8,7 @@ import json
 import uuid
 import urllib.request
 import urllib.error
+from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -16,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 
-from ticketbot.database import Database
+from ticketbot.database import Database, STATUS_PENDING
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "miniapp"
@@ -28,12 +30,139 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
 DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+UPLOAD_MAX_MB = _env_positive_float("UPLOAD_MAX_MB", 5.0)
+MAX_UPLOAD_BYTES = int(UPLOAD_MAX_MB * 1024 * 1024)
+UPLOAD_RETENTION_DAYS = _env_positive_int("UPLOAD_RETENTION_DAYS", 7)
+UPLOAD_CLEANUP_INTERVAL_SECONDS = _env_positive_int("UPLOAD_CLEANUP_INTERVAL_SECONDS", 3600)
+_LAST_UPLOAD_CLEANUP_TS = 0.0
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 db = Database(DATABASE_PATH)
 
 app = FastAPI(title="TicketBot Mini App Server")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+
+def _extract_upload_filename(payment_file_id: str) -> Optional[str]:
+    raw = (payment_file_id or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    path = parsed.path if parsed.scheme else raw
+    if not path.startswith("/uploads/"):
+        return None
+    filename = unquote(Path(path).name)
+    if not filename or filename in {".", ".."}:
+        return None
+    return filename
+
+
+def _pending_status(status: str) -> bool:
+    normalized = (status or "").strip().lower()
+    return normalized in {
+        STATUS_PENDING,
+        "pending",
+        "pending_payment",
+        "pending_review",
+        "pending_payment_approval",
+    }
+
+
+def cleanup_upload_storage(now_ts: Optional[float] = None) -> Dict[str, int]:
+    upload_root = Path(UPLOAD_DIR)
+    upload_root.mkdir(parents=True, exist_ok=True)
+    now = float(now_ts if now_ts is not None else time.time())
+    retention_seconds = UPLOAD_RETENTION_DAYS * 24 * 60 * 60
+
+    referenced_any = set()
+    referenced_pending = set()
+    for row in db.list_external_payment_files():
+        filename = _extract_upload_filename(row["payment_file_id"])
+        if not filename:
+            continue
+        referenced_any.add(filename)
+        if _pending_status(row["status"]):
+            referenced_pending.add(filename)
+
+    scanned = 0
+    deleted = 0
+    kept = 0
+    for file_path in upload_root.iterdir():
+        if not file_path.is_file():
+            continue
+        scanned += 1
+        filename = file_path.name
+        if filename in referenced_pending:
+            kept += 1
+            continue
+
+        orphan = filename not in referenced_any
+        old = False
+        if retention_seconds > 0:
+            try:
+                old = (now - file_path.stat().st_mtime) > retention_seconds
+            except OSError:
+                old = False
+
+        if not (orphan or old):
+            kept += 1
+            continue
+
+        try:
+            file_path.unlink()
+            deleted += 1
+        except OSError:
+            kept += 1
+
+    return {
+        "scanned": scanned,
+        "deleted": deleted,
+        "kept": kept,
+        "referenced": len(referenced_any),
+    }
+
+
+def _maybe_run_upload_cleanup(force: bool = False) -> None:
+    global _LAST_UPLOAD_CLEANUP_TS
+    now = time.time()
+    if not force and (now - _LAST_UPLOAD_CLEANUP_TS) < UPLOAD_CLEANUP_INTERVAL_SECONDS:
+        return
+    _LAST_UPLOAD_CLEANUP_TS = now
+    try:
+        cleanup_upload_storage(now_ts=now)
+    except Exception:
+        # Never break user flow because of cleanup issues.
+        return
+
+
+@app.on_event("startup")
+def startup_cleanup() -> None:
+    _maybe_run_upload_cleanup(force=True)
 
 
 def _event_payload(event) -> Dict[str, Any]:
@@ -332,6 +461,7 @@ async def book_with_payment(
     attendees: str = Form(...),
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
+    _maybe_run_upload_cleanup()
     user = db.get_user(tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
@@ -356,7 +486,15 @@ async def book_with_payment(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    stored_path.write_bytes(content)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is too large. Max allowed size is {UPLOAD_MAX_MB:.1f} MB.",
+        )
+    try:
+        stored_path.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail=f"Upload storage error: {exc}") from exc
 
     proof_url = f"/uploads/{stored_name}"
     if WEB_APP_URL:

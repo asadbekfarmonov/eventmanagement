@@ -1,7 +1,10 @@
 import csv
 import json
+import os
 from io import StringIO
+from pathlib import Path
 from typing import List, Optional
+from urllib.parse import unquote, urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
@@ -63,6 +66,8 @@ class TelegramBot:
         self.config = config
         self.application = None
         self.db = Database(config.database_path)
+        default_upload_dir = Path(config.database_path).resolve().parent / "uploads"
+        self.upload_dir = Path(os.getenv("UPLOAD_DIR", str(default_upload_dir))).resolve()
         self.users = UserService(self.db)
         self.events = EventService(self.db)
         self.reservations = ReservationService(self.db)
@@ -549,6 +554,37 @@ class TelegramBot:
                 "Please contact our Telegram directly for support."
             )
         await self.application.bot.send_message(chat_id=user.tg_id, text=text)
+
+    def _resolve_external_upload_file(self, payment_file_id: str) -> Optional[Path]:
+        raw = (payment_file_id or "").strip()
+        if not raw:
+            return None
+        parsed = urlparse(raw)
+        path = parsed.path if parsed.scheme else raw
+        if not path.startswith("/uploads/"):
+            return None
+        filename = unquote(Path(path).name)
+        if not filename or filename in {".", ".."}:
+            return None
+        candidate = (self.upload_dir / filename).resolve()
+        try:
+            candidate.relative_to(self.upload_dir)
+        except ValueError:
+            return None
+        return candidate
+
+    def _delete_external_payment_file(self, reservation) -> None:
+        if not reservation:
+            return
+        if (reservation.payment_file_type or "").strip().lower() != "external":
+            return
+        target = self._resolve_external_upload_file(reservation.payment_file_id)
+        if not target:
+            return
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            return
 
     async def _notify_admins_pending(self, reservation) -> None:
         event = self.events.get(reservation.event_id)
@@ -1814,6 +1850,7 @@ class TelegramBot:
         await query.message.reply_text(result.message)
         if result.success and result.reservation:
             await self._notify_user_after_review(result.reservation, approved=True, note="")
+            self._delete_external_payment_file(result.reservation)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -1837,6 +1874,7 @@ class TelegramBot:
         await query.message.reply_text(result.message)
         if result.success and result.reservation:
             await self._notify_user_after_review(result.reservation, approved=False, note=reason)
+            self._delete_external_payment_file(result.reservation)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -1869,6 +1907,7 @@ class TelegramBot:
         await update.message.reply_text(result.message)
         if result.success and result.reservation:
             await self._notify_user_after_review(result.reservation, approved=False, note=note)
+            self._delete_external_payment_file(result.reservation)
         context.user_data.pop("reject_reservation_id", None)
         return ConversationHandler.END
 
