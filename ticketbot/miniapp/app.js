@@ -291,7 +291,7 @@ function rebuildAttendees() {
   }
 
   if (qty === 0) {
-    attendeesListEl.innerHTML = '<p class="hint">Set boys/girls count first.</p>';
+    attendeesListEl.innerHTML = '<p class="hint">Set boys/girls count first.<br>NOTE: Passport name required.</p>';
   }
 
   renderSummary();
