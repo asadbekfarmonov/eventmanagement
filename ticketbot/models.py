@@ -20,6 +20,12 @@ class Event:
     regular_tier2_price_girl: float
     regular_tier2_qty: int
     status: str
+    payment1_title: str = ""
+    payment1_url: str = ""
+    payment2_title: str = ""
+    payment2_url: str = ""
+    payment3_title: str = ""
+    payment3_url: str = ""
 
 
 @dataclass

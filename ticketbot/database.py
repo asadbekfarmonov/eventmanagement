@@ -63,7 +63,13 @@ class Database:
                 regular_tier2_price REAL NOT NULL DEFAULT 0,
                 regular_tier2_price_girl REAL NOT NULL DEFAULT 0,
                 regular_tier2_qty INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'open'
+                status TEXT NOT NULL DEFAULT 'open',
+                payment1_title TEXT NOT NULL DEFAULT '',
+                payment1_url TEXT NOT NULL DEFAULT '',
+                payment2_title TEXT NOT NULL DEFAULT '',
+                payment2_url TEXT NOT NULL DEFAULT '',
+                payment3_title TEXT NOT NULL DEFAULT '',
+                payment3_url TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -137,6 +143,18 @@ class Database:
         if "regular_tier2_price_girl" not in event_cols:
             cursor.execute("ALTER TABLE events ADD COLUMN regular_tier2_price_girl REAL NOT NULL DEFAULT 0")
             cursor.execute("UPDATE events SET regular_tier2_price_girl = regular_tier2_price")
+        if "payment1_title" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN payment1_title TEXT NOT NULL DEFAULT ''")
+        if "payment1_url" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN payment1_url TEXT NOT NULL DEFAULT ''")
+        if "payment2_title" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN payment2_title TEXT NOT NULL DEFAULT ''")
+        if "payment2_url" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN payment2_url TEXT NOT NULL DEFAULT ''")
+        if "payment3_title" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN payment3_title TEXT NOT NULL DEFAULT ''")
+        if "payment3_url" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN payment3_url TEXT NOT NULL DEFAULT ''")
 
         reservation_cols = self._table_columns("reservations")
         if "payment_file_id" not in reservation_cols:
@@ -478,7 +496,10 @@ class Database:
                    early_bird_price, early_bird_price_girl, early_bird_qty,
                    regular_tier1_price, regular_tier1_price_girl, regular_tier1_qty,
                    regular_tier2_price, regular_tier2_price_girl, regular_tier2_qty,
-                   status
+                   status,
+                   payment1_title, payment1_url,
+                   payment2_title, payment2_url,
+                   payment3_title, payment3_url
             FROM events
             WHERE status = 'open'
             ORDER BY event_datetime
@@ -494,7 +515,10 @@ class Database:
                    early_bird_price, early_bird_price_girl, early_bird_qty,
                    regular_tier1_price, regular_tier1_price_girl, regular_tier1_qty,
                    regular_tier2_price, regular_tier2_price_girl, regular_tier2_qty,
-                   status
+                   status,
+                   payment1_title, payment1_url,
+                   payment2_title, payment2_url,
+                   payment3_title, payment3_url
             FROM events
             WHERE id = ?
             """,
@@ -519,6 +543,12 @@ class Database:
         tier2_boy_price: float,
         tier2_girl_price: float,
         tier2_qty: int,
+        payment1_title: str = "",
+        payment1_url: str = "",
+        payment2_title: str = "",
+        payment2_url: str = "",
+        payment3_title: str = "",
+        payment3_url: str = "",
     ) -> int:
         event_cols = self._table_columns("events")
         insert_values = {
@@ -537,6 +567,12 @@ class Database:
             "regular_tier2_price_girl": tier2_girl_price,
             "regular_tier2_qty": tier2_qty,
             "status": "open",
+            "payment1_title": (payment1_title or "").strip(),
+            "payment1_url": (payment1_url or "").strip(),
+            "payment2_title": (payment2_title or "").strip(),
+            "payment2_url": (payment2_url or "").strip(),
+            "payment3_title": (payment3_title or "").strip(),
+            "payment3_url": (payment3_url or "").strip(),
         }
 
         # Backward compatibility for legacy schema variants.
@@ -1493,6 +1529,12 @@ class Database:
             "tier2_boy": "regular_tier2_price",
             "tier2_girl": "regular_tier2_price_girl",
             "tier2_qty": "regular_tier2_qty",
+            "payment1_title": "payment1_title",
+            "payment1_url": "payment1_url",
+            "payment2_title": "payment2_title",
+            "payment2_url": "payment2_url",
+            "payment3_title": "payment3_title",
+            "payment3_url": "payment3_url",
         }
         if not updates:
             return False, "No fields provided."
@@ -1524,6 +1566,12 @@ class Database:
                 if fvalue < 0:
                     return False, f"{key} must be non-negative."
                 value = fvalue
+            if key in {"payment1_title", "payment2_title", "payment3_title"}:
+                value = str(value or "").strip()
+            if key in {"payment1_url", "payment2_url", "payment3_url"}:
+                value = str(value or "").strip()
+                if value and not value.lower().startswith("https://"):
+                    return False, f"{key} must start with https://"
 
             assignments.append(f"{column} = ?")
             params.append(value)

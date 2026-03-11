@@ -167,6 +167,19 @@ def startup_cleanup() -> None:
 
 def _event_payload(event) -> Dict[str, Any]:
     tier = db.active_tier(event)
+    payment_options = []
+    for idx in (1, 2, 3):
+        title = (getattr(event, f"payment{idx}_title", "") or "").strip()
+        url = (getattr(event, f"payment{idx}_url", "") or "").strip()
+        if not url:
+            continue
+        payment_options.append(
+            {
+                "slot": idx,
+                "title": title or f"Payment Option {idx}",
+                "url": url,
+            }
+        )
     return {
         "id": event.id,
         "title": event.title,
@@ -175,6 +188,15 @@ def _event_payload(event) -> Dict[str, Any]:
         "caption": event.caption,
         "photo_file_id": event.photo_file_id,
         "tier": tier,
+        "payment_options": payment_options,
+        "payment": {
+            "payment1_title": (event.payment1_title or "").strip(),
+            "payment1_url": (event.payment1_url or "").strip(),
+            "payment2_title": (event.payment2_title or "").strip(),
+            "payment2_url": (event.payment2_url or "").strip(),
+            "payment3_title": (event.payment3_title or "").strip(),
+            "payment3_url": (event.payment3_url or "").strip(),
+        },
     }
 
 
@@ -309,6 +331,12 @@ class AdminEventCreateSimpleRequest(BaseModel):
     tier2_boy: float = Field(ge=0)
     tier2_girl: float = Field(ge=0)
     tier2_qty: int = Field(ge=0)
+    payment1_title: str = ""
+    payment1_url: str = ""
+    payment2_title: str = ""
+    payment2_url: str = ""
+    payment3_title: str = ""
+    payment3_url: str = ""
     location: Optional[str] = None
     event_datetime: Optional[str] = None
 
@@ -740,6 +768,16 @@ def admin_event_create_simple(payload: AdminEventCreateSimpleRequest) -> Dict[st
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
 
+    payment_fields = {
+        "payment1_url": payload.payment1_url,
+        "payment2_url": payload.payment2_url,
+        "payment3_url": payload.payment3_url,
+    }
+    for field_name, field_value in payment_fields.items():
+        cleaned = (field_value or "").strip()
+        if cleaned and not cleaned.lower().startswith("https://"):
+            raise HTTPException(status_code=400, detail=f"{field_name} must start with https://")
+
     total_qty = int(payload.early_qty) + int(payload.tier1_qty) + int(payload.tier2_qty)
     if total_qty <= 0:
         raise HTTPException(status_code=400, detail="At least one ticket quantity must be greater than 0.")
@@ -774,6 +812,12 @@ def admin_event_create_simple(payload: AdminEventCreateSimpleRequest) -> Dict[st
         tier2_boy_price=float(payload.tier2_boy),
         tier2_girl_price=float(payload.tier2_girl),
         tier2_qty=int(payload.tier2_qty),
+        payment1_title=(payload.payment1_title or "").strip(),
+        payment1_url=(payload.payment1_url or "").strip(),
+        payment2_title=(payload.payment2_title or "").strip(),
+        payment2_url=(payload.payment2_url or "").strip(),
+        payment3_title=(payload.payment3_title or "").strip(),
+        payment3_url=(payload.payment3_url or "").strip(),
     )
     event = db.get_event(event_id)
     return {

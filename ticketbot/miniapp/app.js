@@ -46,6 +46,12 @@ const adminEl = {
   eventDelete: document.getElementById('admin-event-delete'),
   title: document.getElementById('admin-ev-title'),
   caption: document.getElementById('admin-ev-caption'),
+  pay1Title: document.getElementById('admin-ev-pay1-title'),
+  pay1Url: document.getElementById('admin-ev-pay1-url'),
+  pay2Title: document.getElementById('admin-ev-pay2-title'),
+  pay2Url: document.getElementById('admin-ev-pay2-url'),
+  pay3Title: document.getElementById('admin-ev-pay3-title'),
+  pay3Url: document.getElementById('admin-ev-pay3-url'),
   ebBoy: document.getElementById('admin-ev-eb-boy'),
   ebGirl: document.getElementById('admin-ev-eb-girl'),
   ebQty: document.getElementById('admin-ev-eb-qty'),
@@ -136,6 +142,53 @@ function hasPaymentProof() {
   return Boolean(paymentProofEl && paymentProofEl.files && paymentProofEl.files[0]);
 }
 
+function paymentOptionsHtml(event) {
+  const options = Array.isArray(event && event.payment_options) ? event.payment_options : [];
+  if (!options.length) return '';
+  const rows = options.map((opt) => {
+    const title = escapeHtml(opt.title || 'Payment link');
+    const url = escapeHtml(opt.url || '');
+    return [
+      '<div class="payment-link-row">',
+      `<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`,
+      `<button type="button" class="copy-pay-link" data-url="${url}">Copy</button>`,
+      '</div>',
+    ].join('');
+  });
+  return [
+    '<div class="payment-links">',
+    '<p class="payment-links-title">Payment options</p>',
+    ...rows,
+    '</div>',
+  ].join('');
+}
+
+async function copyText(text) {
+  if (!text) return false;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_err) {
+      // Continue with fallback.
+    }
+  }
+  try {
+    const temp = document.createElement('textarea');
+    temp.value = text;
+    temp.setAttribute('readonly', 'true');
+    temp.style.position = 'fixed';
+    temp.style.left = '-9999px';
+    document.body.appendChild(temp);
+    temp.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(temp);
+    return ok;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function renderSummary() {
   const event = selectedEvent();
   if (!event) {
@@ -149,6 +202,7 @@ function renderSummary() {
   const rows = attendeeEntries();
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
+    const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
       `<strong>${event.title}</strong>`,
       `<div>${event.caption || ''}</div>`,
@@ -157,17 +211,20 @@ function renderSummary() {
       '<div>Girls: 0</div>',
       '<div><strong>Total: 0.00</strong></div>',
       '<div class="hint">Attendees required: 0</div>',
+      paymentSection,
     ].join('');
     submitBtn.disabled = true;
     return;
   }
 
   if (state.quoteLoading) {
+    const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
       `<strong>${event.title}</strong>`,
       `<div>${event.caption || ''}</div>`,
       '<hr>',
       '<div>Calculating multi-tier quote...</div>',
+      paymentSection,
     ].join('');
     submitBtn.disabled = true;
     return;
@@ -179,11 +236,13 @@ function renderSummary() {
     && Number(quote.boys) === Number(state.boys)
     && Number(quote.girls) === Number(state.girls);
   if (!quoteMatches) {
+    const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
       `<strong>${event.title}</strong>`,
       `<div>${event.caption || ''}</div>`,
       '<hr>',
       '<div class="hint">Quote is unavailable. Try Refresh or change group details.</div>',
+      paymentSection,
     ].join('');
     submitBtn.disabled = true;
     return;
@@ -196,6 +255,7 @@ function renderSummary() {
     return `<div>${row.tier_name}: ${boysPart} | ${girlsPart} | Subtotal: ${money(row.subtotal)}</div>`;
   });
 
+  const paymentSection = paymentOptionsHtml(event);
   summaryEl.innerHTML = [
     `<strong>${event.title}</strong>`,
     `<div>${event.caption || ''}</div>`,
@@ -203,6 +263,7 @@ function renderSummary() {
     ...breakdownHtml,
     `<div><strong>Total: ${money(quote.total_price)}</strong></div>`,
     `<div class="hint">Attendees required: ${qty}</div>`,
+    paymentSection,
   ].join('');
   submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof());
 }
@@ -533,6 +594,13 @@ function fillAdminEventForm(event) {
   if (!event) return;
   adminEl.title.value = event.title || '';
   adminEl.caption.value = event.caption || '';
+  const pay = event.payment || {};
+  adminEl.pay1Title.value = pay.payment1_title || '';
+  adminEl.pay1Url.value = pay.payment1_url || '';
+  adminEl.pay2Title.value = pay.payment2_title || '';
+  adminEl.pay2Url.value = pay.payment2_url || '';
+  adminEl.pay3Title.value = pay.payment3_title || '';
+  adminEl.pay3Url.value = pay.payment3_url || '';
   const p = event.prices || {};
   adminEl.ebBoy.value = p.early_boy ?? 0;
   adminEl.ebGirl.value = p.early_girl ?? 0;
@@ -548,6 +616,12 @@ function fillAdminEventForm(event) {
 function clearAdminEventForm() {
   adminEl.title.value = '';
   adminEl.caption.value = '';
+  adminEl.pay1Title.value = '';
+  adminEl.pay1Url.value = '';
+  adminEl.pay2Title.value = '';
+  adminEl.pay2Url.value = '';
+  adminEl.pay3Title.value = '';
+  adminEl.pay3Url.value = '';
   adminEl.ebBoy.value = 0;
   adminEl.ebGirl.value = 0;
   adminEl.ebQty.value = 0;
@@ -789,6 +863,12 @@ async function saveAdminEvent() {
   const payload = {
     title,
     caption,
+    payment1_title: adminEl.pay1Title.value.trim(),
+    payment1_url: adminEl.pay1Url.value.trim(),
+    payment2_title: adminEl.pay2Title.value.trim(),
+    payment2_url: adminEl.pay2Url.value.trim(),
+    payment3_title: adminEl.pay3Title.value.trim(),
+    payment3_url: adminEl.pay3Url.value.trim(),
     early_boy: adminEl.ebBoy.value,
     early_girl: adminEl.ebGirl.value,
     early_qty: adminEl.ebQty.value,
@@ -867,6 +947,21 @@ submitBtn.addEventListener('click', submitDraft);
 refreshBtn.addEventListener('click', fetchEvents);
 if (paymentProofEl) {
   paymentProofEl.addEventListener('change', renderSummary);
+}
+if (summaryEl) {
+  summaryEl.addEventListener('click', async (event) => {
+    const target = event.target && event.target.closest ? event.target.closest('button.copy-pay-link') : null;
+    if (!target) return;
+    event.preventDefault();
+    const url = (target.getAttribute('data-url') || '').trim();
+    if (!url) return;
+    const copied = await copyText(url);
+    if (copied) {
+      setStatus('Payment link copied.');
+    } else {
+      setStatus('Could not copy. Tap the payment link directly.', true);
+    }
+  });
 }
 
 if (adminEl.open) {

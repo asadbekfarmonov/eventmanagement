@@ -355,6 +355,47 @@ textarea {
   margin-top: 10px;
 }
 
+.admin-grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.payment-links {
+  margin-top: 10px;
+  border: 1px dashed #b8cad8;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fcff;
+}
+
+.payment-links-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f3346;
+}
+
+.payment-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.payment-link-row a {
+  color: #0b4a48;
+  text-decoration: underline;
+  font-size: 13px;
+}
+
+.copy-pay-link {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
 .summary-card {
   border: 1px dashed #b8cad8;
   border-radius: 12px;
@@ -395,6 +436,10 @@ textarea {
   }
 
   .admin-grid3 {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-grid2 {
     grid-template-columns: 1fr;
   }
 

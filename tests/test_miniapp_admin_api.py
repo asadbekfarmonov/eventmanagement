@@ -347,6 +347,87 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413, response.text)
         self.assertIn("Max allowed size", response.json().get("detail", ""))
 
+    def test_event_payment_options_are_saved_and_visible_to_guest(self):
+        create_resp = self.client.post(
+            "/api/admin/event/create_simple",
+            json={
+                "tg_id": self.admin_tg_id,
+                "title": "Payment Event",
+                "caption": "Pay links",
+                "early_boy": 1000,
+                "early_girl": 1000,
+                "early_qty": 5,
+                "tier1_boy": 2000,
+                "tier1_girl": 2000,
+                "tier1_qty": 0,
+                "tier2_boy": 3000,
+                "tier2_girl": 3000,
+                "tier2_qty": 0,
+                "payment1_title": "Revolut",
+                "payment1_url": "https://pay.example/revolut",
+                "payment2_title": "",
+                "payment2_url": "https://pay.example/wise",
+                "payment3_title": "Bank",
+                "payment3_url": "",
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.text)
+        event_id = create_resp.json()["event"]["id"]
+
+        admin_events = self.client.get(
+            "/api/admin/events",
+            params={"tg_id": self.admin_tg_id},
+        )
+        self.assertEqual(admin_events.status_code, 200, admin_events.text)
+        event_payload = next((x for x in admin_events.json()["items"] if x["id"] == event_id), None)
+        self.assertIsNotNone(event_payload)
+        payment = event_payload["payment"]
+        self.assertEqual(payment["payment1_title"], "Revolut")
+        self.assertEqual(payment["payment1_url"], "https://pay.example/revolut")
+
+        guest_events = self.client.get("/api/events")
+        self.assertEqual(guest_events.status_code, 200, guest_events.text)
+        guest_payload = next((x for x in guest_events.json()["items"] if x["id"] == event_id), None)
+        self.assertIsNotNone(guest_payload)
+        option_urls = [opt["url"] for opt in guest_payload.get("payment_options", [])]
+        self.assertIn("https://pay.example/revolut", option_urls)
+        self.assertIn("https://pay.example/wise", option_urls)
+        self.assertNotIn("", option_urls)
+
+    def test_event_payment_url_requires_https(self):
+        bad_create = self.client.post(
+            "/api/admin/event/create_simple",
+            json={
+                "tg_id": self.admin_tg_id,
+                "title": "Bad Payment",
+                "caption": "Bad URL",
+                "early_boy": 1000,
+                "early_girl": 1000,
+                "early_qty": 5,
+                "tier1_boy": 2000,
+                "tier1_girl": 2000,
+                "tier1_qty": 0,
+                "tier2_boy": 3000,
+                "tier2_girl": 3000,
+                "tier2_qty": 0,
+                "payment1_title": "Bad",
+                "payment1_url": "http://not-secure.example",
+            },
+        )
+        self.assertEqual(bad_create.status_code, 400, bad_create.text)
+        self.assertIn("https://", bad_create.json().get("detail", ""))
+
+        bad_update = self.client.post(
+            "/api/admin/event/update",
+            json={
+                "tg_id": self.admin_tg_id,
+                "event_id": self.event_id,
+                "updates": {"payment1_url": "http://not-secure.example"},
+            },
+        )
+        self.assertEqual(bad_update.status_code, 400, bad_update.text)
+        self.assertIn("https://", bad_update.json().get("detail", ""))
+
     def test_cleanup_upload_storage_removes_orphan_and_old_reviewed_keeps_pending(self):
         upload_dir = os.environ["UPLOAD_DIR"]
         os.makedirs(upload_dir, exist_ok=True)
