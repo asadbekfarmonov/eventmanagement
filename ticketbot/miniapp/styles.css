@@ -114,6 +114,23 @@ body {
   color: #67dcd2;
 }
 
+.hero-title {
+  margin: 0;
+  font-size: clamp(34px, 8vw, 56px);
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ff8a2b;
+}
+
+.hero .sub {
+  margin: 4px 0 0;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
 h1 {
   margin: 4px 0;
   font-size: clamp(28px, 7vw, 44px);
