@@ -1,12 +1,12 @@
 :root {
-  --ink: #0b1220;
-  --muted: #46556c;
-  --line: #d4deea;
-  --paper: #f4f9fc;
-  --card: #ffffff;
-  --accent: #0a8f87;
-  --accent2: #0c5f59;
-  --danger: #b42318;
+  --ink: #e8eef8;
+  --muted: #9aa9bf;
+  --line: #25364f;
+  --paper: #090f1a;
+  --card: #111b2c;
+  --accent: #28c4b7;
+  --accent2: #18867d;
+  --danger: #ff6b6b;
 }
 
 * { box-sizing: border-box; }
@@ -15,8 +15,8 @@ body {
   margin: 0;
   font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
   color: var(--ink);
-  background: radial-gradient(circle at 10% -10%, #ccfff4 0, rgba(204, 255, 244, 0) 42%),
-    radial-gradient(circle at 100% 0%, #ffeab9 0, rgba(255, 234, 185, 0) 38%),
+  background: radial-gradient(circle at 10% -10%, rgba(48, 197, 183, 0.28) 0, rgba(48, 197, 183, 0) 42%),
+    radial-gradient(circle at 100% 0%, rgba(226, 172, 76, 0.2) 0, rgba(226, 172, 76, 0) 38%),
     var(--paper);
 }
 
@@ -64,7 +64,7 @@ body {
   border-radius: 16px;
   padding: 14px;
   margin-top: 12px;
-  box-shadow: 0 8px 18px rgba(7, 33, 52, 0.08);
+  box-shadow: 0 14px 28px rgba(2, 6, 14, 0.45);
 }
 
 .panel-head {
@@ -110,7 +110,8 @@ input, select, button {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px;
-  background: #fff;
+  background: #101d31;
+  color: var(--ink);
 }
 
 input, select {
@@ -121,7 +122,7 @@ button {
   cursor: pointer;
 }
 
-button:hover { border-color: #b8c7d8; }
+button:hover { border-color: #3d5676; }
 
 .primary {
   background: linear-gradient(120deg, var(--accent), var(--accent2));
@@ -140,7 +141,7 @@ button:hover { border-color: #b8c7d8; }
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px;
-  background: linear-gradient(180deg, #fff, #fbfdff);
+  background: linear-gradient(180deg, #15243a, #111d31);
 }
 
 .card h3 {

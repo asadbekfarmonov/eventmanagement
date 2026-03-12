@@ -1,12 +1,15 @@
 :root {
-  --ink: #0f172a;
-  --muted: #425466;
-  --paper: #f8fafc;
-  --card: #ffffff;
-  --line: #dbe4ee;
-  --accent: #0ea5a4;
-  --accent-strong: #0f766e;
-  --danger: #dc2626;
+  --ink: #e8eef8;
+  --muted: #99a9bf;
+  --paper: #090f1a;
+  --card: #111b2c;
+  --card-soft: #0e1728;
+  --line: #25364f;
+  --control: #132036;
+  --control-hover: #172842;
+  --accent: #28c4b7;
+  --accent-strong: #18867d;
+  --danger: #ff6b6b;
 }
 
 * {
@@ -16,8 +19,8 @@
 body {
   margin: 0;
   font-family: "Space Grotesk", "Trebuchet MS", "Segoe UI", sans-serif;
-  background: radial-gradient(circle at 20% -10%, #c8fff2 0, rgba(200, 255, 242, 0) 50%),
-    radial-gradient(circle at 100% 10%, #ffeec7 0, rgba(255, 238, 199, 0) 45%),
+  background: radial-gradient(circle at 20% -10%, rgba(48, 197, 183, 0.28) 0, rgba(48, 197, 183, 0) 50%),
+    radial-gradient(circle at 100% 10%, rgba(226, 172, 76, 0.2) 0, rgba(226, 172, 76, 0) 45%),
     var(--paper);
   color: var(--ink);
   min-height: 100vh;
@@ -76,15 +79,15 @@ body {
 }
 
 .admin-btn {
-  border: 1px solid #9db3c7;
-  background: linear-gradient(120deg, #ecf6ff, #ffffff);
-  color: #0d2740;
+  border: 1px solid #3a4f6a;
+  background: linear-gradient(120deg, #15243a, #111f34);
+  color: var(--ink);
   font-weight: 700;
 }
 
 .admin-btn.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(14, 165, 164, 0.2);
+  box-shadow: 0 0 0 2px rgba(40, 196, 183, 0.28);
 }
 
 .brand-logo {
@@ -108,7 +111,7 @@ body {
   letter-spacing: 0.12em;
   font-size: 11px;
   font-weight: 700;
-  color: var(--accent-strong);
+  color: #67dcd2;
 }
 
 h1 {
@@ -131,20 +134,20 @@ h1 {
 
 .steps span {
   font-size: 12px;
-  border: 1px solid #c3d4e4;
-  color: #1f3346;
-  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid #2c405f;
+  color: #c8d7eb;
+  background: rgba(20, 33, 54, 0.72);
   padding: 4px 10px;
   border-radius: 999px;
 }
 
 .panel {
-  background: color-mix(in srgb, var(--card) 92%, #f1f8ff 8%);
+  background: linear-gradient(180deg, #111c2f, #0f1828);
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 14px;
   margin-top: 12px;
-  box-shadow: 0 10px 25px rgba(12, 30, 58, 0.06);
+  box-shadow: 0 14px 28px rgba(2, 6, 14, 0.45);
   animation: riseIn 0.45s ease both;
 }
 
@@ -175,14 +178,16 @@ h2 {
 button {
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--control);
+  color: var(--ink);
   padding: 8px 12px;
   cursor: pointer;
   font: inherit;
 }
 
 button:hover {
-  border-color: #bccedd;
+  border-color: #3d5676;
+  background: var(--control-hover);
 }
 
 .primary {
@@ -201,9 +206,9 @@ button:hover {
 }
 
 .danger-btn {
-  border: 1px solid color-mix(in srgb, var(--danger) 45%, #ffffff 55%);
-  background: #fff5f5;
-  color: #991b1b;
+  border: 1px solid #6b2e35;
+  background: #2a171b;
+  color: #ffb7be;
   font-weight: 700;
 }
 
@@ -217,19 +222,19 @@ button:hover {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 11px;
-  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  background: linear-gradient(180deg, #15243a, #111d31);
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .event-card:hover {
   transform: translateY(-1px);
-  box-shadow: 0 9px 18px rgba(7, 33, 52, 0.08);
+  box-shadow: 0 12px 22px rgba(1, 5, 14, 0.4);
 }
 
 .event-card.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(14, 165, 164, 0.2), 0 10px 22px rgba(0, 102, 102, 0.1);
+  box-shadow: 0 0 0 2px rgba(40, 196, 183, 0.25), 0 12px 24px rgba(5, 23, 31, 0.4);
 }
 
 .event-title {
@@ -248,7 +253,7 @@ button:hover {
 .event-price {
   margin: 8px 0 0;
   font-size: 13px;
-  color: #0b4a48;
+  color: #7ed8cf;
 }
 
 .grid-2 {
@@ -271,7 +276,7 @@ textarea {
   padding: 10px;
   font: inherit;
   width: 100%;
-  background: #fff;
+  background: #101d31;
   color: var(--ink);
 }
 
@@ -292,11 +297,11 @@ textarea {
 }
 
 .admin-block {
-  border: 1px solid #d4e2ee;
+  border: 1px solid #2a3e5e;
   border-radius: 12px;
   padding: 10px;
   margin-top: 10px;
-  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  background: linear-gradient(180deg, #132238, #111d31);
 }
 
 .admin-cards {
@@ -309,7 +314,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px;
-  background: #fff;
+  background: #14233a;
 }
 
 .admin-card-head {
@@ -364,17 +369,17 @@ textarea {
 
 .payment-links {
   margin-top: 10px;
-  border: 1px dashed #b8cad8;
+  border: 1px dashed #345070;
   border-radius: 10px;
   padding: 10px;
-  background: #f8fcff;
+  background: #0f1a2b;
 }
 
 .payment-links-title {
   margin: 0 0 8px;
   font-size: 13px;
   font-weight: 700;
-  color: #1f3346;
+  color: #c7d8ee;
 }
 
 .payment-link-row {
@@ -386,7 +391,7 @@ textarea {
 }
 
 .payment-link-row a {
-  color: #0b4a48;
+  color: #7ed8cf;
   text-decoration: underline;
   font-size: 13px;
 }
@@ -397,10 +402,10 @@ textarea {
 }
 
 .summary-card {
-  border: 1px dashed #b8cad8;
+  border: 1px dashed #345070;
   border-radius: 12px;
   padding: 12px;
-  background: linear-gradient(180deg, #fcfeff, #f8fcff);
+  background: linear-gradient(180deg, #111d2f, #0f1a2a);
   line-height: 1.4;
 }
 
@@ -421,6 +426,8 @@ textarea {
   border-radius: 10px;
   border: 1px solid var(--line);
   padding: 8px;
+  background: #101d31;
+  color: var(--ink);
   font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 
