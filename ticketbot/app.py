@@ -551,7 +551,7 @@ class TelegramBot:
                 f"Payment rejected.\nReservation: {reservation.code}\n"
                 f"Event: {event_title}\n"
                 f"Reason: {note}\n"
-                "Please contact our Telegram directly for support."
+                "Please contact us directly on Telegram: @budapest_tunderi"
             )
         await self.application.bot.send_message(chat_id=user.tg_id, text=text)
 
@@ -1062,7 +1062,11 @@ class TelegramBot:
             return ConversationHandler.END
 
         await query.edit_message_text(
-            f"Your booking is pending admin approval.\nCode: {reservation.code}"
+            "Your booking is pending admin approval.\n"
+            f"Code: {reservation.code}\n\n"
+            "Please wait while we verify your payment proof.\n"
+            "Approval usually takes from 5 minutes up to 6 hours.\n"
+            "If it takes longer, contact us directly on Telegram: @budapest_tunderi"
         )
         await self._notify_admins_pending(reservation)
         return ConversationHandler.END
@@ -1868,7 +1872,10 @@ class TelegramBot:
         reservation_id = int(parts[-1])
         reason = "Payment proof unreadable. Please resend with clear details."
         if template_key == "amount":
-            reason = "Transferred amount does not match booking total. Please contact admin."
+            reason = (
+                "Transferred amount does not match booking total. "
+                "Please contact us directly on Telegram: @budapest_tunderi"
+            )
 
         result = self.reservations.reject_by_admin(reservation_id, update.effective_user.id, reason)
         await query.message.reply_text(result.message)

@@ -278,7 +278,13 @@ def _notify_user_pending_from_miniapp(reservation, tg_id: int) -> None:
         "sendMessage",
         {
             "chat_id": tg_id,
-            "text": f"Your booking is pending admin approval.\nCode: {reservation.code}",
+            "text": (
+                "Your booking is pending admin approval.\n"
+                f"Code: {reservation.code}\n\n"
+                "Please wait while we verify your payment proof.\n"
+                "Approval usually takes from 5 minutes up to 6 hours.\n"
+                "If it takes longer, contact us directly on Telegram: @budapest_tunderi"
+            ),
         },
     )
 
