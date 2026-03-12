@@ -96,6 +96,13 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function multilineHtml(value) {
+  return escapeHtml(value)
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+    .replaceAll('\n', '<br>');
+}
+
 function setStatus(msg, isError = false) {
   statusEl.textContent = msg || '';
   statusEl.className = isError ? 'hint error' : 'hint';
@@ -198,14 +205,16 @@ function renderSummary() {
   }
 
   const qty = totalCount();
+  const safeTitle = escapeHtml(event.title || '');
+  const safeCaption = multilineHtml(event.caption || '');
 
   const rows = attendeeEntries();
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
-      `<strong>${event.title}</strong>`,
-      `<div>${event.caption || ''}</div>`,
+      `<strong>${safeTitle}</strong>`,
+      `<div>${safeCaption}</div>`,
       '<hr>',
       '<div>Boys: 0</div>',
       '<div>Girls: 0</div>',
@@ -220,8 +229,8 @@ function renderSummary() {
   if (state.quoteLoading) {
     const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
-      `<strong>${event.title}</strong>`,
-      `<div>${event.caption || ''}</div>`,
+      `<strong>${safeTitle}</strong>`,
+      `<div>${safeCaption}</div>`,
       '<hr>',
       '<div>Calculating multi-tier quote...</div>',
       paymentSection,
@@ -238,8 +247,8 @@ function renderSummary() {
   if (!quoteMatches) {
     const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
-      `<strong>${event.title}</strong>`,
-      `<div>${event.caption || ''}</div>`,
+      `<strong>${safeTitle}</strong>`,
+      `<div>${safeCaption}</div>`,
       '<hr>',
       '<div class="hint">Quote is unavailable. Try Refresh or change group details.</div>',
       paymentSection,
@@ -257,8 +266,8 @@ function renderSummary() {
 
   const paymentSection = paymentOptionsHtml(event);
   summaryEl.innerHTML = [
-    `<strong>${event.title}</strong>`,
-    `<div>${event.caption || ''}</div>`,
+    `<strong>${safeTitle}</strong>`,
+    `<div>${safeCaption}</div>`,
     '<hr>',
     ...breakdownHtml,
     `<div><strong>Total: ${money(quote.total_price)}</strong></div>`,
@@ -373,13 +382,15 @@ function renderEvents() {
   eventsEmptyEl.hidden = state.events.length > 0;
 
   for (const event of state.events) {
+    const safeTitle = escapeHtml(event.title || '');
+    const safeCaption = multilineHtml(event.caption || '');
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'event-card';
     card.dataset.id = String(event.id);
     card.innerHTML = `
-      <p class="event-title">${event.title}</p>
-      <p class="event-meta">${event.caption || ''}</p>
+      <p class="event-title">${safeTitle}</p>
+      <p class="event-meta">${safeCaption}</p>
       <p class="event-price">${event.tier.name} | Boys ${money(event.tier.boy_price)} | Girls ${money(event.tier.girl_price)}</p>
     `;
     card.addEventListener('click', () => selectEvent(event.id));
