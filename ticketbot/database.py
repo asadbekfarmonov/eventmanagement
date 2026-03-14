@@ -449,6 +449,7 @@ class Database:
         return normalized in {
             STATUS_PENDING,
             STATUS_APPROVED,
+            STATUS_REJECTED,
             *LEGACY_PENDING_STATUSES,
             "pending_payment",
             "pending_review",
@@ -1057,8 +1058,9 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return False, "Attendee not found.", None
+        normalized_status = (row["status"] or "").strip().lower()
         if not self._is_admin_mutable_reservation_status(row["status"]):
-            return False, "Guest can be removed only from pending/approved reservations.", None
+            return False, "Guest can be removed only from pending/approved/rejected reservations.", None
 
         event = self.get_event(row["event_id"])
         if not event:
@@ -1093,6 +1095,10 @@ class Database:
             )
 
         if new_quantity <= 0:
+            if normalized_status == STATUS_REJECTED:
+                cursor.execute("DELETE FROM reservations WHERE id = ?", (row["id"],))
+                self.conn.commit()
+                return True, "Rejected guest removed and reservation deleted.", None
             cursor.execute(
                 """
                 UPDATE reservations
@@ -1158,7 +1164,7 @@ class Database:
             FROM attendees a
             JOIN reservations r ON r.id = a.reservation_id
             WHERE r.event_id = ?
-              AND LOWER(TRIM(r.status)) IN (?, ?, ?, ?, ?, ?)
+              AND LOWER(TRIM(r.status)) IN (?, ?, ?, ?, ?, ?, ?)
               AND (
                     LOWER(TRIM(a.full_name)) = LOWER(TRIM(?))
                     OR (LOWER(TRIM(a.name)) = LOWER(TRIM(?)) AND LOWER(TRIM(a.surname)) = LOWER(TRIM(?)))
@@ -1170,6 +1176,7 @@ class Database:
                 event_id,
                 STATUS_PENDING,
                 STATUS_APPROVED,
+                STATUS_REJECTED,
                 "pending",
                 "pending_payment",
                 "pending_review",
@@ -1182,6 +1189,7 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return False, "Guest not found for selected event.", None
+        normalized_status = (row["status"] or "").strip().lower()
 
         event = self.get_event(row["event_id"])
         if not event:
@@ -1214,6 +1222,10 @@ class Database:
             )
 
         if new_quantity <= 0:
+            if normalized_status == STATUS_REJECTED:
+                cursor.execute("DELETE FROM reservations WHERE id = ?", (row["id"],))
+                self.conn.commit()
+                return True, "Rejected guest removed and reservation deleted.", None
             cursor.execute(
                 """
                 UPDATE reservations

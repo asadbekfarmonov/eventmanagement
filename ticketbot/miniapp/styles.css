@@ -321,6 +321,29 @@ textarea {
   background: linear-gradient(180deg, #132238, #111d31);
 }
 
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.admin-tab {
+  white-space: nowrap;
+  border: 1px solid #345070;
+  background: #122138;
+}
+
+.admin-tab.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(40, 196, 183, 0.22);
+}
+
+.admin-section[hidden] {
+  display: none;
+}
+
 .admin-cards {
   display: grid;
   gap: 8px;

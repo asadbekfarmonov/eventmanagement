@@ -385,6 +385,62 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(updated.quantity, 0)
         self.assertEqual(len(self.db.list_attendees(reservation.id)), 0)
 
+    def test_admin_remove_guest_last_rejected_attendee_hard_deletes_reservation(self):
+        event_id = self._create_event(early_qty=3, t1_qty=0, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Rejected Guest"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        ok_reject, _msg_reject, rejected = self.db.reject_reservation(
+            reservation_id=reservation.id,
+            admin_tg_id=999,
+            admin_note="reject",
+        )
+        self.assertTrue(ok_reject)
+        self.assertEqual(rejected.status, STATUS_REJECTED)
+
+        attendee_id = self.db.list_attendees(reservation.id)[0]["id"]
+        ok_remove, _msg_remove, updated = self.db.admin_remove_guest(attendee_id)
+        self.assertTrue(ok_remove)
+        self.assertIsNone(updated)
+        row = self.db.conn.execute(
+            "SELECT id FROM reservations WHERE id = ?",
+            (reservation.id,),
+        ).fetchone()
+        self.assertIsNone(row)
+
+    def test_admin_remove_guest_rejected_reservation_updates_remaining_rows(self):
+        event_id = self._create_event(early_qty=5, t1_qty=0, t2_qty=0)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=2,
+            girls=0,
+            attendees=["Rejected One", "Rejected Two"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        ok_reject, _msg_reject, rejected = self.db.reject_reservation(
+            reservation_id=reservation.id,
+            admin_tg_id=999,
+            admin_note="reject",
+        )
+        self.assertTrue(ok_reject)
+        self.assertEqual(rejected.status, STATUS_REJECTED)
+
+        first_attendee_id = self.db.list_attendees(reservation.id)[0]["id"]
+        ok_remove, _msg_remove, updated = self.db.admin_remove_guest(first_attendee_id)
+        self.assertTrue(ok_remove)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.status, STATUS_REJECTED)
+        self.assertEqual(updated.quantity, 1)
+        self.assertEqual(len(self.db.list_attendees(reservation.id)), 1)
+
     def test_admin_rename_guest_updates_name_and_surname_columns(self):
         event_id = self._create_event(early_qty=3, t1_qty=0, t2_qty=0)
         reservation = self.db.create_pending_reservation(

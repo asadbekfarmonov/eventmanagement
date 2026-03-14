@@ -27,6 +27,8 @@ const adminEl = {
   refreshAll: document.getElementById('admin-refresh-all'),
   ident: document.getElementById('admin-ident'),
   status: document.getElementById('admin-status'),
+  tabs: Array.from(document.querySelectorAll('.admin-tab')),
+  sections: Array.from(document.querySelectorAll('.admin-section')),
   guestsSearch: document.getElementById('admin-guests-search'),
   guestsSort: document.getElementById('admin-guests-sort'),
   guestsRefresh: document.getElementById('admin-guests-refresh'),
@@ -76,6 +78,7 @@ const state = {
 
 const adminState = {
   ready: false,
+  activeSection: 'events',
   guestsSort: 'newest',
   guestsSearch: '',
   guests: [],
@@ -112,6 +115,19 @@ function setAdminStatus(msg, isError = false) {
   if (!adminEl.status) return;
   adminEl.status.textContent = msg || '';
   adminEl.status.className = isError ? 'hint error' : 'hint';
+}
+
+function setAdminSection(sectionKey) {
+  const key = sectionKey || 'events';
+  adminState.activeSection = key;
+  for (const btn of adminEl.tabs || []) {
+    const tabKey = btn.dataset ? btn.dataset.adminTab : '';
+    btn.classList.toggle('active', tabKey === key);
+  }
+  for (const section of adminEl.sections || []) {
+    const sectionName = section.dataset ? section.dataset.adminSection : '';
+    section.hidden = sectionName !== key;
+  }
 }
 
 function apiErrorText(err, fallback) {
@@ -798,6 +814,7 @@ async function openAdminMode() {
   if (!ok) return;
   adminEl.area.hidden = false;
   adminEl.open.classList.add('active');
+  setAdminSection(adminState.activeSection || 'events');
   await refreshAdminAll();
 }
 
@@ -978,6 +995,14 @@ if (summaryEl) {
 if (adminEl.open) {
   adminEl.open.addEventListener('click', openAdminMode);
 }
+if (adminEl.tabs && adminEl.tabs.length) {
+  for (const tabBtn of adminEl.tabs) {
+    tabBtn.addEventListener('click', () => {
+      const tabKey = tabBtn.dataset ? tabBtn.dataset.adminTab : '';
+      setAdminSection(tabKey || 'events');
+    });
+  }
+}
 if (adminEl.refreshAll) {
   adminEl.refreshAll.addEventListener('click', async () => {
     try {
@@ -1061,6 +1086,7 @@ if (ticketsRefreshEl) {
 }
 
 initTelegram();
+setAdminSection('events');
 rebuildAttendees();
 fetchEvents();
 loadMeAndTickets();

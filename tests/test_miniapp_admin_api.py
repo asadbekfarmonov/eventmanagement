@@ -91,6 +91,14 @@ class MiniAppAdminApiTests(unittest.TestCase):
             self.db.conn.execute("UPDATE reservations SET status = 'pending' WHERE id = ?", (reservation.id,))
             self.db.conn.commit()
             return self.db.get_reservation(reservation.id)
+        if status == "rejected":
+            ok, _msg, rejected = self.db.reject_reservation(
+                reservation.id,
+                admin_tg_id=self.admin_tg_id,
+                admin_note="invalid proof",
+            )
+            self.assertTrue(ok)
+            return rejected
         return reservation
 
     def test_logo_static_file_is_served(self):
@@ -200,6 +208,24 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(remove_resp.status_code, 200, remove_resp.text)
         updated = self.db.get_reservation(reservation.id)
         self.assertEqual(updated.status, "cancelled")
+
+    def test_admin_guest_remove_rejected_hard_deletes_reservation(self):
+        reservation = self._create_reservation("Rejected Guest", status="rejected")
+        attendee_id = self.db.list_attendees(reservation.id)[0]["id"]
+
+        remove_resp = self.client.post(
+            "/api/admin/guest/remove",
+            json={
+                "tg_id": self.admin_tg_id,
+                "attendee_id": attendee_id,
+            },
+        )
+        self.assertEqual(remove_resp.status_code, 200, remove_resp.text)
+        row = self.db.conn.execute(
+            "SELECT id FROM reservations WHERE id = ?",
+            (reservation.id,),
+        ).fetchone()
+        self.assertIsNone(row)
 
     def test_import_xlsx_reads_first_two_columns_and_allows_missing_surname(self):
         self.db.set_event_fields(

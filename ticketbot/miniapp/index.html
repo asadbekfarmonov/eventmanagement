@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260311f">
+  <link rel="stylesheet" href="/static/styles.css?v=20260314b">
 </head>
 <body>
   <div class="bg-shape bg-shape-a"></div>
@@ -94,7 +94,14 @@
       <p id="admin-ident" class="hint"></p>
       <p id="admin-status" class="hint"></p>
 
-      <section class="admin-block">
+      <nav class="admin-tabs" aria-label="Admin sections">
+        <button type="button" class="admin-tab active" data-admin-tab="events">Event Setup</button>
+        <button type="button" class="admin-tab" data-admin-tab="guests">Guests</button>
+        <button type="button" class="admin-tab" data-admin-tab="add_guest">Add Guest</button>
+        <button type="button" class="admin-tab" data-admin-tab="import_export">Import/Export</button>
+      </nav>
+
+      <section class="admin-block admin-section" data-admin-section="events">
         <div class="panel-head">
           <h3>Event Setup</h3>
           <button id="admin-events-refresh" type="button">Reload events</button>
@@ -145,7 +152,7 @@
         </div>
       </section>
 
-      <section class="admin-block">
+      <section class="admin-block admin-section" data-admin-section="add_guest" hidden>
         <h3>Add Guest</h3>
         <div class="grid-2">
           <label>
@@ -169,7 +176,7 @@
         </div>
       </section>
 
-      <section class="admin-block">
+      <section class="admin-block admin-section" data-admin-section="import_export" hidden>
         <h3>Import Guests (Excel)</h3>
         <label>Event<select id="admin-import-event-select"></select></label>
         <label>
@@ -179,9 +186,6 @@
         <div class="admin-actions">
           <button id="admin-import-upload" type="button">Import Guests</button>
         </div>
-      </section>
-
-      <section class="admin-block">
         <h3>Export Guests (Excel)</h3>
         <p class="hint">Export all names and surnames from database.</p>
         <div class="admin-actions">
@@ -189,7 +193,7 @@
         </div>
       </section>
 
-      <section class="admin-block">
+      <section class="admin-block admin-section" data-admin-section="guests" hidden>
         <div class="panel-head">
           <h3>Search Guests</h3>
           <button id="admin-guests-refresh" type="button">Refresh</button>
@@ -216,6 +220,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260311f" defer></script>
+  <script src="/static/app.js?v=20260314b" defer></script>
 </body>
 </html>
