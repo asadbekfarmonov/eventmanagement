@@ -1037,12 +1037,10 @@ async function saveAdminEvent() {
       res = await adminPost('/api/admin/event/create_simple', payload);
       setAdminStatus(res.message || 'Event created.');
     }
-    await loadAdminEvents();
     if (res && res.event && res.event.id) {
       adminState.selectedEventId = Number(res.event.id);
-      adminEl.eventSelect.value = String(res.event.id);
-      fillAdminEventForm(res.event);
     }
+    await loadAdminEvents();
   } catch (err) {
     setAdminStatus(apiErrorText(err, 'Failed to save event.'), true);
   }
