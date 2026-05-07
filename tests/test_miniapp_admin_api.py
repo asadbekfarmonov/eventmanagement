@@ -1,9 +1,12 @@
+import json
 import importlib
 import os
 import tempfile
 import time
 import unittest
 from io import BytesIO
+from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -100,6 +103,56 @@ class MiniAppAdminApiTests(unittest.TestCase):
             self.assertTrue(ok)
             return rejected
         return reservation
+
+    def _book_with_payment(
+        self,
+        *,
+        tg_id=None,
+        event_id=None,
+        boys=1,
+        girls=0,
+        attendees=None,
+        discounted_attendee_indexes=None,
+        repost_files=None,
+        filename="proof.png",
+        content=b"image-bytes",
+        mime="image/png",
+    ):
+        names = attendees or ["John Doe"]
+        files = [
+            (
+                "file",
+                (
+                    filename,
+                    content,
+                    mime,
+                ),
+            )
+        ]
+        for idx, repost_file in (repost_files or {}).items():
+            repost_name, repost_content, repost_mime = repost_file
+            files.append(
+                (
+                    f"repost_file_{idx}",
+                    (
+                        repost_name,
+                        repost_content,
+                        repost_mime,
+                    ),
+                )
+            )
+        return self.client.post(
+            "/api/book_with_payment",
+            data={
+                "tg_id": str(self.user_tg_id if tg_id is None else tg_id),
+                "event_id": str(self.event_id if event_id is None else event_id),
+                "boys": str(boys),
+                "girls": str(girls),
+                "attendees": json.dumps(names),
+                "discounted_attendee_indexes": json.dumps(discounted_attendee_indexes or []),
+            },
+            files=files,
+        )
 
     def test_logo_static_file_is_served(self):
         response = self.client.get("/static/logo.png")
@@ -373,6 +426,170 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413, response.text)
         self.assertIn("Max allowed size", response.json().get("detail", ""))
 
+    def test_book_with_payment_creates_pending_reservation_and_lists_ticket(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "early_qty": 2,
+                "tier1_qty": 5,
+                "tier2_qty": 0,
+            },
+        )
+        response = self._book_with_payment(
+            boys=2,
+            girls=1,
+            attendees=["John Doe", "Jane Doe", "Alex Doe"],
+            content=b"fake-png",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body.get("ok"))
+        self.assertEqual(body.get("status"), "pending_payment_review")
+        code = body.get("code")
+        self.assertTrue(code)
+
+        reservation = self.db.get_reservation_by_code(code)
+        self.assertIsNotNone(reservation)
+        self.assertEqual(reservation.quantity, 3)
+        self.assertEqual(reservation.status, "pending_payment_review")
+        self.assertAlmostEqual(reservation.total_price, 8500.0)
+        self.assertEqual(reservation.payment_file_type, "external")
+        self.assertTrue(reservation.payment_file_id.startswith("https://example.invalid/uploads/"))
+
+        upload_name = Path(urlparse(reservation.payment_file_id).path).name
+        self.assertTrue(upload_name)
+        self.assertTrue(Path(os.environ["UPLOAD_DIR"], upload_name).exists())
+
+        event_after = self.db.get_event(self.event_id)
+        self.assertEqual(event_after.early_bird_qty, 0)
+        self.assertEqual(event_after.regular_tier1_qty, 4)
+
+        attendees = self.db.list_attendees(reservation.id)
+        self.assertEqual([row["ticket_tier"] for row in attendees], ["early", "early", "tier1"])
+
+        tickets_resp = self.client.get(
+            "/api/my_tickets",
+            params={"tg_id": self.user_tg_id},
+        )
+        self.assertEqual(tickets_resp.status_code, 200, tickets_resp.text)
+        items = tickets_resp.json().get("items", [])
+        item = next((x for x in items if x.get("code") == code), None)
+        self.assertIsNotNone(item)
+        self.assertEqual(item["status"], "pending_payment_review")
+        self.assertAlmostEqual(item["total_price"], 8500.0)
+        self.assertEqual(item["attendees"], ["John Doe", "Jane Doe", "Alex Doe"])
+
+    def test_book_with_payment_rejects_non_image_non_pdf_upload(self):
+        response = self._book_with_payment(
+            filename="proof.txt",
+            content=b"not allowed",
+            mime="text/plain",
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Only image or PDF is accepted", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+        self.assertEqual(len(list(Path(os.environ["UPLOAD_DIR"]).glob("*"))), 0)
+
+    def test_book_with_payment_rejects_attendee_name_without_surname(self):
+        response = self._book_with_payment(
+            attendees=["SingleNameOnly"],
+            content=b"fake-png",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Name Surname", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+
+    def test_book_with_payment_requires_existing_user_profile(self):
+        response = self._book_with_payment(
+            tg_id=999999999,
+            content=b"fake-png",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertIn("Run /start in bot", response.json().get("detail", ""))
+
+    def test_book_with_payment_applies_repost_discount_per_attendee(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        response = self._book_with_payment(
+            boys=2,
+            girls=1,
+            attendees=["John Doe", "Jane Doe", "Alex Doe"],
+            discounted_attendee_indexes=[0, 2],
+            repost_files={
+                0: ("repost-0.png", b"repost-zero", "image/png"),
+                2: ("repost-2.jpg", b"repost-two", "image/jpeg"),
+            },
+            content=b"payment-proof",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        code = response.json().get("code")
+        reservation = self.db.get_reservation_by_code(code)
+        self.assertIsNotNone(reservation)
+        self.assertAlmostEqual(reservation.base_total_price, 7500.0)
+        self.assertEqual(reservation.discount_count, 2)
+        self.assertAlmostEqual(reservation.discount_unit_amount, 1000.0)
+        self.assertAlmostEqual(reservation.discount_amount, 2000.0)
+        self.assertAlmostEqual(reservation.total_price, 5500.0)
+
+        attendees = self.db.list_attendees(reservation.id)
+        self.assertEqual([row["repost_discount_applied"] for row in attendees], [1, 0, 1])
+        self.assertTrue(attendees[0]["repost_proof_file_id"].startswith("https://example.invalid/uploads/"))
+        self.assertEqual(attendees[1]["repost_proof_file_id"], "")
+        self.assertTrue(attendees[2]["repost_proof_file_id"].startswith("https://example.invalid/uploads/"))
+
+    def test_book_with_payment_requires_repost_screenshot_for_discounted_attendee(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        response = self._book_with_payment(
+            attendees=["John Doe"],
+            discounted_attendee_indexes=[0],
+            content=b"payment-proof",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Upload repost screenshot", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+
+    def test_book_with_payment_rejects_non_image_repost_upload(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        response = self._book_with_payment(
+            attendees=["John Doe"],
+            discounted_attendee_indexes=[0],
+            repost_files={
+                0: ("repost.pdf", b"%PDF-1.4", "application/pdf"),
+            },
+            content=b"payment-proof",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Only image is accepted", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+
     def test_event_payment_options_are_saved_and_visible_to_guest(self):
         create_resp = self.client.post(
             "/api/admin/event/create_simple",
@@ -389,6 +606,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "tier2_boy": 3000,
                 "tier2_girl": 3000,
                 "tier2_qty": 0,
+                "repost_discount_enabled": True,
+                "repost_discount_amount": 1000,
                 "payment1_title": "Revolut",
                 "payment1_url": "https://pay.example/revolut",
                 "payment2_title": "",
@@ -408,17 +627,49 @@ class MiniAppAdminApiTests(unittest.TestCase):
         event_payload = next((x for x in admin_events.json()["items"] if x["id"] == event_id), None)
         self.assertIsNotNone(event_payload)
         payment = event_payload["payment"]
+        prices = event_payload["prices"]
         self.assertEqual(payment["payment1_title"], "Revolut")
         self.assertEqual(payment["payment1_url"], "https://pay.example/revolut")
+        self.assertEqual(prices["repost_discount_enabled"], 1)
+        self.assertEqual(prices["repost_discount_amount"], 1000)
 
         guest_events = self.client.get("/api/events")
         self.assertEqual(guest_events.status_code, 200, guest_events.text)
         guest_payload = next((x for x in guest_events.json()["items"] if x["id"] == event_id), None)
         self.assertIsNotNone(guest_payload)
+        self.assertEqual(guest_payload["repost_discount_enabled"], 1)
+        self.assertEqual(guest_payload["repost_discount_amount"], 1000)
         option_urls = [opt["url"] for opt in guest_payload.get("payment_options", [])]
         self.assertIn("https://pay.example/revolut", option_urls)
         self.assertIn("https://pay.example/wise", option_urls)
         self.assertNotIn("", option_urls)
+
+    def test_event_repost_discount_fields_can_be_updated_via_admin_api(self):
+        update_resp = self.client.post(
+            "/api/admin/event/update",
+            json={
+                "tg_id": self.admin_tg_id,
+                "event_id": self.event_id,
+                "updates": {
+                    "repost_discount_enabled": True,
+                    "repost_discount_amount": 1750,
+                },
+            },
+        )
+        self.assertEqual(update_resp.status_code, 200, update_resp.text)
+        event = self.db.get_event(self.event_id)
+        self.assertEqual(event.repost_discount_enabled, 1)
+        self.assertEqual(event.repost_discount_amount, 1750.0)
+
+        admin_events = self.client.get(
+            "/api/admin/events",
+            params={"tg_id": self.admin_tg_id},
+        )
+        self.assertEqual(admin_events.status_code, 200, admin_events.text)
+        event_payload = next((x for x in admin_events.json()["items"] if x["id"] == self.event_id), None)
+        self.assertIsNotNone(event_payload)
+        self.assertEqual(event_payload["prices"]["repost_discount_enabled"], 1)
+        self.assertEqual(event_payload["prices"]["repost_discount_amount"], 1750.0)
 
     def test_event_payment_url_requires_https(self):
         bad_create = self.client.post(
@@ -457,12 +708,21 @@ class MiniAppAdminApiTests(unittest.TestCase):
     def test_cleanup_upload_storage_removes_orphan_and_old_reviewed_keeps_pending(self):
         upload_dir = os.environ["UPLOAD_DIR"]
         os.makedirs(upload_dir, exist_ok=True)
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
 
         pending_path = os.path.join(upload_dir, "pending.jpg")
         reviewed_path = os.path.join(upload_dir, "reviewed.jpg")
+        repost_pending_path = os.path.join(upload_dir, "repost-pending.jpg")
+        repost_reviewed_path = os.path.join(upload_dir, "repost-reviewed.jpg")
         orphan_path = os.path.join(upload_dir, "orphan.jpg")
 
-        for file_path in (pending_path, reviewed_path, orphan_path):
+        for file_path in (pending_path, reviewed_path, repost_pending_path, repost_reviewed_path, orphan_path):
             with open(file_path, "wb") as fh:
                 fh.write(b"test")
 
@@ -474,6 +734,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
             attendees=["Pending User"],
             payment_file_id="/uploads/pending.jpg",
             payment_file_type="external",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("/uploads/repost-pending.jpg", "external")},
         )
         reviewed_res = self.db.create_pending_reservation(
             user_id=self.user_id,
@@ -483,19 +745,23 @@ class MiniAppAdminApiTests(unittest.TestCase):
             attendees=["Reviewed User"],
             payment_file_id="/uploads/reviewed.jpg",
             payment_file_type="external",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("/uploads/repost-reviewed.jpg", "external")},
         )
         ok, _msg, _approved = self.db.approve_reservation(reviewed_res.id, self.admin_tg_id)
         self.assertTrue(ok)
 
         old_ts = time.time() - (8 * 24 * 60 * 60)
-        for file_path in (pending_path, reviewed_path, orphan_path):
+        for file_path in (pending_path, reviewed_path, repost_pending_path, repost_reviewed_path, orphan_path):
             os.utime(file_path, (old_ts, old_ts))
 
         report = self.server.cleanup_upload_storage(now_ts=time.time())
-        self.assertGreaterEqual(report.get("deleted", 0), 2)
+        self.assertGreaterEqual(report.get("deleted", 0), 3)
 
         self.assertTrue(os.path.exists(pending_path), "Pending proof should not be deleted.")
+        self.assertTrue(os.path.exists(repost_pending_path), "Pending repost proof should not be deleted.")
         self.assertFalse(os.path.exists(reviewed_path), "Old reviewed proof should be deleted.")
+        self.assertFalse(os.path.exists(repost_reviewed_path), "Old reviewed repost proof should be deleted.")
         self.assertFalse(os.path.exists(orphan_path), "Orphan file should be deleted.")
         self.assertIsNotNone(pending_res)
 

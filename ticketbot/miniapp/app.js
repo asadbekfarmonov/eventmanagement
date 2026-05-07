@@ -63,6 +63,8 @@ const adminEl = {
   t2Boy: document.getElementById('admin-ev-t2-boy'),
   t2Girl: document.getElementById('admin-ev-t2-girl'),
   t2Qty: document.getElementById('admin-ev-t2-qty'),
+  repostEnabled: document.getElementById('admin-ev-repost-enabled'),
+  repostAmount: document.getElementById('admin-ev-repost-amount'),
 };
 
 const state = {
@@ -153,6 +155,14 @@ function attendeeEntries() {
   }));
 }
 
+function attendeeDiscountSelections() {
+  return attendeeRows().map((row, index) => ({
+    index,
+    checked: Boolean(row.querySelector('input[data-part="repost-check"]')?.checked),
+    file: row.querySelector('input[data-part="repost-file"]')?.files?.[0] || null,
+  }));
+}
+
 function attendeeFullNames() {
   return attendeeEntries().map((entry) => `${entry.first} ${entry.surname}`.trim());
 }
@@ -163,6 +173,10 @@ function selectedEvent() {
 
 function hasPaymentProof() {
   return Boolean(paymentProofEl && paymentProofEl.files && paymentProofEl.files[0]);
+}
+
+function repostDiscountEnabled(event) {
+  return Boolean(event && Number(event.repost_discount_enabled || 0) && Number(event.repost_discount_amount || 0) > 0);
 }
 
 function paymentOptionsHtml(event) {
@@ -225,9 +239,18 @@ function renderSummary() {
   const safeCaption = multilineHtml(event.caption || '');
 
   const rows = attendeeEntries();
+  const repostSelections = attendeeDiscountSelections();
+  const repostEligible = repostDiscountEnabled(event);
+  const discountUnitAmount = repostEligible ? Number(event.repost_discount_amount || 0) : 0;
+  const selectedDiscounts = repostEligible ? repostSelections.filter((item) => item.checked) : [];
+  const missingRepostProofs = selectedDiscounts.filter((item) => !item.file);
+  const discountAmount = selectedDiscounts.length * discountUnitAmount;
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
+    const repostHint = repostEligible
+      ? `<div class="hint">Repost discount available: ${money(discountUnitAmount)} per attendee.</div>`
+      : '';
     summaryEl.innerHTML = [
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
@@ -236,6 +259,7 @@ function renderSummary() {
       '<div>Girls: 0</div>',
       '<div><strong>Total: 0.00</strong></div>',
       '<div class="hint">Attendees required: 0</div>',
+      repostHint,
       paymentSection,
     ].join('');
     submitBtn.disabled = true;
@@ -279,6 +303,21 @@ function renderSummary() {
     const girlsPart = `Girls: ${row.girls} x ${money(row.girl_price)}`;
     return `<div>${row.tier_name}: ${boysPart} | ${girlsPart} | Subtotal: ${money(row.subtotal)}</div>`;
   });
+  const finalTotal = Math.max(0, Number(quote.total_price || 0) - discountAmount);
+  const repostHint = repostEligible
+    ? `<div class="hint">Repost discount available: ${money(discountUnitAmount)} per attendee.</div>`
+    : '';
+  const repostSummary = repostEligible
+    ? [
+        repostHint,
+        `<div>Base total: ${money(quote.total_price)}</div>`,
+        `<div>Repost discount: ${selectedDiscounts.length} x ${money(discountUnitAmount)} = ${money(discountAmount)}</div>`,
+        `<div><strong>Final total: ${money(finalTotal)}</strong></div>`,
+      ]
+    : [`<div><strong>Total: ${money(quote.total_price)}</strong></div>`];
+  const repostMissingHint = repostEligible && missingRepostProofs.length
+    ? `<div class="hint error">Upload repost screenshot for each attendee marked for discount.</div>`
+    : '';
 
   const paymentSection = paymentOptionsHtml(event);
   summaryEl.innerHTML = [
@@ -286,11 +325,12 @@ function renderSummary() {
     `<div>${safeCaption}</div>`,
     '<hr>',
     ...breakdownHtml,
-    `<div><strong>Total: ${money(quote.total_price)}</strong></div>`,
+    ...repostSummary,
     `<div class="hint">Attendees required: ${qty}</div>`,
+    repostMissingHint,
     paymentSection,
   ].join('');
-  submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof());
+  submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof() && missingRepostProofs.length === 0);
 }
 
 async function refreshQuote() {
@@ -336,7 +376,14 @@ async function refreshQuote() {
 
 function rebuildAttendees() {
   const qty = totalCount();
-  const prev = attendeeEntries();
+  const prev = attendeeRows().map((row) => ({
+    first: (row.querySelector('input[data-part="first"]')?.value || '').trim(),
+    surname: (row.querySelector('input[data-part="surname"]')?.value || '').trim(),
+    repostChecked: Boolean(row.querySelector('input[data-part="repost-check"]')?.checked),
+  }));
+  const event = selectedEvent();
+  const repostEligible = repostDiscountEnabled(event);
+  const discountUnitAmount = repostEligible ? Number(event.repost_discount_amount || 0) : 0;
   attendeesListEl.innerHTML = '';
 
   for (let i = 0; i < qty; i += 1) {
@@ -373,6 +420,43 @@ function rebuildAttendees() {
     surnameWrap.appendChild(surnameInput);
     row.appendChild(firstWrap);
     row.appendChild(surnameWrap);
+
+    if (repostEligible) {
+      const repostWrap = document.createElement('div');
+      repostWrap.className = 'attendee-repost';
+
+      const repostToggle = document.createElement('label');
+      const repostCheck = document.createElement('input');
+      repostCheck.type = 'checkbox';
+      repostCheck.dataset.part = 'repost-check';
+      repostCheck.checked = Boolean(existing.repostChecked);
+      repostToggle.appendChild(repostCheck);
+      repostToggle.append(` Reposted on Instagram for ${money(discountUnitAmount)} discount`);
+
+      const repostFileWrap = document.createElement('label');
+      repostFileWrap.textContent = 'Upload repost screenshot';
+      repostFileWrap.hidden = !repostCheck.checked;
+      repostFileWrap.dataset.part = 'repost-file-wrap';
+      const repostFile = document.createElement('input');
+      repostFile.type = 'file';
+      repostFile.accept = 'image/png,image/jpeg';
+      repostFile.dataset.part = 'repost-file';
+      repostFileWrap.appendChild(repostFile);
+
+      repostCheck.addEventListener('change', () => {
+        repostFileWrap.hidden = !repostCheck.checked;
+        if (!repostCheck.checked) {
+          repostFile.value = '';
+        }
+        renderSummary();
+      });
+      repostFile.addEventListener('change', renderSummary);
+
+      repostWrap.appendChild(repostToggle);
+      repostWrap.appendChild(repostFileWrap);
+      row.appendChild(repostWrap);
+    }
+
     attendeesListEl.appendChild(row);
   }
 
@@ -390,6 +474,7 @@ function selectEvent(eventId) {
     card.classList.toggle('active', Number(card.dataset.id) === eventId);
   }
   setStatus('');
+  rebuildAttendees();
   refreshQuote();
 }
 
@@ -436,10 +521,15 @@ function getPayload() {
   if (!event) return null;
   const attendees = attendeeFullNames();
   const attendeeParts = attendeeEntries();
+  const discountSelections = attendeeDiscountSelections();
   const qty = totalCount();
-  const total = state.quote && Number(state.quote.event_id) === Number(event.id)
+  const baseTotal = state.quote && Number(state.quote.event_id) === Number(event.id)
     ? Number(state.quote.total_price || 0)
     : 0;
+  const discountUnitAmount = repostDiscountEnabled(event) ? Number(event.repost_discount_amount || 0) : 0;
+  const discountedAttendeeIndexes = discountSelections.filter((item) => item.checked).map((item) => item.index);
+  const discountAmount = discountedAttendeeIndexes.length * discountUnitAmount;
+  const total = Math.max(0, baseTotal - discountAmount);
 
   return {
     type: 'booking_draft_v1',
@@ -448,10 +538,14 @@ function getPayload() {
     girls: state.girls,
     attendees,
     attendee_parts: attendeeParts,
+    discounted_attendee_indexes: discountedAttendeeIndexes,
+    discount_unit_amount: discountUnitAmount,
+    discount_amount: discountAmount,
     tier_key: event.tier ? event.tier.key : '',
     tier_name: event.tier ? event.tier.name : '',
     boy_price: event.tier ? Number(event.tier.boy_price || 0) : 0,
     girl_price: event.tier ? Number(event.tier.girl_price || 0) : 0,
+    base_total_price: baseTotal,
     total_price: total,
     quantity: qty,
   };
@@ -489,6 +583,12 @@ async function submitDraft() {
     setStatus('Cannot detect Telegram user id in Mini App.', true);
     return;
   }
+  const discountSelections = attendeeDiscountSelections();
+  const missingRepostProofs = discountSelections.filter((item) => item.checked && !item.file);
+  if (missingRepostProofs.length) {
+    setStatus('Upload repost screenshot for each attendee marked for discount.', true);
+    return;
+  }
   const paymentFile = paymentProofEl && paymentProofEl.files ? paymentProofEl.files[0] : null;
   if (!paymentFile) {
     setStatus('Upload payment proof first.', true);
@@ -501,7 +601,13 @@ async function submitDraft() {
   formData.set('boys', String(payload.boys));
   formData.set('girls', String(payload.girls));
   formData.set('attendees', JSON.stringify(payload.attendees));
+  formData.set('discounted_attendee_indexes', JSON.stringify(payload.discounted_attendee_indexes || []));
   formData.set('file', paymentFile);
+  for (const item of discountSelections) {
+    if (item.checked && item.file) {
+      formData.set(`repost_file_${item.index}`, item.file);
+    }
+  }
 
   submitBtn.disabled = true;
   setStatus('Submitting booking...');
@@ -638,6 +744,8 @@ function fillAdminEventForm(event) {
   adminEl.t2Boy.value = p.tier2_boy ?? 0;
   adminEl.t2Girl.value = p.tier2_girl ?? 0;
   adminEl.t2Qty.value = p.tier2_qty ?? 0;
+  adminEl.repostEnabled.value = Number(p.repost_discount_enabled || 0) ? '1' : '0';
+  adminEl.repostAmount.value = p.repost_discount_amount ?? 0;
 }
 
 function clearAdminEventForm() {
@@ -658,6 +766,8 @@ function clearAdminEventForm() {
   adminEl.t2Boy.value = 0;
   adminEl.t2Girl.value = 0;
   adminEl.t2Qty.value = 0;
+  adminEl.repostEnabled.value = '0';
+  adminEl.repostAmount.value = 0;
 }
 
 function renderAdminGuests() {
@@ -906,6 +1016,8 @@ async function saveAdminEvent() {
     tier2_boy: adminEl.t2Boy.value,
     tier2_girl: adminEl.t2Girl.value,
     tier2_qty: adminEl.t2Qty.value,
+    repost_discount_enabled: adminEl.repostEnabled.value === '1',
+    repost_discount_amount: adminEl.repostAmount.value,
   };
 
   if (!title) {

@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import json
 import uuid
 import urllib.request
@@ -12,11 +12,12 @@ from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ticketbot.database import Database, STATUS_PENDING
 
@@ -82,6 +83,52 @@ def _extract_upload_filename(payment_file_id: str) -> Optional[str]:
     return filename
 
 
+def _build_upload_url(stored_name: str) -> str:
+    proof_url = f"/uploads/{stored_name}"
+    if WEB_APP_URL:
+        proof_url = f"{WEB_APP_URL}{proof_url}"
+    return proof_url
+
+
+def _is_upload_file(value: Any) -> bool:
+    return isinstance(value, (UploadFile, StarletteUploadFile))
+
+
+async def _store_upload_file(file: StarletteUploadFile, *, label: str, allow_pdf: bool) -> Tuple[str, str]:
+    mime = (file.content_type or "").lower()
+    if allow_pdf:
+        if not (mime.startswith("image/") or mime == "application/pdf"):
+            raise HTTPException(status_code=400, detail=f"Only image or PDF is accepted for {label}.")
+    elif not mime.startswith("image/"):
+        raise HTTPException(status_code=400, detail=f"Only image is accepted for {label}.")
+
+    if mime == "application/pdf":
+        suffix = ".pdf"
+    elif mime == "image/png":
+        suffix = ".png"
+    else:
+        suffix = ".jpg"
+
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    stored_path = Path(UPLOAD_DIR) / stored_name
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"Uploaded {label} is empty.")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large. Max allowed size is {UPLOAD_MAX_MB:.1f} MB.",
+            )
+    finally:
+        await file.close()
+    try:
+        stored_path.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail=f"Upload storage error: {exc}") from exc
+    return _build_upload_url(stored_name), "external"
+
+
 def _pending_status(status: str) -> bool:
     normalized = (status or "").strip().lower()
     return normalized in {
@@ -101,7 +148,7 @@ def cleanup_upload_storage(now_ts: Optional[float] = None) -> Dict[str, int]:
 
     referenced_any = set()
     referenced_pending = set()
-    for row in db.list_external_payment_files():
+    for row in [*db.list_external_payment_files(), *db.list_external_repost_files()]:
         filename = _extract_upload_filename(row["payment_file_id"])
         if not filename:
             continue
@@ -187,6 +234,8 @@ def _event_payload(event) -> Dict[str, Any]:
         "location": event.location,
         "caption": event.caption,
         "photo_file_id": event.photo_file_id,
+        "repost_discount_enabled": event.repost_discount_enabled,
+        "repost_discount_amount": event.repost_discount_amount,
         "tier": tier,
         "payment_options": payment_options,
         "payment": {
@@ -232,6 +281,13 @@ def _notify_admins_pending_from_miniapp(reservation) -> None:
     user = db.get_user_by_id(reservation.user_id)
     attendees = db.list_attendees(reservation.id)
     attendee_lines = "\n".join([f"- {row['full_name']}" for row in attendees]) if attendees else "-"
+    repost_lines = "\n".join(
+        [
+            f"- {row['full_name']}: {row['repost_proof_file_id']}"
+            for row in attendees
+            if int(row["repost_discount_applied"] or 0) == 1 and (row["repost_proof_file_id"] or "").strip()
+        ]
+    ) or "-"
     event_title = event.title if event else f"Event #{reservation.event_id}"
     tier_label = _tier_label(reservation.ticket_type)
     buyer = "Unknown"
@@ -244,10 +300,13 @@ def _notify_admins_pending_from_miniapp(reservation) -> None:
         f"Event: {event_title}\n"
         f"Tier: {tier_label}\n"
         f"Boys: {reservation.boys} | Girls: {reservation.girls}\n"
-        f"Total: {reservation.total_price:.2f}\n"
+        f"Base total: {reservation.base_total_price:.2f}\n"
+        f"Discount: {reservation.discount_count} x {reservation.discount_unit_amount:.2f} = {reservation.discount_amount:.2f}\n"
+        f"Final total: {reservation.total_price:.2f}\n"
         f"Buyer: {buyer}\n\n"
         f"Attendees:\n{attendee_lines}\n\n"
-        f"Payment proof: {reservation.payment_file_id}"
+        f"Payment proof: {reservation.payment_file_id}\n\n"
+        f"Repost proofs:\n{repost_lines}"
     )
     buttons = {
         "inline_keyboard": [
@@ -337,6 +396,8 @@ class AdminEventCreateSimpleRequest(BaseModel):
     tier2_boy: float = Field(ge=0)
     tier2_girl: float = Field(ge=0)
     tier2_qty: int = Field(ge=0)
+    repost_discount_enabled: bool = False
+    repost_discount_amount: float = Field(default=0, ge=0)
     payment1_title: str = ""
     payment1_url: str = ""
     payment2_title: str = ""
@@ -487,73 +548,102 @@ def my_tickets(tg_id: int, limit: int = 20) -> Dict[str, Any]:
 
 
 @app.post("/api/book_with_payment")
-async def book_with_payment(
-    tg_id: int = Form(...),
-    event_id: int = Form(...),
-    boys: int = Form(...),
-    girls: int = Form(...),
-    attendees: str = Form(...),
-    file: UploadFile = File(...),
-) -> Dict[str, Any]:
+async def book_with_payment(request: Request) -> Dict[str, Any]:
     _maybe_run_upload_cleanup()
-    user = db.get_user(tg_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
-
+    form = await request.form()
+    upload_values = [value for _, value in form.multi_items() if _is_upload_file(value)]
     try:
-        attendees_list = json.loads(attendees)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="attendees must be valid JSON list.") from exc
-    if not isinstance(attendees_list, list):
-        raise HTTPException(status_code=400, detail="attendees must be a list.")
-    normalized_attendees = [str(x).strip() for x in attendees_list]
-    if any(len(name.split()) < 2 for name in normalized_attendees):
-        raise HTTPException(status_code=400, detail='Each attendee must be in format "Name Surname".')
+        try:
+            tg_id = int(str(form.get("tg_id", "")).strip())
+            event_id = int(str(form.get("event_id", "")).strip())
+            boys = int(str(form.get("boys", "")).strip())
+            girls = int(str(form.get("girls", "")).strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="tg_id, event_id, boys, and girls must be integers.") from exc
+        attendees = str(form.get("attendees", ""))
+        payment_file = form.get("file")
+        if not _is_upload_file(payment_file):
+            raise HTTPException(status_code=400, detail="Payment proof file is required.")
 
-    mime = (file.content_type or "").lower()
-    if not (mime.startswith("image/") or mime == "application/pdf"):
-        raise HTTPException(status_code=400, detail="Only image or PDF is accepted.")
+        user = db.get_user(tg_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
 
-    suffix = ".pdf" if mime == "application/pdf" else ".jpg"
-    stored_name = f"{uuid.uuid4().hex}{suffix}"
-    stored_path = Path(UPLOAD_DIR) / stored_name
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File is too large. Max allowed size is {UPLOAD_MAX_MB:.1f} MB.",
+        try:
+            attendees_list = json.loads(attendees)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="attendees must be valid JSON list.") from exc
+        if not isinstance(attendees_list, list):
+            raise HTTPException(status_code=400, detail="attendees must be a list.")
+        normalized_attendees = [str(x).strip() for x in attendees_list]
+        if any(len(name.split()) < 2 for name in normalized_attendees):
+            raise HTTPException(status_code=400, detail='Each attendee must be in format "Name Surname".')
+
+        event = db.get_event(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        discounted_indexes_raw = str(form.get("discounted_attendee_indexes", "[]"))
+        try:
+            discounted_indexes_payload = json.loads(discounted_indexes_raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="discounted_attendee_indexes must be valid JSON list.") from exc
+        if not isinstance(discounted_indexes_payload, list):
+            raise HTTPException(status_code=400, detail="discounted_attendee_indexes must be a list.")
+        try:
+            discounted_indexes = sorted({int(idx) for idx in discounted_indexes_payload})
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="discounted_attendee_indexes must contain integers.") from exc
+        if any(idx < 0 or idx >= len(normalized_attendees) for idx in discounted_indexes):
+            raise HTTPException(status_code=400, detail="Discounted attendee indexes are out of range.")
+        if discounted_indexes and not bool(event.repost_discount_enabled):
+            raise HTTPException(status_code=400, detail="Repost discount is not enabled for this event.")
+
+        repost_proofs_by_index: Dict[int, Tuple[str, str]] = {}
+        for idx in discounted_indexes:
+            repost_file = form.get(f"repost_file_{idx}")
+            if not _is_upload_file(repost_file):
+                raise HTTPException(status_code=400, detail="Upload repost screenshot for each selected attendee.")
+            repost_proofs_by_index[idx] = await _store_upload_file(
+                repost_file,
+                label=f"repost screenshot for attendee #{idx + 1}",
+                allow_pdf=False,
+            )
+
+        proof_url, proof_type = await _store_upload_file(
+            payment_file,
+            label="payment proof",
+            allow_pdf=True,
         )
-    try:
-        stored_path.write_bytes(content)
-    except OSError as exc:
-        raise HTTPException(status_code=507, detail=f"Upload storage error: {exc}") from exc
 
-    proof_url = f"/uploads/{stored_name}"
-    if WEB_APP_URL:
-        proof_url = f"{WEB_APP_URL}{proof_url}"
+        try:
+            reservation = db.create_pending_reservation(
+                user_id=user.id,
+                event_id=int(event_id),
+                boys=int(boys),
+                girls=int(girls),
+                attendees=normalized_attendees,
+                payment_file_id=proof_url,
+                payment_file_type=proof_type,
+                discounted_attendee_indexes=discounted_indexes,
+                repost_proofs_by_index=repost_proofs_by_index,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    try:
-        reservation = db.create_pending_reservation(
-            user_id=user.id,
-            event_id=int(event_id),
-            boys=int(boys),
-            girls=int(girls),
-            attendees=normalized_attendees,
-            payment_file_id=proof_url,
-            payment_file_type="external",
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    _notify_admins_pending_from_miniapp(reservation)
-    _notify_user_pending_from_miniapp(reservation, tg_id)
-    return {
-        "ok": True,
-        "code": reservation.code,
-        "status": reservation.status,
-    }
+        _notify_admins_pending_from_miniapp(reservation)
+        _notify_user_pending_from_miniapp(reservation, tg_id)
+        return {
+            "ok": True,
+            "code": reservation.code,
+            "status": reservation.status,
+        }
+    finally:
+        for upload in upload_values:
+            try:
+                await upload.close()
+            except Exception:
+                continue
 
 
 @app.post("/api/quote")
@@ -610,6 +700,8 @@ def admin_events(tg_id: int) -> Dict[str, Any]:
             "tier2_boy": event.regular_tier2_price,
             "tier2_girl": event.regular_tier2_price_girl,
             "tier2_qty": event.regular_tier2_qty,
+            "repost_discount_enabled": event.repost_discount_enabled,
+            "repost_discount_amount": event.repost_discount_amount,
         }
         items.append(payload)
     return {"items": items}
@@ -818,6 +910,8 @@ def admin_event_create_simple(payload: AdminEventCreateSimpleRequest) -> Dict[st
         tier2_boy_price=float(payload.tier2_boy),
         tier2_girl_price=float(payload.tier2_girl),
         tier2_qty=int(payload.tier2_qty),
+        repost_discount_enabled=bool(payload.repost_discount_enabled),
+        repost_discount_amount=float(payload.repost_discount_amount),
         payment1_title=(payload.payment1_title or "").strip(),
         payment1_url=(payload.payment1_url or "").strip(),
         payment2_title=(payload.payment2_title or "").strip(),

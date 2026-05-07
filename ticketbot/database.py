@@ -64,6 +64,8 @@ class Database:
                 regular_tier2_price_girl REAL NOT NULL DEFAULT 0,
                 regular_tier2_qty INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'open',
+                repost_discount_enabled INTEGER NOT NULL DEFAULT 0,
+                repost_discount_amount REAL NOT NULL DEFAULT 0,
                 payment1_title TEXT NOT NULL DEFAULT '',
                 payment1_url TEXT NOT NULL DEFAULT '',
                 payment2_title TEXT NOT NULL DEFAULT '',
@@ -83,6 +85,10 @@ class Database:
                 ticket_type TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 total_price REAL NOT NULL,
+                base_total_price REAL NOT NULL DEFAULT 0,
+                discount_count INTEGER NOT NULL DEFAULT 0,
+                discount_unit_amount REAL NOT NULL DEFAULT 0,
+                discount_amount REAL NOT NULL DEFAULT 0,
                 boys INTEGER NOT NULL,
                 girls INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending_payment_review',
@@ -106,6 +112,9 @@ class Database:
                 name TEXT NOT NULL,
                 surname TEXT NOT NULL,
                 full_name TEXT NOT NULL DEFAULT '',
+                repost_discount_applied INTEGER NOT NULL DEFAULT 0,
+                repost_proof_file_id TEXT NOT NULL DEFAULT '',
+                repost_proof_file_type TEXT NOT NULL DEFAULT '',
                 ticket_tier TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'reserved',
                 FOREIGN KEY (reservation_id) REFERENCES reservations(id)
@@ -143,6 +152,10 @@ class Database:
         if "regular_tier2_price_girl" not in event_cols:
             cursor.execute("ALTER TABLE events ADD COLUMN regular_tier2_price_girl REAL NOT NULL DEFAULT 0")
             cursor.execute("UPDATE events SET regular_tier2_price_girl = regular_tier2_price")
+        if "repost_discount_enabled" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN repost_discount_enabled INTEGER NOT NULL DEFAULT 0")
+        if "repost_discount_amount" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN repost_discount_amount REAL NOT NULL DEFAULT 0")
         if "payment1_title" not in event_cols:
             cursor.execute("ALTER TABLE events ADD COLUMN payment1_title TEXT NOT NULL DEFAULT ''")
         if "payment1_url" not in event_cols:
@@ -161,6 +174,15 @@ class Database:
             cursor.execute("ALTER TABLE reservations ADD COLUMN payment_file_id TEXT NOT NULL DEFAULT ''")
         if "payment_file_type" not in reservation_cols:
             cursor.execute("ALTER TABLE reservations ADD COLUMN payment_file_type TEXT NOT NULL DEFAULT ''")
+        if "base_total_price" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN base_total_price REAL NOT NULL DEFAULT 0")
+            cursor.execute("UPDATE reservations SET base_total_price = total_price WHERE base_total_price = 0")
+        if "discount_count" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN discount_count INTEGER NOT NULL DEFAULT 0")
+        if "discount_unit_amount" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN discount_unit_amount REAL NOT NULL DEFAULT 0")
+        if "discount_amount" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0")
         if "admin_note" not in reservation_cols:
             cursor.execute("ALTER TABLE reservations ADD COLUMN admin_note TEXT NOT NULL DEFAULT ''")
         if "reviewed_at" not in reservation_cols:
@@ -177,6 +199,12 @@ class Database:
             cursor.execute("ALTER TABLE attendees ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
         if "gender" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN gender TEXT NOT NULL DEFAULT 'unknown'")
+        if "repost_discount_applied" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN repost_discount_applied INTEGER NOT NULL DEFAULT 0")
+        if "repost_proof_file_id" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN repost_proof_file_id TEXT NOT NULL DEFAULT ''")
+        if "repost_proof_file_type" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN repost_proof_file_type TEXT NOT NULL DEFAULT ''")
         if "ticket_tier" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN ticket_tier TEXT NOT NULL DEFAULT ''")
         cursor.execute(
@@ -497,7 +525,7 @@ class Database:
                    early_bird_price, early_bird_price_girl, early_bird_qty,
                    regular_tier1_price, regular_tier1_price_girl, regular_tier1_qty,
                    regular_tier2_price, regular_tier2_price_girl, regular_tier2_qty,
-                   status,
+                   status, repost_discount_enabled, repost_discount_amount,
                    payment1_title, payment1_url,
                    payment2_title, payment2_url,
                    payment3_title, payment3_url
@@ -516,7 +544,7 @@ class Database:
                    early_bird_price, early_bird_price_girl, early_bird_qty,
                    regular_tier1_price, regular_tier1_price_girl, regular_tier1_qty,
                    regular_tier2_price, regular_tier2_price_girl, regular_tier2_qty,
-                   status,
+                   status, repost_discount_enabled, repost_discount_amount,
                    payment1_title, payment1_url,
                    payment2_title, payment2_url,
                    payment3_title, payment3_url
@@ -544,6 +572,8 @@ class Database:
         tier2_boy_price: float,
         tier2_girl_price: float,
         tier2_qty: int,
+        repost_discount_enabled: bool = False,
+        repost_discount_amount: float = 0.0,
         payment1_title: str = "",
         payment1_url: str = "",
         payment2_title: str = "",
@@ -568,6 +598,8 @@ class Database:
             "regular_tier2_price_girl": tier2_girl_price,
             "regular_tier2_qty": tier2_qty,
             "status": "open",
+            "repost_discount_enabled": 1 if repost_discount_enabled else 0,
+            "repost_discount_amount": float(repost_discount_amount),
             "payment1_title": (payment1_title or "").strip(),
             "payment1_url": (payment1_url or "").strip(),
             "payment2_title": (payment2_title or "").strip(),
@@ -616,6 +648,8 @@ class Database:
         attendees: List[str],
         payment_file_id: str,
         payment_file_type: str,
+        discounted_attendee_indexes: Optional[List[int]] = None,
+        repost_proofs_by_index: Optional[Dict[int, Tuple[str, str]]] = None,
     ) -> Reservation:
         event = self.get_event(event_id)
         if not event:
@@ -625,8 +659,19 @@ class Database:
         quantity = int(plan["quantity"])
         if len(attendees) != quantity:
             raise ValueError("Attendee count does not match boys + girls")
-        total_price = float(plan["total_price"])
+        discounted_indexes = sorted({int(idx) for idx in (discounted_attendee_indexes or [])})
+        if any(idx < 0 or idx >= quantity for idx in discounted_indexes):
+            raise ValueError("Discounted attendee indexes are out of range")
+        discount_requested = len(discounted_indexes) > 0
+        if discount_requested and not bool(event.repost_discount_enabled):
+            raise ValueError("Repost discount is not enabled for this event")
+        discount_unit_amount = float(event.repost_discount_amount or 0.0) if discount_requested else 0.0
+        discount_count = len(discounted_indexes)
+        discount_amount = discount_count * discount_unit_amount
+        base_total_price = float(plan["total_price"])
+        total_price = max(0.0, base_total_price - discount_amount)
         code = f"R{event_id}-{uuid.uuid4().hex[:8].upper()}"
+        repost_proofs = repost_proofs_by_index or {}
 
         cursor = self.conn.cursor()
         reservation_cols = self._table_columns("reservations")
@@ -638,6 +683,10 @@ class Database:
             "ticket_type": plan["primary_tier_key"],
             "quantity": quantity,
             "total_price": total_price,
+            "base_total_price": base_total_price,
+            "discount_count": discount_count,
+            "discount_unit_amount": discount_unit_amount,
+            "discount_amount": discount_amount,
             "boys": boys,
             "girls": girls,
             "status": STATUS_PENDING,
@@ -678,12 +727,30 @@ class Database:
             attendee_gender = attendee_plan["gender"]
             attendee_tier = attendee_plan["tier_key"]
             first_name, surname = self._name_parts("", "", full_name)
+            repost_discount_applied = 1 if attendee_index in discounted_indexes else 0
+            repost_proof_file_id = ""
+            repost_proof_file_type = ""
+            if repost_discount_applied:
+                repost_proof_file_id, repost_proof_file_type = repost_proofs.get(attendee_index, ("", ""))
             cursor.execute(
                 """
-                INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO attendees (
+                    reservation_id, name, surname, full_name, gender,
+                    repost_discount_applied, repost_proof_file_id, repost_proof_file_type, ticket_tier
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (reservation_id, first_name, surname, full_name, attendee_gender, attendee_tier),
+                (
+                    reservation_id,
+                    first_name,
+                    surname,
+                    full_name,
+                    attendee_gender,
+                    repost_discount_applied,
+                    repost_proof_file_id,
+                    repost_proof_file_type,
+                    attendee_tier,
+                ),
             )
 
         hold_counts = plan["hold_counts"]
@@ -705,7 +772,8 @@ class Database:
         cursor.execute(
             """
             SELECT id, code, user_id, event_id, ticket_type, quantity,
-                   total_price, boys, girls, status, created_at,
+                   total_price, base_total_price, discount_count, discount_unit_amount, discount_amount,
+                   boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
                    reviewed_at, reviewed_by_tg_id, hold_applied
             FROM reservations
@@ -721,7 +789,8 @@ class Database:
         cursor.execute(
             """
             SELECT id, code, user_id, event_id, ticket_type, quantity,
-                   total_price, boys, girls, status, created_at,
+                   total_price, base_total_price, discount_count, discount_unit_amount, discount_amount,
+                   boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
                    reviewed_at, reviewed_by_tg_id, hold_applied
             FROM reservations
@@ -737,7 +806,8 @@ class Database:
         cursor.execute(
             """
             SELECT id, code, user_id, event_id, ticket_type, quantity,
-                   total_price, boys, girls, status, created_at,
+                   total_price, base_total_price, discount_count, discount_unit_amount, discount_amount,
+                   boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
                    reviewed_at, reviewed_by_tg_id, hold_applied
             FROM reservations
@@ -751,7 +821,14 @@ class Database:
     def list_attendees(self, reservation_id: int) -> List[sqlite3.Row]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, reservation_id, name, surname, full_name, gender, ticket_tier, status FROM attendees WHERE reservation_id = ? ORDER BY id",
+            """
+            SELECT id, reservation_id, name, surname, full_name, gender,
+                   repost_discount_applied, repost_proof_file_id, repost_proof_file_type,
+                   ticket_tier, status
+            FROM attendees
+            WHERE reservation_id = ?
+            ORDER BY id
+            """,
             (reservation_id,),
         )
         return cursor.fetchall()
@@ -781,8 +858,8 @@ class Database:
         if gender == "girl":
             return float(girl_price)
         quantity = int(reservation_row["quantity"] or 0)
-        total_price = float(reservation_row["total_price"] or 0)
-        return (total_price / quantity) if quantity > 0 else 0.0
+        base_total_price = float(reservation_row["base_total_price"] or reservation_row["total_price"] or 0)
+        return (base_total_price / quantity) if quantity > 0 else 0.0
 
     def _update_legacy_reservation_fields(
         self,
@@ -843,14 +920,15 @@ class Database:
         new_boys = int(reservation_row["boys"]) + (1 if gender == "boy" else 0)
         new_girls = int(reservation_row["girls"]) + (1 if gender == "girl" else 0)
         new_total = float(reservation_row["total_price"]) + float(add_price)
+        new_base_total = float(reservation_row["base_total_price"] or reservation_row["total_price"] or 0) + float(add_price)
 
         cursor.execute(
             """
             UPDATE reservations
-            SET quantity = ?, boys = ?, girls = ?, total_price = ?
+            SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?
             WHERE id = ?
             """,
-            (new_quantity, new_boys, new_girls, new_total, reservation_row["id"]),
+            (new_quantity, new_boys, new_girls, new_total, new_base_total, reservation_row["id"]),
         )
         reservation_cols = self._table_columns("reservations")
         self._update_legacy_reservation_fields(
@@ -862,10 +940,13 @@ class Database:
         )
         cursor.execute(
             """
-            INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO attendees (
+                reservation_id, name, surname, full_name, gender,
+                repost_discount_applied, repost_proof_file_id, repost_proof_file_type, ticket_tier
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (reservation_row["id"], *self._name_parts("", "", full_name), full_name, gender, attendee_tier),
+            (reservation_row["id"], *self._name_parts("", "", full_name), full_name, gender, 0, "", "", attendee_tier),
         )
         self.conn.commit()
         updated = self.get_reservation(reservation_row["id"])
@@ -924,6 +1005,10 @@ class Database:
             "ticket_type": active_tier["key"],
             "quantity": quantity,
             "total_price": price,
+            "base_total_price": price,
+            "discount_count": 0,
+            "discount_unit_amount": 0.0,
+            "discount_amount": 0.0,
             "boys": boys,
             "girls": girls,
             "status": STATUS_APPROVED,
@@ -996,6 +1081,10 @@ class Database:
             "ticket_type": "",
             "quantity": 1,
             "total_price": 0.0,
+            "base_total_price": 0.0,
+            "discount_count": 0,
+            "discount_unit_amount": 0.0,
+            "discount_amount": 0.0,
             "boys": 0,
             "girls": 0,
             "status": STATUS_APPROVED,
@@ -1047,6 +1136,7 @@ class Database:
                 a.id AS attendee_id,
                 a.full_name,
                 COALESCE(a.gender, 'unknown') AS gender,
+                COALESCE(a.repost_discount_applied, 0) AS repost_discount_applied,
                 COALESCE(a.ticket_tier, '') AS attendee_tier,
                 r.*
             FROM attendees a
@@ -1083,7 +1173,14 @@ class Database:
             new_boys = int(row["boys"])
             new_girls = max(0, int(row["girls"]) - 1)
 
-        new_total = max(0.0, float(row["total_price"]) - float(unit_price))
+        current_base_total = float(row["base_total_price"] or row["total_price"] or 0.0)
+        discount_unit_amount = float(row["discount_unit_amount"] or 0.0)
+        discount_count = int(row["discount_count"] or 0)
+        discount_applied = int(row["repost_discount_applied"] or 0) == 1
+        new_base_total = max(0.0, current_base_total - float(unit_price))
+        new_discount_count = max(0, discount_count - (1 if discount_applied else 0))
+        new_discount_amount = max(0.0, new_discount_count * discount_unit_amount)
+        new_total = max(0.0, new_base_total - new_discount_amount)
         cursor.execute("DELETE FROM attendees WHERE id = ?", (attendee_id,))
 
         if row["hold_applied"] == 1:
@@ -1102,7 +1199,8 @@ class Database:
             cursor.execute(
                 """
                 UPDATE reservations
-                SET quantity = 0, boys = 0, girls = 0, total_price = 0,
+                SET quantity = 0, boys = 0, girls = 0, total_price = 0, base_total_price = 0,
+                    discount_count = 0, discount_amount = 0,
                     status = ?, hold_applied = 0
                 WHERE id = ?
                 """,
@@ -1123,10 +1221,10 @@ class Database:
         cursor.execute(
             """
             UPDATE reservations
-            SET quantity = ?, boys = ?, girls = ?, total_price = ?
+            SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?, discount_count = ?, discount_amount = ?
             WHERE id = ?
             """,
-            (new_quantity, new_boys, new_girls, new_total, row["id"]),
+            (new_quantity, new_boys, new_girls, new_total, new_base_total, new_discount_count, new_discount_amount, row["id"]),
         )
         reservation_cols = self._table_columns("reservations")
         self._update_legacy_reservation_fields(
@@ -1159,6 +1257,7 @@ class Database:
                 a.id AS attendee_id,
                 a.full_name,
                 COALESCE(a.gender, 'unknown') AS gender,
+                COALESCE(a.repost_discount_applied, 0) AS repost_discount_applied,
                 COALESCE(a.ticket_tier, '') AS attendee_tier,
                 r.*
             FROM attendees a
@@ -1212,6 +1311,13 @@ class Database:
             new_boys = int(row["boys"])
             new_girls = max(0, int(row["girls"]) - 1)
 
+        current_base_total = float(row["base_total_price"] or row["total_price"] or 0.0)
+        discount_unit_amount = float(row["discount_unit_amount"] or 0.0)
+        discount_count = int(row["discount_count"] or 0)
+        discount_applied = int(row["repost_discount_applied"] or 0) == 1
+        new_base_total = max(0.0, current_base_total - float(unit_price))
+        new_discount_count = max(0, discount_count - (1 if discount_applied else 0))
+        new_discount_amount = max(0.0, new_discount_count * discount_unit_amount)
         cursor.execute("DELETE FROM attendees WHERE id = ?", (row["attendee_id"],))
         if row["hold_applied"] == 1:
             release_tier = row["attendee_tier"] if row["attendee_tier"] in {"early", "tier1", "tier2"} else row["ticket_type"]
@@ -1229,7 +1335,8 @@ class Database:
             cursor.execute(
                 """
                 UPDATE reservations
-                SET quantity = 0, boys = 0, girls = 0, total_price = 0,
+                SET quantity = 0, boys = 0, girls = 0, total_price = 0, base_total_price = 0,
+                    discount_count = 0, discount_amount = 0,
                     status = ?, hold_applied = 0
                 WHERE id = ?
                 """,
@@ -1244,14 +1351,14 @@ class Database:
                 total_price=0.0,
             )
         else:
-            new_total = max(0.0, float(row["total_price"]) - float(unit_price))
+            new_total = max(0.0, new_base_total - new_discount_amount)
             cursor.execute(
                 """
                 UPDATE reservations
-                SET quantity = ?, boys = ?, girls = ?, total_price = ?
+                SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?, discount_count = ?, discount_amount = ?
                 WHERE id = ?
                 """,
-                (new_quantity, new_boys, new_girls, new_total, row["id"]),
+                (new_quantity, new_boys, new_girls, new_total, new_base_total, new_discount_count, new_discount_amount, row["id"]),
             )
             reservation_cols = self._table_columns("reservations")
             self._update_legacy_reservation_fields(
@@ -1541,6 +1648,8 @@ class Database:
             "tier2_boy": "regular_tier2_price",
             "tier2_girl": "regular_tier2_price_girl",
             "tier2_qty": "regular_tier2_qty",
+            "repost_discount_enabled": "repost_discount_enabled",
+            "repost_discount_amount": "repost_discount_amount",
             "payment1_title": "payment1_title",
             "payment1_url": "payment1_url",
             "payment2_title": "payment2_title",
@@ -1578,6 +1687,25 @@ class Database:
                 if fvalue < 0:
                     return False, f"{key} must be non-negative."
                 value = fvalue
+            if key == "repost_discount_amount":
+                try:
+                    fvalue = float(value)
+                except (TypeError, ValueError):
+                    return False, "repost_discount_amount must be number."
+                if fvalue < 0:
+                    return False, "repost_discount_amount must be non-negative."
+                value = fvalue
+            if key == "repost_discount_enabled":
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"1", "true", "yes", "on"}:
+                        value = 1
+                    elif normalized in {"0", "false", "no", "off", ""}:
+                        value = 0
+                    else:
+                        return False, "repost_discount_enabled must be boolean."
+                else:
+                    value = 1 if bool(value) else 0
             if key in {"payment1_title", "payment2_title", "payment3_title"}:
                 value = str(value or "").strip()
             if key in {"payment1_url", "payment2_url", "payment3_url"}:
@@ -1797,6 +1925,19 @@ class Database:
             FROM reservations
             WHERE payment_file_type = 'external'
               AND TRIM(COALESCE(payment_file_id, '')) <> ''
+            """
+        )
+        return cursor.fetchall()
+
+    def list_external_repost_files(self) -> List[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT a.repost_proof_file_id AS payment_file_id, r.status
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            WHERE a.repost_proof_file_type = 'external'
+              AND TRIM(COALESCE(a.repost_proof_file_id, '')) <> ''
             """
         )
         return cursor.fetchall()

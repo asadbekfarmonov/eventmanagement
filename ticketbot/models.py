@@ -20,6 +20,8 @@ class Event:
     regular_tier2_price_girl: float
     regular_tier2_qty: int
     status: str
+    repost_discount_enabled: int = 0
+    repost_discount_amount: float = 0.0
     payment1_title: str = ""
     payment1_url: str = ""
     payment2_title: str = ""
@@ -37,6 +39,10 @@ class Reservation:
     ticket_type: str
     quantity: int
     total_price: float
+    base_total_price: float
+    discount_count: int
+    discount_unit_amount: float
+    discount_amount: float
     boys: int
     girls: int
     status: str

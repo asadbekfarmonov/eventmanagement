@@ -67,9 +67,20 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(reservation.status, STATUS_PENDING)
         self.assertEqual(reservation.quantity, 3)
         self.assertEqual(reservation.total_price, 7600.0)
+        self.assertEqual(reservation.base_total_price, 7600.0)
+        self.assertEqual(reservation.discount_count, 0)
+        self.assertEqual(reservation.discount_unit_amount, 0.0)
+        self.assertEqual(reservation.discount_amount, 0.0)
 
         event = self.db.get_event(event_id)
         self.assertEqual(event.early_bird_qty, 7)
+        self.assertEqual(event.repost_discount_enabled, 0)
+        self.assertEqual(event.repost_discount_amount, 0.0)
+
+        attendee = self.db.list_attendees(reservation.id)[0]
+        self.assertEqual(attendee["repost_discount_applied"], 0)
+        self.assertEqual(attendee["repost_proof_file_id"], "")
+        self.assertEqual(attendee["repost_proof_file_type"], "")
 
     def test_pending_hold_moves_active_tier(self):
         event_id = self._create_event(early_qty=1, t1_qty=2, t2_qty=0)
@@ -181,6 +192,111 @@ class DatabaseTests(unittest.TestCase):
         self.assertAlmostEqual(updated.total_price, 6000.0)
         attendees = self.db.list_attendees(reservation.id)
         self.assertEqual([a["ticket_tier"] for a in attendees], ["early", "tier1"])
+
+    def test_pending_reservation_applies_per_attendee_repost_discount(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=2,
+            girls=1,
+            attendees=["A One", "B Two", "C Three"],
+            payment_file_id="proof-file",
+            payment_file_type="document",
+            discounted_attendee_indexes=[0, 2],
+            repost_proofs_by_index={
+                0: ("/uploads/repost-0.jpg", "external"),
+                2: ("/uploads/repost-2.jpg", "external"),
+            },
+        )
+
+        self.assertEqual(reservation.base_total_price, 7600.0)
+        self.assertEqual(reservation.discount_count, 2)
+        self.assertEqual(reservation.discount_unit_amount, 1000.0)
+        self.assertEqual(reservation.discount_amount, 2000.0)
+        self.assertEqual(reservation.total_price, 5600.0)
+
+        attendees = self.db.list_attendees(reservation.id)
+        self.assertEqual([a["repost_discount_applied"] for a in attendees], [1, 0, 1])
+        self.assertEqual(attendees[0]["repost_proof_file_id"], "/uploads/repost-0.jpg")
+        self.assertEqual(attendees[2]["repost_proof_file_id"], "/uploads/repost-2.jpg")
+
+    def test_admin_remove_discounted_guest_updates_discount_totals(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=2,
+            girls=1,
+            attendees=["A One", "B Two", "C Three"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0, 2],
+            repost_proofs_by_index={
+                0: ("/uploads/repost-0.jpg", "external"),
+                2: ("/uploads/repost-2.jpg", "external"),
+            },
+        )
+
+        discounted_attendee = self.db.list_attendees(reservation.id)[2]
+        ok_remove, _msg_remove, updated = self.db.admin_remove_guest(discounted_attendee["id"])
+        self.assertTrue(ok_remove)
+        self.assertEqual(updated.quantity, 2)
+        self.assertEqual(updated.base_total_price, 5000.0)
+        self.assertEqual(updated.discount_count, 1)
+        self.assertEqual(updated.discount_amount, 1000.0)
+        self.assertEqual(updated.total_price, 4000.0)
+
+    def test_admin_add_guest_keeps_existing_discount_snapshot(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=1,
+            attendees=["A One", "B Two"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("/uploads/repost-0.jpg", "external")},
+        )
+
+        ok_add, _msg_add, updated = self.db.admin_add_guest(
+            reservation_code=reservation.code,
+            full_name="C Three",
+            gender_raw="boy",
+        )
+        self.assertTrue(ok_add)
+        self.assertEqual(updated.quantity, 3)
+        self.assertEqual(updated.base_total_price, 7600.0)
+        self.assertEqual(updated.discount_count, 1)
+        self.assertEqual(updated.discount_amount, 1000.0)
+        self.assertEqual(updated.total_price, 6600.0)
 
     def test_admin_remove_guest_releases_correct_tier_in_spillover(self):
         event_id = self._create_event(early_qty=2, t1_qty=2, t2_qty=0)
@@ -474,6 +590,8 @@ class DatabaseTests(unittest.TestCase):
                 "location": "Updated location",
                 "early_boy": "2700",
                 "tier1_qty": "9",
+                "repost_discount_enabled": "1",
+                "repost_discount_amount": "1500",
                 "datetime": new_dt,
             },
         )
@@ -484,6 +602,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(event.location, "Updated location")
         self.assertEqual(event.early_bird_price, 2700.0)
         self.assertEqual(event.regular_tier1_qty, 9)
+        self.assertEqual(event.repost_discount_enabled, 1)
+        self.assertEqual(event.repost_discount_amount, 1500.0)
         self.assertEqual(event.event_datetime, new_dt)
 
     def test_admin_add_guest_by_event_and_remove_by_name(self):
@@ -591,11 +711,20 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertIn("early_bird_price_girl", event_cols)
         self.assertIn("regular_tier1_price_girl", event_cols)
+        self.assertIn("repost_discount_enabled", event_cols)
+        self.assertIn("repost_discount_amount", event_cols)
         self.assertIn("payment_file_id", reservation_cols)
+        self.assertIn("base_total_price", reservation_cols)
+        self.assertIn("discount_count", reservation_cols)
+        self.assertIn("discount_unit_amount", reservation_cols)
+        self.assertIn("discount_amount", reservation_cols)
         self.assertIn("admin_note", reservation_cols)
         self.assertIn("hold_applied", reservation_cols)
         self.assertIn("full_name", attendee_cols)
         self.assertIn("gender", attendee_cols)
+        self.assertIn("repost_discount_applied", attendee_cols)
+        self.assertIn("repost_proof_file_id", attendee_cols)
+        self.assertIn("repost_proof_file_type", attendee_cols)
 
         migrated_db.upsert_user(777, "Legacy", "User", "000")
         legacy_user = migrated_db.get_user(777)
@@ -625,6 +754,10 @@ class DatabaseTests(unittest.TestCase):
             payment_file_type="document",
         )
         self.assertEqual(migrated_reservation.status, STATUS_PENDING)
+        self.assertEqual(migrated_reservation.base_total_price, migrated_reservation.total_price)
+        self.assertEqual(migrated_reservation.discount_count, 0)
+        self.assertEqual(migrated_reservation.discount_unit_amount, 0.0)
+        self.assertEqual(migrated_reservation.discount_amount, 0.0)
 
 
 if __name__ == "__main__":
