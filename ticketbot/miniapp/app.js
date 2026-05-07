@@ -88,6 +88,8 @@ const adminState = {
   selectedEventId: null,
 };
 
+const MISSING_REPOST_PROOF_MESSAGE = 'Upload repost screenshot for each attendee marked for discount.';
+
 function money(value) {
   return Number(value || 0).toFixed(2);
 }
@@ -117,6 +119,12 @@ function setAdminStatus(msg, isError = false) {
   if (!adminEl.status) return;
   adminEl.status.textContent = msg || '';
   adminEl.status.className = isError ? 'hint error' : 'hint';
+}
+
+function clearStatusIfMatches(message) {
+  if ((statusEl.textContent || '').trim() === message) {
+    setStatus('');
+  }
 }
 
 function setAdminSection(sectionKey) {
@@ -177,6 +185,13 @@ function hasPaymentProof() {
 
 function repostDiscountEnabled(event) {
   return Boolean(event && Number(event.repost_discount_enabled || 0) && Number(event.repost_discount_amount || 0) > 0);
+}
+
+function syncRepostValidationStatus() {
+  const missingRepostProofs = attendeeDiscountSelections().filter((item) => item.checked && !item.file);
+  if (!missingRepostProofs.length) {
+    clearStatusIfMatches(MISSING_REPOST_PROOF_MESSAGE);
+  }
 }
 
 function paymentOptionsHtml(event) {
@@ -316,7 +331,7 @@ function renderSummary() {
       ]
     : [`<div><strong>Total: ${money(quote.total_price)}</strong></div>`];
   const repostMissingHint = repostEligible && missingRepostProofs.length
-    ? `<div class="hint error">Upload repost screenshot for each attendee marked for discount.</div>`
+    ? `<div class="hint error">${MISSING_REPOST_PROOF_MESSAGE}</div>`
     : '';
 
   const paymentSection = paymentOptionsHtml(event);
@@ -441,16 +456,22 @@ function rebuildAttendees() {
       repostFile.type = 'file';
       repostFile.accept = 'image/png,image/jpeg';
       repostFile.dataset.part = 'repost-file';
+      repostFile.disabled = !repostCheck.checked;
       repostFileWrap.appendChild(repostFile);
 
       repostCheck.addEventListener('change', () => {
         repostFileWrap.hidden = !repostCheck.checked;
+        repostFile.disabled = !repostCheck.checked;
         if (!repostCheck.checked) {
           repostFile.value = '';
         }
+        syncRepostValidationStatus();
         renderSummary();
       });
-      repostFile.addEventListener('change', renderSummary);
+      repostFile.addEventListener('change', () => {
+        syncRepostValidationStatus();
+        renderSummary();
+      });
 
       repostWrap.appendChild(repostToggle);
       repostWrap.appendChild(repostFileWrap);
@@ -586,7 +607,7 @@ async function submitDraft() {
   const discountSelections = attendeeDiscountSelections();
   const missingRepostProofs = discountSelections.filter((item) => item.checked && !item.file);
   if (missingRepostProofs.length) {
-    setStatus('Upload repost screenshot for each attendee marked for discount.', true);
+    setStatus(MISSING_REPOST_PROOF_MESSAGE, true);
     return;
   }
   const paymentFile = paymentProofEl && paymentProofEl.files ? paymentProofEl.files[0] : null;
