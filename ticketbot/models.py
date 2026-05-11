@@ -22,6 +22,8 @@ class Event:
     status: str
     repost_discount_enabled: int = 0
     repost_discount_amount: float = 0.0
+    girls_group_offer_enabled: int = 0
+    boys_group_offer_enabled: int = 0
     payment1_title: str = ""
     payment1_url: str = ""
     payment2_title: str = ""
@@ -40,6 +42,11 @@ class Reservation:
     quantity: int
     total_price: float
     base_total_price: float
+    girls_group_free_count: int
+    boys_group_free_count: int
+    girls_group_discount_amount: float
+    boys_group_discount_amount: float
+    group_discount_amount: float
     discount_count: int
     discount_unit_amount: float
     discount_amount: float

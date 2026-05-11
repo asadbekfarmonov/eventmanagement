@@ -76,6 +76,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(event.early_bird_qty, 7)
         self.assertEqual(event.repost_discount_enabled, 0)
         self.assertEqual(event.repost_discount_amount, 0.0)
+        self.assertEqual(event.girls_group_offer_enabled, 0)
+        self.assertEqual(event.boys_group_offer_enabled, 0)
 
         attendee = self.db.list_attendees(reservation.id)[0]
         self.assertEqual(attendee["repost_discount_applied"], 0)
@@ -128,6 +130,26 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(quote["breakdown"][0]["count"], 2)
         self.assertEqual(quote["breakdown"][1]["count"], 2)
         self.assertAlmostEqual(quote["total_price"], 12200.0)
+
+    def test_quote_booking_applies_group_offer_discount(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "girls_group_offer_enabled": 1,
+                "boys_group_offer_enabled": 1,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        quote = self.db.quote_booking(event_id=event_id, boys=4, girls=3)
+        self.assertAlmostEqual(quote["base_total_price"], 17800.0)
+        self.assertEqual(quote["girls_group_free_count"], 1)
+        self.assertEqual(quote["boys_group_free_count"], 1)
+        self.assertAlmostEqual(quote["girls_group_discount_amount"], 2600.0)
+        self.assertAlmostEqual(quote["boys_group_discount_amount"], 2500.0)
+        self.assertAlmostEqual(quote["group_discount_amount"], 5100.0)
+        self.assertAlmostEqual(quote["total_price"], 12700.0)
 
     def test_pending_reservation_fails_when_exceeding_total_remaining(self):
         event_id = self._create_event(early_qty=1, t1_qty=1, t2_qty=0)
@@ -230,6 +252,39 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(attendees[0]["repost_proof_file_id"], "/uploads/repost-0.jpg")
         self.assertEqual(attendees[2]["repost_proof_file_id"], "/uploads/repost-2.jpg")
 
+    def test_pending_reservation_stacks_group_offer_and_repost_discount(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "boys_group_offer_enabled": 1,
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=4,
+            girls=0,
+            attendees=["A One", "B Two", "C Three", "D Four"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("/uploads/repost-0.jpg", "external")},
+        )
+
+        self.assertAlmostEqual(reservation.base_total_price, 10000.0)
+        self.assertEqual(reservation.boys_group_free_count, 1)
+        self.assertEqual(reservation.girls_group_free_count, 0)
+        self.assertAlmostEqual(reservation.boys_group_discount_amount, 2500.0)
+        self.assertAlmostEqual(reservation.group_discount_amount, 2500.0)
+        self.assertEqual(reservation.discount_count, 1)
+        self.assertAlmostEqual(reservation.discount_amount, 1000.0)
+        self.assertAlmostEqual(reservation.total_price, 6500.0)
+
     def test_admin_remove_discounted_guest_updates_discount_totals(self):
         event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
         ok, message = self.db.set_event_fields(
@@ -297,6 +352,40 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(updated.discount_count, 1)
         self.assertEqual(updated.discount_amount, 1000.0)
         self.assertEqual(updated.total_price, 6600.0)
+
+    def test_admin_add_guest_applies_group_offer_when_threshold_is_reached(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "boys_group_offer_enabled": 1,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=3,
+            girls=0,
+            attendees=["A One", "B Two", "C Three"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        self.assertAlmostEqual(reservation.total_price, 7500.0)
+        self.assertEqual(reservation.boys_group_free_count, 0)
+
+        ok_add, _msg_add, updated = self.db.admin_add_guest(
+            reservation_code=reservation.code,
+            full_name="D Four",
+            gender_raw="boy",
+        )
+        self.assertTrue(ok_add)
+        self.assertEqual(updated.quantity, 4)
+        self.assertEqual(updated.boys_group_free_count, 1)
+        self.assertAlmostEqual(updated.base_total_price, 10000.0)
+        self.assertAlmostEqual(updated.group_discount_amount, 2500.0)
+        self.assertAlmostEqual(updated.total_price, 7500.0)
 
     def test_admin_remove_guest_releases_correct_tier_in_spillover(self):
         event_id = self._create_event(early_qty=2, t1_qty=2, t2_qty=0)
@@ -592,6 +681,8 @@ class DatabaseTests(unittest.TestCase):
                 "tier1_qty": "9",
                 "repost_discount_enabled": "1",
                 "repost_discount_amount": "1500",
+                "girls_group_offer_enabled": "1",
+                "boys_group_offer_enabled": "0",
                 "datetime": new_dt,
             },
         )
@@ -604,6 +695,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(event.regular_tier1_qty, 9)
         self.assertEqual(event.repost_discount_enabled, 1)
         self.assertEqual(event.repost_discount_amount, 1500.0)
+        self.assertEqual(event.girls_group_offer_enabled, 1)
+        self.assertEqual(event.boys_group_offer_enabled, 0)
         self.assertEqual(event.event_datetime, new_dt)
 
     def test_admin_add_guest_by_event_and_remove_by_name(self):
@@ -713,8 +806,15 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("regular_tier1_price_girl", event_cols)
         self.assertIn("repost_discount_enabled", event_cols)
         self.assertIn("repost_discount_amount", event_cols)
+        self.assertIn("girls_group_offer_enabled", event_cols)
+        self.assertIn("boys_group_offer_enabled", event_cols)
         self.assertIn("payment_file_id", reservation_cols)
         self.assertIn("base_total_price", reservation_cols)
+        self.assertIn("girls_group_free_count", reservation_cols)
+        self.assertIn("boys_group_free_count", reservation_cols)
+        self.assertIn("girls_group_discount_amount", reservation_cols)
+        self.assertIn("boys_group_discount_amount", reservation_cols)
+        self.assertIn("group_discount_amount", reservation_cols)
         self.assertIn("discount_count", reservation_cols)
         self.assertIn("discount_unit_amount", reservation_cols)
         self.assertIn("discount_amount", reservation_cols)
@@ -755,6 +855,7 @@ class DatabaseTests(unittest.TestCase):
         )
         self.assertEqual(migrated_reservation.status, STATUS_PENDING)
         self.assertEqual(migrated_reservation.base_total_price, migrated_reservation.total_price)
+        self.assertEqual(migrated_reservation.group_discount_amount, 0.0)
         self.assertEqual(migrated_reservation.discount_count, 0)
         self.assertEqual(migrated_reservation.discount_unit_amount, 0.0)
         self.assertEqual(migrated_reservation.discount_amount, 0.0)

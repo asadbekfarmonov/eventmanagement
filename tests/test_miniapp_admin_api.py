@@ -211,6 +211,30 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(payload["breakdown"][0]["count"], 3)
         self.assertEqual(payload["breakdown"][1]["count"], 2)
 
+    def test_quote_api_applies_group_offer_discount(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "girls_group_offer_enabled": 1,
+                "boys_group_offer_enabled": 1,
+            },
+        )
+        response = self.client.post(
+            "/api/quote",
+            json={
+                "event_id": self.event_id,
+                "boys": 4,
+                "girls": 3,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertAlmostEqual(payload["base_total_price"], 17500.0)
+        self.assertEqual(payload["girls_group_free_count"], 1)
+        self.assertEqual(payload["boys_group_free_count"], 1)
+        self.assertAlmostEqual(payload["group_discount_amount"], 5000.0)
+        self.assertAlmostEqual(payload["total_price"], 12500.0)
+
     def test_quote_api_rejects_when_exceeding_total_remaining(self):
         self.db.set_event_fields(
             self.event_id,
@@ -549,6 +573,31 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(attendees[1]["repost_proof_file_id"], "")
         self.assertTrue(attendees[2]["repost_proof_file_id"].startswith("https://example.invalid/uploads/"))
 
+    def test_book_with_payment_applies_group_offer_discount(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "boys_group_offer_enabled": 1,
+            },
+        )
+        response = self._book_with_payment(
+            boys=4,
+            girls=0,
+            attendees=["John Doe", "Jane Doe", "Alex Doe", "Mark Doe"],
+            content=b"payment-proof",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        code = response.json().get("code")
+        reservation = self.db.get_reservation_by_code(code)
+        self.assertIsNotNone(reservation)
+        self.assertAlmostEqual(reservation.base_total_price, 10000.0)
+        self.assertEqual(reservation.boys_group_free_count, 1)
+        self.assertEqual(reservation.girls_group_free_count, 0)
+        self.assertAlmostEqual(reservation.group_discount_amount, 2500.0)
+        self.assertAlmostEqual(reservation.total_price, 7500.0)
+
     def test_book_with_payment_requires_repost_screenshot_for_discounted_attendee(self):
         self.db.set_event_fields(
             self.event_id,
@@ -608,6 +657,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "tier2_qty": 0,
                 "repost_discount_enabled": True,
                 "repost_discount_amount": 1000,
+                "girls_group_offer_enabled": True,
+                "boys_group_offer_enabled": False,
                 "payment1_title": "Revolut",
                 "payment1_url": "https://pay.example/revolut",
                 "payment2_title": "",
@@ -632,6 +683,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(payment["payment1_url"], "https://pay.example/revolut")
         self.assertEqual(prices["repost_discount_enabled"], 1)
         self.assertEqual(prices["repost_discount_amount"], 1000)
+        self.assertEqual(prices["girls_group_offer_enabled"], 1)
+        self.assertEqual(prices["boys_group_offer_enabled"], 0)
 
         guest_events = self.client.get("/api/events")
         self.assertEqual(guest_events.status_code, 200, guest_events.text)
@@ -639,6 +692,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertIsNotNone(guest_payload)
         self.assertEqual(guest_payload["repost_discount_enabled"], 1)
         self.assertEqual(guest_payload["repost_discount_amount"], 1000)
+        self.assertEqual(guest_payload["girls_group_offer_enabled"], 1)
+        self.assertEqual(guest_payload["boys_group_offer_enabled"], 0)
         option_urls = [opt["url"] for opt in guest_payload.get("payment_options", [])]
         self.assertIn("https://pay.example/revolut", option_urls)
         self.assertIn("https://pay.example/wise", option_urls)
@@ -653,6 +708,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "updates": {
                     "repost_discount_enabled": True,
                     "repost_discount_amount": 1750,
+                    "girls_group_offer_enabled": True,
+                    "boys_group_offer_enabled": False,
                 },
             },
         )
@@ -660,6 +717,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         event = self.db.get_event(self.event_id)
         self.assertEqual(event.repost_discount_enabled, 1)
         self.assertEqual(event.repost_discount_amount, 1750.0)
+        self.assertEqual(event.girls_group_offer_enabled, 1)
+        self.assertEqual(event.boys_group_offer_enabled, 0)
 
         admin_events = self.client.get(
             "/api/admin/events",
@@ -670,6 +729,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertIsNotNone(event_payload)
         self.assertEqual(event_payload["prices"]["repost_discount_enabled"], 1)
         self.assertEqual(event_payload["prices"]["repost_discount_amount"], 1750.0)
+        self.assertEqual(event_payload["prices"]["girls_group_offer_enabled"], 1)
+        self.assertEqual(event_payload["prices"]["boys_group_offer_enabled"], 0)
 
     def test_event_payment_url_requires_https(self):
         bad_create = self.client.post(

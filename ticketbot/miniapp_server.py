@@ -236,6 +236,8 @@ def _event_payload(event) -> Dict[str, Any]:
         "photo_file_id": event.photo_file_id,
         "repost_discount_enabled": event.repost_discount_enabled,
         "repost_discount_amount": event.repost_discount_amount,
+        "girls_group_offer_enabled": event.girls_group_offer_enabled,
+        "boys_group_offer_enabled": event.boys_group_offer_enabled,
         "tier": tier,
         "payment_options": payment_options,
         "payment": {
@@ -301,6 +303,9 @@ def _notify_admins_pending_from_miniapp(reservation) -> None:
         f"Tier: {tier_label}\n"
         f"Boys: {reservation.boys} | Girls: {reservation.girls}\n"
         f"Base total: {reservation.base_total_price:.2f}\n"
+        f"Girls 2+1 discount: {reservation.girls_group_free_count} free = {reservation.girls_group_discount_amount:.2f}\n"
+        f"Boys 3+1 discount: {reservation.boys_group_free_count} free = {reservation.boys_group_discount_amount:.2f}\n"
+        f"Group offer discount total: {reservation.group_discount_amount:.2f}\n"
         f"Discount: {reservation.discount_count} x {reservation.discount_unit_amount:.2f} = {reservation.discount_amount:.2f}\n"
         f"Final total: {reservation.total_price:.2f}\n"
         f"Buyer: {buyer}\n\n"
@@ -398,6 +403,8 @@ class AdminEventCreateSimpleRequest(BaseModel):
     tier2_qty: int = Field(ge=0)
     repost_discount_enabled: bool = False
     repost_discount_amount: float = Field(default=0, ge=0)
+    girls_group_offer_enabled: bool = False
+    boys_group_offer_enabled: bool = False
     payment1_title: str = ""
     payment1_url: str = ""
     payment2_title: str = ""
@@ -702,6 +709,8 @@ def admin_events(tg_id: int) -> Dict[str, Any]:
             "tier2_qty": event.regular_tier2_qty,
             "repost_discount_enabled": event.repost_discount_enabled,
             "repost_discount_amount": event.repost_discount_amount,
+            "girls_group_offer_enabled": event.girls_group_offer_enabled,
+            "boys_group_offer_enabled": event.boys_group_offer_enabled,
         }
         items.append(payload)
     return {"items": items}
@@ -912,6 +921,8 @@ def admin_event_create_simple(payload: AdminEventCreateSimpleRequest) -> Dict[st
         tier2_qty=int(payload.tier2_qty),
         repost_discount_enabled=bool(payload.repost_discount_enabled),
         repost_discount_amount=float(payload.repost_discount_amount),
+        girls_group_offer_enabled=bool(payload.girls_group_offer_enabled),
+        boys_group_offer_enabled=bool(payload.boys_group_offer_enabled),
         payment1_title=(payload.payment1_title or "").strip(),
         payment1_url=(payload.payment1_url or "").strip(),
         payment2_title=(payload.payment2_title or "").strip(),

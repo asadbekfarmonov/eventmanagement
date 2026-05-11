@@ -65,6 +65,8 @@ const adminEl = {
   t2Qty: document.getElementById('admin-ev-t2-qty'),
   repostEnabled: document.getElementById('admin-ev-repost-enabled'),
   repostAmount: document.getElementById('admin-ev-repost-amount'),
+  girlsGroupOfferEnabled: document.getElementById('admin-ev-girls-group-enabled'),
+  boysGroupOfferEnabled: document.getElementById('admin-ev-boys-group-enabled'),
 };
 
 const state = {
@@ -260,6 +262,15 @@ function renderSummary() {
   const selectedDiscounts = repostEligible ? repostSelections.filter((item) => item.checked) : [];
   const missingRepostProofs = selectedDiscounts.filter((item) => !item.file);
   const discountAmount = selectedDiscounts.length * discountUnitAmount;
+  const quote = state.quote;
+  const baseTotal = Number(quote && quote.base_total_price !== undefined ? quote.base_total_price : (quote ? quote.total_price : 0));
+  const girlsGroupOfferEnabled = Boolean(event && Number(event.girls_group_offer_enabled || 0));
+  const boysGroupOfferEnabled = Boolean(event && Number(event.boys_group_offer_enabled || 0));
+  const girlsGroupFreeCount = Number(quote && quote.girls_group_free_count ? quote.girls_group_free_count : 0);
+  const boysGroupFreeCount = Number(quote && quote.boys_group_free_count ? quote.boys_group_free_count : 0);
+  const girlsGroupDiscountAmount = Number(quote && quote.girls_group_discount_amount ? quote.girls_group_discount_amount : 0);
+  const boysGroupDiscountAmount = Number(quote && quote.boys_group_discount_amount ? quote.boys_group_discount_amount : 0);
+  const groupDiscountAmount = Number(quote && quote.group_discount_amount ? quote.group_discount_amount : 0);
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
@@ -294,7 +305,6 @@ function renderSummary() {
     return;
   }
 
-  const quote = state.quote;
   const quoteMatches = quote
     && Number(quote.event_id) === Number(event.id)
     && Number(quote.boys) === Number(state.boys)
@@ -322,14 +332,23 @@ function renderSummary() {
   const repostHint = repostEligible
     ? `<div class="hint">Repost discount available: ${money(discountUnitAmount)} per attendee.</div>`
     : '';
+  const groupSummary = [
+    `<div>Base total: ${money(baseTotal)}</div>`,
+    girlsGroupOfferEnabled ? `<div>Girls 2+1: ${girlsGroupFreeCount} free = ${money(girlsGroupDiscountAmount)}</div>` : '',
+    boysGroupOfferEnabled ? `<div>Boys 3+1: ${boysGroupFreeCount} free = ${money(boysGroupDiscountAmount)}</div>` : '',
+    (girlsGroupOfferEnabled || boysGroupOfferEnabled) ? `<div>Group offer discount total: ${money(groupDiscountAmount)}</div>` : '',
+  ].filter(Boolean);
   const repostSummary = repostEligible
     ? [
         repostHint,
-        `<div>Base total: ${money(quote.total_price)}</div>`,
+        ...groupSummary,
         `<div>Repost discount: ${selectedDiscounts.length} x ${money(discountUnitAmount)} = ${money(discountAmount)}</div>`,
         `<div><strong>Final total: ${money(finalTotal)}</strong></div>`,
       ]
-    : [`<div><strong>Total: ${money(quote.total_price)}</strong></div>`];
+    : [
+        ...groupSummary,
+        `<div><strong>Total: ${money(quote.total_price)}</strong></div>`,
+      ];
   const repostMissingHint = repostEligible && missingRepostProofs.length
     ? `<div class="hint error">${MISSING_REPOST_PROOF_MESSAGE}</div>`
     : '';
@@ -544,13 +563,16 @@ function getPayload() {
   const attendeeParts = attendeeEntries();
   const discountSelections = attendeeDiscountSelections();
   const qty = totalCount();
-  const baseTotal = state.quote && Number(state.quote.event_id) === Number(event.id)
-    ? Number(state.quote.total_price || 0)
+  const quoteMatches = state.quote && Number(state.quote.event_id) === Number(event.id);
+  const baseTotal = quoteMatches
+    ? Number(state.quote.base_total_price !== undefined ? state.quote.base_total_price : (state.quote.total_price || 0))
     : 0;
+  const groupDiscountAmount = quoteMatches ? Number(state.quote.group_discount_amount || 0) : 0;
+  const groupAdjustedTotal = quoteMatches ? Number(state.quote.total_price || 0) : 0;
   const discountUnitAmount = repostDiscountEnabled(event) ? Number(event.repost_discount_amount || 0) : 0;
   const discountedAttendeeIndexes = discountSelections.filter((item) => item.checked).map((item) => item.index);
   const discountAmount = discountedAttendeeIndexes.length * discountUnitAmount;
-  const total = Math.max(0, baseTotal - discountAmount);
+  const total = Math.max(0, groupAdjustedTotal - discountAmount);
 
   return {
     type: 'booking_draft_v1',
@@ -560,6 +582,7 @@ function getPayload() {
     attendees,
     attendee_parts: attendeeParts,
     discounted_attendee_indexes: discountedAttendeeIndexes,
+    group_discount_amount: groupDiscountAmount,
     discount_unit_amount: discountUnitAmount,
     discount_amount: discountAmount,
     tier_key: event.tier ? event.tier.key : '',
@@ -767,6 +790,8 @@ function fillAdminEventForm(event) {
   adminEl.t2Qty.value = p.tier2_qty ?? 0;
   adminEl.repostEnabled.value = Number(p.repost_discount_enabled || 0) ? '1' : '0';
   adminEl.repostAmount.value = p.repost_discount_amount ?? 0;
+  adminEl.girlsGroupOfferEnabled.value = Number(p.girls_group_offer_enabled || 0) ? '1' : '0';
+  adminEl.boysGroupOfferEnabled.value = Number(p.boys_group_offer_enabled || 0) ? '1' : '0';
 }
 
 function clearAdminEventForm() {
@@ -789,6 +814,8 @@ function clearAdminEventForm() {
   adminEl.t2Qty.value = 0;
   adminEl.repostEnabled.value = '0';
   adminEl.repostAmount.value = 0;
+  adminEl.girlsGroupOfferEnabled.value = '0';
+  adminEl.boysGroupOfferEnabled.value = '0';
 }
 
 function renderAdminGuests() {
@@ -1039,6 +1066,8 @@ async function saveAdminEvent() {
     tier2_qty: adminEl.t2Qty.value,
     repost_discount_enabled: adminEl.repostEnabled.value === '1',
     repost_discount_amount: adminEl.repostAmount.value,
+    girls_group_offer_enabled: adminEl.girlsGroupOfferEnabled.value === '1',
+    boys_group_offer_enabled: adminEl.boysGroupOfferEnabled.value === '1',
   };
 
   if (!title) {

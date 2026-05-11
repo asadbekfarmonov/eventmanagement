@@ -66,6 +66,8 @@ class Database:
                 status TEXT NOT NULL DEFAULT 'open',
                 repost_discount_enabled INTEGER NOT NULL DEFAULT 0,
                 repost_discount_amount REAL NOT NULL DEFAULT 0,
+                girls_group_offer_enabled INTEGER NOT NULL DEFAULT 0,
+                boys_group_offer_enabled INTEGER NOT NULL DEFAULT 0,
                 payment1_title TEXT NOT NULL DEFAULT '',
                 payment1_url TEXT NOT NULL DEFAULT '',
                 payment2_title TEXT NOT NULL DEFAULT '',
@@ -86,6 +88,11 @@ class Database:
                 quantity INTEGER NOT NULL,
                 total_price REAL NOT NULL,
                 base_total_price REAL NOT NULL DEFAULT 0,
+                girls_group_free_count INTEGER NOT NULL DEFAULT 0,
+                boys_group_free_count INTEGER NOT NULL DEFAULT 0,
+                girls_group_discount_amount REAL NOT NULL DEFAULT 0,
+                boys_group_discount_amount REAL NOT NULL DEFAULT 0,
+                group_discount_amount REAL NOT NULL DEFAULT 0,
                 discount_count INTEGER NOT NULL DEFAULT 0,
                 discount_unit_amount REAL NOT NULL DEFAULT 0,
                 discount_amount REAL NOT NULL DEFAULT 0,
@@ -156,6 +163,10 @@ class Database:
             cursor.execute("ALTER TABLE events ADD COLUMN repost_discount_enabled INTEGER NOT NULL DEFAULT 0")
         if "repost_discount_amount" not in event_cols:
             cursor.execute("ALTER TABLE events ADD COLUMN repost_discount_amount REAL NOT NULL DEFAULT 0")
+        if "girls_group_offer_enabled" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN girls_group_offer_enabled INTEGER NOT NULL DEFAULT 0")
+        if "boys_group_offer_enabled" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN boys_group_offer_enabled INTEGER NOT NULL DEFAULT 0")
         if "payment1_title" not in event_cols:
             cursor.execute("ALTER TABLE events ADD COLUMN payment1_title TEXT NOT NULL DEFAULT ''")
         if "payment1_url" not in event_cols:
@@ -177,6 +188,16 @@ class Database:
         if "base_total_price" not in reservation_cols:
             cursor.execute("ALTER TABLE reservations ADD COLUMN base_total_price REAL NOT NULL DEFAULT 0")
             cursor.execute("UPDATE reservations SET base_total_price = total_price WHERE base_total_price = 0")
+        if "girls_group_free_count" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN girls_group_free_count INTEGER NOT NULL DEFAULT 0")
+        if "boys_group_free_count" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN boys_group_free_count INTEGER NOT NULL DEFAULT 0")
+        if "girls_group_discount_amount" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN girls_group_discount_amount REAL NOT NULL DEFAULT 0")
+        if "boys_group_discount_amount" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN boys_group_discount_amount REAL NOT NULL DEFAULT 0")
+        if "group_discount_amount" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN group_discount_amount REAL NOT NULL DEFAULT 0")
         if "discount_count" not in reservation_cols:
             cursor.execute("ALTER TABLE reservations ADD COLUMN discount_count INTEGER NOT NULL DEFAULT 0")
         if "discount_unit_amount" not in reservation_cols:
@@ -316,6 +337,32 @@ class Database:
             },
         ]
 
+    def _group_offer_breakdown(
+        self,
+        event: Event,
+        attendee_allocations: List[Dict[str, Any]],
+    ) -> Tuple[int, float, int, float]:
+        girls_allocations = sorted(
+            [item for item in attendee_allocations if item["gender"] == "girl"],
+            key=lambda item: float(item["unit_price"]),
+        )
+        boys_allocations = sorted(
+            [item for item in attendee_allocations if item["gender"] == "boy"],
+            key=lambda item: float(item["unit_price"]),
+        )
+
+        girls_group_free_count = (len(girls_allocations) // 3) if bool(event.girls_group_offer_enabled) else 0
+        boys_group_free_count = (len(boys_allocations) // 4) if bool(event.boys_group_offer_enabled) else 0
+
+        girls_group_discount_amount = sum(float(item["unit_price"]) for item in girls_allocations[:girls_group_free_count])
+        boys_group_discount_amount = sum(float(item["unit_price"]) for item in boys_allocations[:boys_group_free_count])
+        return (
+            girls_group_free_count,
+            girls_group_discount_amount,
+            boys_group_free_count,
+            boys_group_discount_amount,
+        )
+
     def _allocate_tier_plan(self, event: Event, boys: int, girls: int) -> Dict[str, Any]:
         quantity = int(boys) + int(girls)
         if quantity <= 0:
@@ -375,13 +422,23 @@ class Database:
         breakdown = [tier_usage[tier["key"]] for tier in tiers if tier["key"] in tier_usage]
         hold_counts = {key: value["count"] for key, value in tier_usage.items()}
         primary_tier_key = attendee_allocations[0]["tier_key"] if attendee_allocations else "early"
+        girls_group_free_count, girls_group_discount_amount, boys_group_free_count, boys_group_discount_amount = (
+            self._group_offer_breakdown(event, attendee_allocations)
+        )
+        group_discount_amount = girls_group_discount_amount + boys_group_discount_amount
         return {
             "quantity": quantity,
-            "total_price": total_price,
+            "base_total_price": total_price,
+            "total_price": max(0.0, total_price - group_discount_amount),
             "primary_tier_key": primary_tier_key,
             "attendee_allocations": attendee_allocations,
             "hold_counts": hold_counts,
             "breakdown": breakdown,
+            "girls_group_free_count": girls_group_free_count,
+            "boys_group_free_count": boys_group_free_count,
+            "girls_group_discount_amount": girls_group_discount_amount,
+            "boys_group_discount_amount": boys_group_discount_amount,
+            "group_discount_amount": group_discount_amount,
         }
 
     def quote_booking(self, event_id: int, boys: int, girls: int) -> Dict[str, Any]:
@@ -395,6 +452,12 @@ class Database:
             "boys": int(boys),
             "girls": int(girls),
             "quantity": plan["quantity"],
+            "base_total_price": float(plan["base_total_price"]),
+            "girls_group_free_count": int(plan["girls_group_free_count"]),
+            "boys_group_free_count": int(plan["boys_group_free_count"]),
+            "girls_group_discount_amount": float(plan["girls_group_discount_amount"]),
+            "boys_group_discount_amount": float(plan["boys_group_discount_amount"]),
+            "group_discount_amount": float(plan["group_discount_amount"]),
             "total_price": float(plan["total_price"]),
             "breakdown": plan["breakdown"],
         }
@@ -526,6 +589,7 @@ class Database:
                    regular_tier1_price, regular_tier1_price_girl, regular_tier1_qty,
                    regular_tier2_price, regular_tier2_price_girl, regular_tier2_qty,
                    status, repost_discount_enabled, repost_discount_amount,
+                   girls_group_offer_enabled, boys_group_offer_enabled,
                    payment1_title, payment1_url,
                    payment2_title, payment2_url,
                    payment3_title, payment3_url
@@ -545,6 +609,7 @@ class Database:
                    regular_tier1_price, regular_tier1_price_girl, regular_tier1_qty,
                    regular_tier2_price, regular_tier2_price_girl, regular_tier2_qty,
                    status, repost_discount_enabled, repost_discount_amount,
+                   girls_group_offer_enabled, boys_group_offer_enabled,
                    payment1_title, payment1_url,
                    payment2_title, payment2_url,
                    payment3_title, payment3_url
@@ -574,6 +639,8 @@ class Database:
         tier2_qty: int,
         repost_discount_enabled: bool = False,
         repost_discount_amount: float = 0.0,
+        girls_group_offer_enabled: bool = False,
+        boys_group_offer_enabled: bool = False,
         payment1_title: str = "",
         payment1_url: str = "",
         payment2_title: str = "",
@@ -600,6 +667,8 @@ class Database:
             "status": "open",
             "repost_discount_enabled": 1 if repost_discount_enabled else 0,
             "repost_discount_amount": float(repost_discount_amount),
+            "girls_group_offer_enabled": 1 if girls_group_offer_enabled else 0,
+            "boys_group_offer_enabled": 1 if boys_group_offer_enabled else 0,
             "payment1_title": (payment1_title or "").strip(),
             "payment1_url": (payment1_url or "").strip(),
             "payment2_title": (payment2_title or "").strip(),
@@ -668,8 +737,14 @@ class Database:
         discount_unit_amount = float(event.repost_discount_amount or 0.0) if discount_requested else 0.0
         discount_count = len(discounted_indexes)
         discount_amount = discount_count * discount_unit_amount
-        base_total_price = float(plan["total_price"])
-        total_price = max(0.0, base_total_price - discount_amount)
+        base_total_price = float(plan["base_total_price"])
+        girls_group_free_count = int(plan["girls_group_free_count"])
+        boys_group_free_count = int(plan["boys_group_free_count"])
+        girls_group_discount_amount = float(plan["girls_group_discount_amount"])
+        boys_group_discount_amount = float(plan["boys_group_discount_amount"])
+        group_discount_amount = float(plan["group_discount_amount"])
+        group_adjusted_total = float(plan["total_price"])
+        total_price = max(0.0, group_adjusted_total - discount_amount)
         code = f"R{event_id}-{uuid.uuid4().hex[:8].upper()}"
         repost_proofs = repost_proofs_by_index or {}
 
@@ -684,6 +759,11 @@ class Database:
             "quantity": quantity,
             "total_price": total_price,
             "base_total_price": base_total_price,
+            "girls_group_free_count": girls_group_free_count,
+            "boys_group_free_count": boys_group_free_count,
+            "girls_group_discount_amount": girls_group_discount_amount,
+            "boys_group_discount_amount": boys_group_discount_amount,
+            "group_discount_amount": group_discount_amount,
             "discount_count": discount_count,
             "discount_unit_amount": discount_unit_amount,
             "discount_amount": discount_amount,
@@ -772,7 +852,9 @@ class Database:
         cursor.execute(
             """
             SELECT id, code, user_id, event_id, ticket_type, quantity,
-                   total_price, base_total_price, discount_count, discount_unit_amount, discount_amount,
+                   total_price, base_total_price, girls_group_free_count, boys_group_free_count,
+                   girls_group_discount_amount, boys_group_discount_amount, group_discount_amount,
+                   discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
                    reviewed_at, reviewed_by_tg_id, hold_applied
@@ -789,7 +871,9 @@ class Database:
         cursor.execute(
             """
             SELECT id, code, user_id, event_id, ticket_type, quantity,
-                   total_price, base_total_price, discount_count, discount_unit_amount, discount_amount,
+                   total_price, base_total_price, girls_group_free_count, boys_group_free_count,
+                   girls_group_discount_amount, boys_group_discount_amount, group_discount_amount,
+                   discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
                    reviewed_at, reviewed_by_tg_id, hold_applied
@@ -806,7 +890,9 @@ class Database:
         cursor.execute(
             """
             SELECT id, code, user_id, event_id, ticket_type, quantity,
-                   total_price, base_total_price, discount_count, discount_unit_amount, discount_amount,
+                   total_price, base_total_price, girls_group_free_count, boys_group_free_count,
+                   girls_group_discount_amount, boys_group_discount_amount, group_discount_amount,
+                   discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
                    reviewed_at, reviewed_by_tg_id, hold_applied
@@ -880,6 +966,83 @@ class Database:
         params = list(updates.values()) + [reservation_id]
         cursor.execute(f"UPDATE reservations SET {assignments} WHERE id = ?", tuple(params))
 
+    def _reservation_attendee_rows(self, reservation_id: int, cursor: sqlite3.Cursor) -> List[sqlite3.Row]:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                COALESCE(gender, 'unknown') AS gender,
+                COALESCE(ticket_tier, '') AS ticket_tier,
+                COALESCE(repost_discount_applied, 0) AS repost_discount_applied
+            FROM attendees
+            WHERE reservation_id = ?
+            ORDER BY id
+            """,
+            (reservation_id,),
+        )
+        return cursor.fetchall()
+
+    def _recalculate_reservation_totals(
+        self,
+        reservation_row: sqlite3.Row,
+        attendee_rows: List[sqlite3.Row],
+        event: Event,
+    ) -> Dict[str, Any]:
+        attendee_allocations: List[Dict[str, Any]] = []
+        boys = 0
+        girls = 0
+        repost_discount_count = 0
+
+        for attendee in attendee_rows:
+            gender = (attendee["gender"] or "").strip()
+            ticket_tier = (attendee["ticket_tier"] or "").strip()
+            if gender == "boy":
+                boys += 1
+            elif gender == "girl":
+                girls += 1
+            if int(attendee["repost_discount_applied"] or 0) == 1:
+                repost_discount_count += 1
+            if gender in {"boy", "girl"} and ticket_tier in {"early", "tier1", "tier2"}:
+                attendee_allocations.append(
+                    {
+                        "gender": gender,
+                        "tier_key": ticket_tier,
+                        "unit_price": self._reservation_unit_price(
+                            reservation_row,
+                            event,
+                            gender,
+                            attendee_tier=ticket_tier,
+                        ),
+                    }
+                )
+
+        base_total_price = sum(float(item["unit_price"]) for item in attendee_allocations)
+        (
+            girls_group_free_count,
+            girls_group_discount_amount,
+            boys_group_free_count,
+            boys_group_discount_amount,
+        ) = self._group_offer_breakdown(event, attendee_allocations)
+        group_discount_amount = girls_group_discount_amount + boys_group_discount_amount
+        group_adjusted_total = max(0.0, base_total_price - group_discount_amount)
+        discount_unit_amount = float(reservation_row["discount_unit_amount"] or 0.0)
+        repost_discount_amount = repost_discount_count * discount_unit_amount
+        total_price = max(0.0, group_adjusted_total - repost_discount_amount)
+        return {
+            "quantity": len(attendee_rows),
+            "boys": boys,
+            "girls": girls,
+            "base_total_price": base_total_price,
+            "girls_group_free_count": girls_group_free_count,
+            "boys_group_free_count": boys_group_free_count,
+            "girls_group_discount_amount": girls_group_discount_amount,
+            "boys_group_discount_amount": boys_group_discount_amount,
+            "group_discount_amount": group_discount_amount,
+            "discount_count": repost_discount_count,
+            "discount_amount": repost_discount_amount,
+            "total_price": total_price,
+        }
+
     def admin_add_guest(
         self,
         reservation_code: str,
@@ -916,28 +1079,6 @@ class Database:
             if cursor.rowcount == 0:
                 self.conn.rollback()
                 return False, "No tickets left across all tiers for adding guest.", None
-        new_quantity = int(reservation_row["quantity"]) + 1
-        new_boys = int(reservation_row["boys"]) + (1 if gender == "boy" else 0)
-        new_girls = int(reservation_row["girls"]) + (1 if gender == "girl" else 0)
-        new_total = float(reservation_row["total_price"]) + float(add_price)
-        new_base_total = float(reservation_row["base_total_price"] or reservation_row["total_price"] or 0) + float(add_price)
-
-        cursor.execute(
-            """
-            UPDATE reservations
-            SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?
-            WHERE id = ?
-            """,
-            (new_quantity, new_boys, new_girls, new_total, new_base_total, reservation_row["id"]),
-        )
-        reservation_cols = self._table_columns("reservations")
-        self._update_legacy_reservation_fields(
-            cursor=cursor,
-            reservation_id=reservation_row["id"],
-            reservation_cols=reservation_cols,
-            quantity=new_quantity,
-            total_price=new_total,
-        )
         cursor.execute(
             """
             INSERT INTO attendees (
@@ -947,6 +1088,41 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (reservation_row["id"], *self._name_parts("", "", full_name), full_name, gender, 0, "", "", attendee_tier),
+        )
+        attendee_rows = self._reservation_attendee_rows(int(reservation_row["id"]), cursor)
+        totals = self._recalculate_reservation_totals(reservation_row, attendee_rows, event)
+        cursor.execute(
+            """
+            UPDATE reservations
+            SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?,
+                girls_group_free_count = ?, boys_group_free_count = ?,
+                girls_group_discount_amount = ?, boys_group_discount_amount = ?, group_discount_amount = ?,
+                discount_count = ?, discount_amount = ?
+            WHERE id = ?
+            """,
+            (
+                totals["quantity"],
+                totals["boys"],
+                totals["girls"],
+                totals["total_price"],
+                totals["base_total_price"],
+                totals["girls_group_free_count"],
+                totals["boys_group_free_count"],
+                totals["girls_group_discount_amount"],
+                totals["boys_group_discount_amount"],
+                totals["group_discount_amount"],
+                totals["discount_count"],
+                totals["discount_amount"],
+                reservation_row["id"],
+            ),
+        )
+        reservation_cols = self._table_columns("reservations")
+        self._update_legacy_reservation_fields(
+            cursor=cursor,
+            reservation_id=reservation_row["id"],
+            reservation_cols=reservation_cols,
+            quantity=totals["quantity"],
+            total_price=totals["total_price"],
         )
         self.conn.commit()
         updated = self.get_reservation(reservation_row["id"])
@@ -1006,6 +1182,11 @@ class Database:
             "quantity": quantity,
             "total_price": price,
             "base_total_price": price,
+            "girls_group_free_count": 0,
+            "boys_group_free_count": 0,
+            "girls_group_discount_amount": 0.0,
+            "boys_group_discount_amount": 0.0,
+            "group_discount_amount": 0.0,
             "discount_count": 0,
             "discount_unit_amount": 0.0,
             "discount_amount": 0.0,
@@ -1082,6 +1263,11 @@ class Database:
             "quantity": 1,
             "total_price": 0.0,
             "base_total_price": 0.0,
+            "girls_group_free_count": 0,
+            "boys_group_free_count": 0,
+            "girls_group_discount_amount": 0.0,
+            "boys_group_discount_amount": 0.0,
+            "group_discount_amount": 0.0,
             "discount_count": 0,
             "discount_unit_amount": 0.0,
             "discount_amount": 0.0,
@@ -1156,31 +1342,7 @@ class Database:
         if not event:
             return False, "Event not found for reservation.", None
 
-        gender = row["gender"] if row["gender"] in {"boy", "girl"} else "unknown"
-        unit_price = self._reservation_unit_price(row, event, gender, attendee_tier=row["attendee_tier"])
         new_quantity = int(row["quantity"]) - 1
-
-        if gender == "boy":
-            new_boys = max(0, int(row["boys"]) - 1)
-            new_girls = int(row["girls"])
-        elif gender == "girl":
-            new_boys = int(row["boys"])
-            new_girls = max(0, int(row["girls"]) - 1)
-        elif int(row["boys"]) > 0:
-            new_boys = int(row["boys"]) - 1
-            new_girls = int(row["girls"])
-        else:
-            new_boys = int(row["boys"])
-            new_girls = max(0, int(row["girls"]) - 1)
-
-        current_base_total = float(row["base_total_price"] or row["total_price"] or 0.0)
-        discount_unit_amount = float(row["discount_unit_amount"] or 0.0)
-        discount_count = int(row["discount_count"] or 0)
-        discount_applied = int(row["repost_discount_applied"] or 0) == 1
-        new_base_total = max(0.0, current_base_total - float(unit_price))
-        new_discount_count = max(0, discount_count - (1 if discount_applied else 0))
-        new_discount_amount = max(0.0, new_discount_count * discount_unit_amount)
-        new_total = max(0.0, new_base_total - new_discount_amount)
         cursor.execute("DELETE FROM attendees WHERE id = ?", (attendee_id,))
 
         if row["hold_applied"] == 1:
@@ -1200,6 +1362,8 @@ class Database:
                 """
                 UPDATE reservations
                 SET quantity = 0, boys = 0, girls = 0, total_price = 0, base_total_price = 0,
+                    girls_group_free_count = 0, boys_group_free_count = 0,
+                    girls_group_discount_amount = 0, boys_group_discount_amount = 0, group_discount_amount = 0,
                     discount_count = 0, discount_amount = 0,
                     status = ?, hold_applied = 0
                 WHERE id = ?
@@ -1218,21 +1382,40 @@ class Database:
             updated = self.get_reservation(row["id"])
             return True, "Guest removed and reservation cancelled.", updated
 
+        attendee_rows = self._reservation_attendee_rows(int(row["id"]), cursor)
+        totals = self._recalculate_reservation_totals(row, attendee_rows, event)
         cursor.execute(
             """
             UPDATE reservations
-            SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?, discount_count = ?, discount_amount = ?
+            SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?,
+                girls_group_free_count = ?, boys_group_free_count = ?,
+                girls_group_discount_amount = ?, boys_group_discount_amount = ?, group_discount_amount = ?,
+                discount_count = ?, discount_amount = ?
             WHERE id = ?
             """,
-            (new_quantity, new_boys, new_girls, new_total, new_base_total, new_discount_count, new_discount_amount, row["id"]),
+            (
+                totals["quantity"],
+                totals["boys"],
+                totals["girls"],
+                totals["total_price"],
+                totals["base_total_price"],
+                totals["girls_group_free_count"],
+                totals["boys_group_free_count"],
+                totals["girls_group_discount_amount"],
+                totals["boys_group_discount_amount"],
+                totals["group_discount_amount"],
+                totals["discount_count"],
+                totals["discount_amount"],
+                row["id"],
+            ),
         )
         reservation_cols = self._table_columns("reservations")
         self._update_legacy_reservation_fields(
             cursor=cursor,
             reservation_id=row["id"],
             reservation_cols=reservation_cols,
-            quantity=new_quantity,
-            total_price=new_total,
+            quantity=totals["quantity"],
+            total_price=totals["total_price"],
         )
         self.conn.commit()
         updated = self.get_reservation(row["id"])
@@ -1294,30 +1477,7 @@ class Database:
         if not event:
             return False, "Event not found for reservation.", None
 
-        gender = row["gender"] if row["gender"] in {"boy", "girl"} else "unknown"
-        unit_price = self._reservation_unit_price(row, event, gender, attendee_tier=row["attendee_tier"])
         new_quantity = int(row["quantity"]) - 1
-
-        if gender == "boy":
-            new_boys = max(0, int(row["boys"]) - 1)
-            new_girls = int(row["girls"])
-        elif gender == "girl":
-            new_boys = int(row["boys"])
-            new_girls = max(0, int(row["girls"]) - 1)
-        elif int(row["boys"]) > 0:
-            new_boys = int(row["boys"]) - 1
-            new_girls = int(row["girls"])
-        else:
-            new_boys = int(row["boys"])
-            new_girls = max(0, int(row["girls"]) - 1)
-
-        current_base_total = float(row["base_total_price"] or row["total_price"] or 0.0)
-        discount_unit_amount = float(row["discount_unit_amount"] or 0.0)
-        discount_count = int(row["discount_count"] or 0)
-        discount_applied = int(row["repost_discount_applied"] or 0) == 1
-        new_base_total = max(0.0, current_base_total - float(unit_price))
-        new_discount_count = max(0, discount_count - (1 if discount_applied else 0))
-        new_discount_amount = max(0.0, new_discount_count * discount_unit_amount)
         cursor.execute("DELETE FROM attendees WHERE id = ?", (row["attendee_id"],))
         if row["hold_applied"] == 1:
             release_tier = row["attendee_tier"] if row["attendee_tier"] in {"early", "tier1", "tier2"} else row["ticket_type"]
@@ -1336,6 +1496,8 @@ class Database:
                 """
                 UPDATE reservations
                 SET quantity = 0, boys = 0, girls = 0, total_price = 0, base_total_price = 0,
+                    girls_group_free_count = 0, boys_group_free_count = 0,
+                    girls_group_discount_amount = 0, boys_group_discount_amount = 0, group_discount_amount = 0,
                     discount_count = 0, discount_amount = 0,
                     status = ?, hold_applied = 0
                 WHERE id = ?
@@ -1351,22 +1513,40 @@ class Database:
                 total_price=0.0,
             )
         else:
-            new_total = max(0.0, new_base_total - new_discount_amount)
+            attendee_rows = self._reservation_attendee_rows(int(row["id"]), cursor)
+            totals = self._recalculate_reservation_totals(row, attendee_rows, event)
             cursor.execute(
                 """
                 UPDATE reservations
-                SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?, discount_count = ?, discount_amount = ?
+                SET quantity = ?, boys = ?, girls = ?, total_price = ?, base_total_price = ?,
+                    girls_group_free_count = ?, boys_group_free_count = ?,
+                    girls_group_discount_amount = ?, boys_group_discount_amount = ?, group_discount_amount = ?,
+                    discount_count = ?, discount_amount = ?
                 WHERE id = ?
                 """,
-                (new_quantity, new_boys, new_girls, new_total, new_base_total, new_discount_count, new_discount_amount, row["id"]),
+                (
+                    totals["quantity"],
+                    totals["boys"],
+                    totals["girls"],
+                    totals["total_price"],
+                    totals["base_total_price"],
+                    totals["girls_group_free_count"],
+                    totals["boys_group_free_count"],
+                    totals["girls_group_discount_amount"],
+                    totals["boys_group_discount_amount"],
+                    totals["group_discount_amount"],
+                    totals["discount_count"],
+                    totals["discount_amount"],
+                    row["id"],
+                ),
             )
             reservation_cols = self._table_columns("reservations")
             self._update_legacy_reservation_fields(
                 cursor=cursor,
                 reservation_id=row["id"],
                 reservation_cols=reservation_cols,
-                quantity=new_quantity,
-                total_price=new_total,
+                quantity=totals["quantity"],
+                total_price=totals["total_price"],
             )
 
         self.conn.commit()
@@ -1650,6 +1830,8 @@ class Database:
             "tier2_qty": "regular_tier2_qty",
             "repost_discount_enabled": "repost_discount_enabled",
             "repost_discount_amount": "repost_discount_amount",
+            "girls_group_offer_enabled": "girls_group_offer_enabled",
+            "boys_group_offer_enabled": "boys_group_offer_enabled",
             "payment1_title": "payment1_title",
             "payment1_url": "payment1_url",
             "payment2_title": "payment2_title",
@@ -1704,6 +1886,17 @@ class Database:
                         value = 0
                     else:
                         return False, "repost_discount_enabled must be boolean."
+                else:
+                    value = 1 if bool(value) else 0
+            if key in {"girls_group_offer_enabled", "boys_group_offer_enabled"}:
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"1", "true", "yes", "on"}:
+                        value = 1
+                    elif normalized in {"0", "false", "no", "off", ""}:
+                        value = 0
+                    else:
+                        return False, f"{key} must be boolean."
                 else:
                     value = 1 if bool(value) else 0
             if key in {"payment1_title", "payment2_title", "payment3_title"}:
