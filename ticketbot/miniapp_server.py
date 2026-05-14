@@ -295,6 +295,7 @@ def _notify_admins_pending_from_miniapp(reservation) -> None:
     buyer = "Unknown"
     if user:
         buyer = f"{user.name} {user.surname} (tg:{user.tg_id})"
+    applied_discount_amount = max(float(reservation.group_discount_amount or 0.0), float(reservation.discount_amount or 0.0))
 
     caption = (
         "New payment proof pending review\n\n"
@@ -306,7 +307,8 @@ def _notify_admins_pending_from_miniapp(reservation) -> None:
         f"Girls 2+1 discount: {reservation.girls_group_free_count} free = {reservation.girls_group_discount_amount:.2f}\n"
         f"Boys 3+1 discount: {reservation.boys_group_free_count} free = {reservation.boys_group_discount_amount:.2f}\n"
         f"Group offer discount total: {reservation.group_discount_amount:.2f}\n"
-        f"Discount: {reservation.discount_count} x {reservation.discount_unit_amount:.2f} = {reservation.discount_amount:.2f}\n"
+        f"Repost discount: {reservation.discount_count} x {reservation.discount_unit_amount:.2f} = {reservation.discount_amount:.2f}\n"
+        f"Applied discount: {applied_discount_amount:.2f}\n"
         f"Final total: {reservation.total_price:.2f}\n"
         f"Buyer: {buyer}\n\n"
         f"Attendees:\n{attendee_lines}\n\n"

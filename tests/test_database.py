@@ -252,7 +252,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(attendees[0]["repost_proof_file_id"], "/uploads/repost-0.jpg")
         self.assertEqual(attendees[2]["repost_proof_file_id"], "/uploads/repost-2.jpg")
 
-    def test_pending_reservation_stacks_group_offer_and_repost_discount(self):
+    def test_pending_reservation_applies_greater_of_group_offer_and_repost_discount(self):
         event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
         ok, message = self.db.set_event_fields(
             event_id,
@@ -283,7 +283,43 @@ class DatabaseTests(unittest.TestCase):
         self.assertAlmostEqual(reservation.group_discount_amount, 2500.0)
         self.assertEqual(reservation.discount_count, 1)
         self.assertAlmostEqual(reservation.discount_amount, 1000.0)
-        self.assertAlmostEqual(reservation.total_price, 6500.0)
+        self.assertAlmostEqual(reservation.total_price, 7500.0)
+
+    def test_pending_reservation_uses_repost_discount_when_it_is_greater_than_group_offer(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "girls_group_offer_enabled": 1,
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=0,
+            girls=3,
+            attendees=["A One", "B Two", "C Three"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0, 1, 2],
+            repost_proofs_by_index={
+                0: ("/uploads/repost-0.jpg", "external"),
+                1: ("/uploads/repost-1.jpg", "external"),
+                2: ("/uploads/repost-2.jpg", "external"),
+            },
+        )
+
+        self.assertAlmostEqual(reservation.base_total_price, 7800.0)
+        self.assertEqual(reservation.girls_group_free_count, 1)
+        self.assertAlmostEqual(reservation.girls_group_discount_amount, 2600.0)
+        self.assertAlmostEqual(reservation.group_discount_amount, 2600.0)
+        self.assertEqual(reservation.discount_count, 3)
+        self.assertAlmostEqual(reservation.discount_amount, 3000.0)
+        self.assertAlmostEqual(reservation.total_price, 4800.0)
 
     def test_admin_remove_discounted_guest_updates_discount_totals(self):
         event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)

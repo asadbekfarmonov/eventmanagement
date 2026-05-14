@@ -271,6 +271,7 @@ function renderSummary() {
   const girlsGroupDiscountAmount = Number(quote && quote.girls_group_discount_amount ? quote.girls_group_discount_amount : 0);
   const boysGroupDiscountAmount = Number(quote && quote.boys_group_discount_amount ? quote.boys_group_discount_amount : 0);
   const groupDiscountAmount = Number(quote && quote.group_discount_amount ? quote.group_discount_amount : 0);
+  const appliedDiscountAmount = Math.max(groupDiscountAmount, discountAmount);
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
@@ -328,7 +329,7 @@ function renderSummary() {
     const girlsPart = `Girls: ${row.girls} x ${money(row.girl_price)}`;
     return `<div>${row.tier_name}: ${boysPart} | ${girlsPart} | Subtotal: ${money(row.subtotal)}</div>`;
   });
-  const finalTotal = Math.max(0, Number(quote.total_price || 0) - discountAmount);
+  const finalTotal = Math.max(0, baseTotal - appliedDiscountAmount);
   const repostHint = repostEligible
     ? `<div class="hint">Repost discount available: ${money(discountUnitAmount)} per attendee.</div>`
     : '';
@@ -343,10 +344,12 @@ function renderSummary() {
         repostHint,
         ...groupSummary,
         `<div>Repost discount: ${selectedDiscounts.length} x ${money(discountUnitAmount)} = ${money(discountAmount)}</div>`,
+        `<div>Applied discount: ${money(appliedDiscountAmount)}</div>`,
         `<div><strong>Final total: ${money(finalTotal)}</strong></div>`,
       ]
     : [
         ...groupSummary,
+        (girlsGroupOfferEnabled || boysGroupOfferEnabled) ? `<div>Applied discount: ${money(appliedDiscountAmount)}</div>` : '',
         `<div><strong>Total: ${money(quote.total_price)}</strong></div>`,
       ];
   const repostMissingHint = repostEligible && missingRepostProofs.length
@@ -568,11 +571,10 @@ function getPayload() {
     ? Number(state.quote.base_total_price !== undefined ? state.quote.base_total_price : (state.quote.total_price || 0))
     : 0;
   const groupDiscountAmount = quoteMatches ? Number(state.quote.group_discount_amount || 0) : 0;
-  const groupAdjustedTotal = quoteMatches ? Number(state.quote.total_price || 0) : 0;
   const discountUnitAmount = repostDiscountEnabled(event) ? Number(event.repost_discount_amount || 0) : 0;
   const discountedAttendeeIndexes = discountSelections.filter((item) => item.checked).map((item) => item.index);
   const discountAmount = discountedAttendeeIndexes.length * discountUnitAmount;
-  const total = Math.max(0, groupAdjustedTotal - discountAmount);
+  const total = Math.max(0, baseTotal - Math.max(groupDiscountAmount, discountAmount));
 
   return {
     type: 'booking_draft_v1',

@@ -363,6 +363,9 @@ class Database:
             boys_group_discount_amount,
         )
 
+    def _applied_discount_amount(self, group_discount_amount: float, repost_discount_amount: float) -> float:
+        return max(float(group_discount_amount or 0.0), float(repost_discount_amount or 0.0))
+
     def _allocate_tier_plan(self, event: Event, boys: int, girls: int) -> Dict[str, Any]:
         quantity = int(boys) + int(girls)
         if quantity <= 0:
@@ -743,8 +746,8 @@ class Database:
         girls_group_discount_amount = float(plan["girls_group_discount_amount"])
         boys_group_discount_amount = float(plan["boys_group_discount_amount"])
         group_discount_amount = float(plan["group_discount_amount"])
-        group_adjusted_total = float(plan["total_price"])
-        total_price = max(0.0, group_adjusted_total - discount_amount)
+        applied_discount_amount = self._applied_discount_amount(group_discount_amount, discount_amount)
+        total_price = max(0.0, base_total_price - applied_discount_amount)
         code = f"R{event_id}-{uuid.uuid4().hex[:8].upper()}"
         repost_proofs = repost_proofs_by_index or {}
 
@@ -1024,10 +1027,10 @@ class Database:
             boys_group_discount_amount,
         ) = self._group_offer_breakdown(event, attendee_allocations)
         group_discount_amount = girls_group_discount_amount + boys_group_discount_amount
-        group_adjusted_total = max(0.0, base_total_price - group_discount_amount)
         discount_unit_amount = float(reservation_row["discount_unit_amount"] or 0.0)
         repost_discount_amount = repost_discount_count * discount_unit_amount
-        total_price = max(0.0, group_adjusted_total - repost_discount_amount)
+        applied_discount_amount = self._applied_discount_amount(group_discount_amount, repost_discount_amount)
+        total_price = max(0.0, base_total_price - applied_discount_amount)
         return {
             "quantity": len(attendee_rows),
             "boys": boys,
