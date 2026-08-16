@@ -165,14 +165,14 @@ textarea:focus-visible {
 
 .top-nav {
   display: flex;
-  gap: 6px;
+  gap: 7px;
   margin-top: 18px;
   flex-wrap: wrap;
   width: fit-content;
   max-width: 100%;
-  padding: 5px;
+  padding: 7px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 18px;
   background: rgba(118, 118, 128, 0.16);
   backdrop-filter: blur(18px);
   overflow: hidden;
@@ -184,7 +184,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   padding: 8px 13px;
   color: #d1d1d6;
   background: transparent;
@@ -196,6 +196,7 @@ textarea:focus-visible {
 
 .top-nav-item:hover {
   background: rgba(255, 255, 255, 0.08);
+  transform: none;
 }
 
 .top-nav-item.active {
@@ -810,6 +811,7 @@ input[type="file"]::file-selector-button {
   .top-nav {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-radius: 18px;
   }
 
   .grid-2,
