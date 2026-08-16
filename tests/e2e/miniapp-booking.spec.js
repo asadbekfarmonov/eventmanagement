@@ -52,6 +52,10 @@ test('booking stays blocked until payment proof is uploaded', async ({ page }) =
   await expect(page.locator('#submit-booking')).toBeDisabled();
 
   await page.locator('#payment-proof').setInputFiles(proofFile);
+  await expect(page.locator('#submit-booking')).toBeDisabled();
+  await expect(page.locator('.terms-box')).toContainText('Booking Terms');
+
+  await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
 });
 
@@ -63,6 +67,7 @@ test('booking submission shows pending status and appears in my tickets', async 
   await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
   await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
   await page.locator('#payment-proof').setInputFiles(proofFile);
+  await page.locator('#terms-accepted').check();
 
   await expect(page.locator('#submit-booking')).toBeEnabled();
   await page.locator('#submit-booking').click();
@@ -95,6 +100,9 @@ test('discounted attendee requires repost screenshot and updates final total', a
   await expect(page.locator('#status')).toHaveText('');
   await expect(page.locator('#summary')).toContainText('Repost discount: 1 x 1000.00 = 1000.00');
   await expect(page.locator('#summary')).toContainText('Final total: 1500.00');
+  await expect(page.locator('#submit-booking')).toBeDisabled();
+
+  await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
 });
 

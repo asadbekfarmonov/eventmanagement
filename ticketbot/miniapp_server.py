@@ -202,6 +202,10 @@ def _is_upload_file(value: Any) -> bool:
     return isinstance(value, (UploadFile, StarletteUploadFile))
 
 
+def _truthy_form_value(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "accepted"}
+
+
 async def _store_upload_file(file: StarletteUploadFile, *, label: str, allow_pdf: bool) -> Tuple[str, str]:
     mime = (file.content_type or "").lower()
     if allow_pdf:
@@ -751,6 +755,8 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail="tg_id, event_id, boys, and girls must be integers.") from exc
         tg_id = _request_tg_id(request, tg_id)
         _enforce_rate_limit(request, "booking", BOOKING_RATE_LIMIT, tg_id)
+        if not _truthy_form_value(form.get("terms_accepted")):
+            raise HTTPException(status_code=400, detail="Accept the booking terms before booking.")
         attendees = str(form.get("attendees", ""))
         payment_file = form.get("file")
         if not _is_upload_file(payment_file):

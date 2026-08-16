@@ -16,6 +16,7 @@ const summaryEl = document.getElementById('summary');
 const statusEl = document.getElementById('status');
 const submitBtn = document.getElementById('submit-booking');
 const paymentProofEl = document.getElementById('payment-proof');
+const termsAcceptedEl = document.getElementById('terms-accepted');
 const refreshBtn = document.getElementById('refresh-events');
 const ticketsListEl = document.getElementById('tickets-list');
 const ticketsEmptyEl = document.getElementById('tickets-empty');
@@ -215,6 +216,10 @@ function hasPaymentProof() {
   return Boolean(paymentProofEl && paymentProofEl.files && paymentProofEl.files[0]);
 }
 
+function termsAccepted() {
+  return Boolean(termsAcceptedEl && termsAcceptedEl.checked);
+}
+
 function repostDiscountEnabled(event) {
   return Boolean(event && Number(event.repost_discount_enabled || 0) && Number(event.repost_discount_amount || 0) > 0);
 }
@@ -397,7 +402,7 @@ function renderSummary() {
     repostMissingHint,
     paymentSection,
   ].join('');
-  submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof() && missingRepostProofs.length === 0);
+  submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof() && termsAccepted() && missingRepostProofs.length === 0);
 }
 
 async function refreshQuote() {
@@ -670,6 +675,10 @@ async function submitDraft() {
     setStatus('Upload payment proof first.', true);
     return;
   }
+  if (!termsAccepted()) {
+    setStatus('Accept the booking terms before booking.', true);
+    return;
+  }
 
   const formData = new FormData();
   formData.set('tg_id', String(tgId));
@@ -678,6 +687,7 @@ async function submitDraft() {
   formData.set('girls', String(payload.girls));
   formData.set('attendees', JSON.stringify(payload.attendees));
   formData.set('discounted_attendee_indexes', JSON.stringify(payload.discounted_attendee_indexes || []));
+  formData.set('terms_accepted', 'true');
   formData.set('file', paymentFile);
   for (const item of discountSelections) {
     if (item.checked && item.file) {
@@ -1213,6 +1223,9 @@ submitBtn.addEventListener('click', submitDraft);
 refreshBtn.addEventListener('click', fetchEvents);
 if (paymentProofEl) {
   paymentProofEl.addEventListener('change', renderSummary);
+}
+if (termsAcceptedEl) {
+  termsAcceptedEl.addEventListener('change', renderSummary);
 }
 if (summaryEl) {
   summaryEl.addEventListener('click', async (event) => {

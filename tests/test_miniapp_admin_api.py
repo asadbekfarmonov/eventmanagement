@@ -134,6 +134,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
         filename="proof.png",
         content=PNG_BYTES,
         mime="image/png",
+        terms_accepted="true",
     ):
         names = attendees or ["John Doe"]
         files = [
@@ -167,6 +168,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "girls": str(girls),
                 "attendees": json.dumps(names),
                 "discounted_attendee_indexes": json.dumps(discounted_attendee_indexes or []),
+                "terms_accepted": terms_accepted,
             },
             files=files,
         )
@@ -242,8 +244,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260816i", index_response.text)
-        self.assertIn("/static/app.js?v=20260816d", index_response.text)
+        self.assertIn("/static/styles.css?v=20260816k", index_response.text)
+        self.assertIn("/static/app.js?v=20260816e", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
@@ -568,6 +570,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "boys": "1",
                 "girls": "0",
                 "attendees": '["John Doe"]',
+                "terms_accepted": "true",
             },
             files={
                 "file": (
@@ -668,6 +671,13 @@ class MiniAppAdminApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("not a valid", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+
+    def test_book_with_payment_requires_terms_acceptance(self):
+        response = self._book_with_payment(terms_accepted="")
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Accept the booking terms", response.json().get("detail", ""))
         reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
         self.assertEqual(reservation_count, 0)
 

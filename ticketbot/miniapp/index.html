@@ -7,17 +7,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260816i">
+  <link rel="stylesheet" href="/static/styles.css?v=20260816k">
 </head>
 <body>
   <main class="app-shell">
     <header class="hero">
-      <div class="hero-top">
+      <div class="hero-brand">
         <div class="brand-logo-wrap">
           <img class="brand-logo" src="/static/logo.png?v=20260311f" alt="Budapest Tunderi logo" />
         </div>
+        <h1 class="hero-title">BUDAPEST TUNDERI</h1>
       </div>
-      <h1 class="hero-title">BUDAPEST TUNDERI</h1>
       <p class="sub">Мы создадим атмосферу</p>
       <p class="sub">Вы сделаете эту ночь</p>
       <p id="admin-open-status" class="admin-open-status" role="status" aria-live="polite"></p>
@@ -112,6 +112,35 @@
         Payment proof (PDF or image)
         <input id="payment-proof" type="file" accept="application/pdf,image/*" />
       </label>
+      <div class="terms-box">
+        <details>
+          <summary>Booking terms and conduct agreement</summary>
+          <div class="terms-document">
+            <p><strong>Budapest Tunderi Booking Terms</strong></p>
+            <p>By booking a ticket, you confirm that you understand and accept these rules for yourself and every guest in your booking.</p>
+            <ol>
+              <li>You must follow Hungarian law, venue rules, security instructions, and event staff instructions during the event.</li>
+              <li>Guests under 18 are not allowed to buy, receive, or drink alcohol. If you are 17 or younger, you are personally responsible for refusing alcohol and following age restrictions.</li>
+              <li>Budapest Tunderi does not monitor your health, alcohol intake, medication, allergies, or personal limits. You attend at your own risk and must take care of your own wellbeing.</li>
+              <li>If you feel unwell, unsafe, or need help, you must contact venue staff, event staff, or emergency services immediately.</li>
+              <li>You are responsible for your own behavior. Harassment, violence, threats, illegal substances, dangerous behavior, and disrespect toward guests, staff, DJs, performers, or the venue are not allowed.</li>
+              <li>If you damage the venue, DJ equipment, event property, or another person’s property, you are responsible for the consequences, costs, and claims.</li>
+              <li>Security or organizers may refuse entry or remove anyone who breaks rules, appears unsafe, is aggressive, intoxicated beyond safe limits, or creates risk for others.</li>
+              <li>Tickets are personal booking records. Bring your booking code and valid ID if requested. Entry can be refused if the booking cannot be verified.</li>
+              <li>After a ticket is bought, payments are not refunded in cash. If you cannot attend, organizers may, at their discretion, move your access to the next party when you contact us before the event.</li>
+              <li>If an event is postponed or materially changed, organizers may offer access to the rescheduled or next suitable event.</li>
+              <li>Fake payment proofs, edited screenshots, chargebacks, or misleading booking information can lead to cancellation without access.</li>
+              <li>Photos and videos may be taken at the event for community and promotional content. If you want a specific image removed, contact us.</li>
+              <li>You are responsible for the guests you add to your booking and for making sure they know these terms.</li>
+            </ol>
+            <p>This document is an event policy and booking agreement. It is not a substitute for legal advice.</p>
+          </div>
+        </details>
+        <label class="terms-accept">
+          <input id="terms-accepted" type="checkbox" />
+          <span>I have read and accept the booking terms and conduct agreement.</span>
+        </label>
+      </div>
       <button id="submit-booking" class="primary" type="button" disabled>Book</button>
       <p id="status" class="hint"></p>
     </section>
@@ -313,6 +342,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260816d" defer></script>
+  <script src="/static/app.js?v=20260816e" defer></script>
 </body>
 </html>
