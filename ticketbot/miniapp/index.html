@@ -6,13 +6,10 @@
   <title>Event Booking</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260314b">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=20260816a">
 </head>
 <body>
-  <div class="bg-shape bg-shape-a"></div>
-  <div class="bg-shape bg-shape-b"></div>
-
   <main class="app-shell">
     <header class="hero">
       <div class="hero-top">
@@ -22,28 +19,28 @@
         </div>
       </div>
       <h1 class="hero-title">BUDAPEST TUNDERI</h1>
-      <p class="sub">Мы создадим атмосферу</p>
-      <p class="sub">Вы сделаете эту ночь</p>
+      <p class="sub">Budapest nights, curated for your circle.</p>
+      <p class="sub">Choose an event, add your group, upload proof, and we confirm the list.</p>
       <div class="steps">
-        <span>1 Event</span>
-        <span>2 Group</span>
-        <span>3 Names</span>
-        <span>4 Booking Review</span>
-        <span>5 Upload + Book</span>
+        <span>Event</span>
+        <span>Group</span>
+        <span>Names</span>
+        <span>Review</span>
+        <span>Book</span>
       </div>
     </header>
 
     <section class="panel" id="events-panel">
       <div class="panel-head">
-        <h2>1. Select Event</h2>
+        <h2>Choose event</h2>
         <button id="refresh-events" type="button">Refresh</button>
       </div>
       <div id="events-list" class="event-grid"></div>
-      <p id="events-empty" class="hint" hidden>No open events yet.</p>
+      <p id="events-empty" class="hint" hidden>No active events right now.</p>
     </section>
 
     <section class="panel" id="group-panel">
-      <h2>2. Group Details</h2>
+      <h2>Group size</h2>
       <div class="grid-2">
         <label>
           Boys
@@ -54,32 +51,31 @@
           <input id="girls" type="number" min="0" value="0" />
         </label>
       </div>
-      <p class="hint">Attendee fields update automatically.</p>
+      <p class="hint">We will create one name field for each guest.</p>
     </section>
 
     <section class="panel" id="attendees-panel">
-      <h2>3. Attendee Names as in passport</h2>
-      <p class="hint">NOTE: Passport name required.</p>
+      <h2>Guest names</h2>
+      <p class="hint">Use the name and surname from the passport or ID.</p>
       <div id="attendees-list" class="attendees"></div>
     </section>
 
     <section class="panel" id="summary-panel">
-      <h2>4. Booking Review</h2>
+      <h2>Review and book</h2>
       <div id="summary" class="summary-card">
-        <p>Select event and attendee counts.</p>
+        <p>Choose an event and add your group size.</p>
       </div>
       <label>
-        5. Upload confirmation of payment (PDF or image)
+        Payment proof (PDF or image)
         <input id="payment-proof" type="file" accept="application/pdf,image/*" />
       </label>
       <button id="submit-booking" class="primary" type="button" disabled>Book</button>
       <p id="status" class="hint"></p>
-      <textarea id="debug-payload" hidden></textarea>
     </section>
 
     <section class="panel" id="tickets-panel">
       <div class="panel-head">
-        <h2>My Tickets</h2>
+        <h2>My tickets</h2>
         <button id="tickets-refresh" type="button">Refresh</button>
       </div>
       <div id="tickets-list" class="admin-cards"></div>
@@ -88,14 +84,14 @@
 
     <section class="panel" id="admin-area" hidden>
       <div class="panel-head">
-        <h2>Admin Dashboard</h2>
+        <h2>Admin dashboard</h2>
         <button id="admin-refresh-all" type="button">Refresh all</button>
       </div>
       <p id="admin-ident" class="hint"></p>
       <p id="admin-status" class="hint"></p>
 
       <nav class="admin-tabs" aria-label="Admin sections">
-        <button type="button" class="admin-tab active" data-admin-tab="events">Event Setup</button>
+        <button type="button" class="admin-tab active" data-admin-tab="events">Events</button>
         <button type="button" class="admin-tab" data-admin-tab="guests">Guests</button>
         <button type="button" class="admin-tab" data-admin-tab="add_guest">Add Guest</button>
         <button type="button" class="admin-tab" data-admin-tab="import_export">Import/Export</button>
@@ -103,7 +99,7 @@
 
       <section class="admin-block admin-section" data-admin-section="events">
         <div class="panel-head">
-          <h3>Event Setup</h3>
+          <h3>Event setup</h3>
           <button id="admin-events-refresh" type="button">Reload events</button>
         </div>
         <label>
@@ -112,7 +108,7 @@
         </label>
         <label>Title<input id="admin-ev-title" type="text" /></label>
         <label>
-          Caption / Description
+          Event description
           <textarea
             id="admin-ev-caption"
             rows="6"
@@ -182,7 +178,7 @@
       </section>
 
       <section class="admin-block admin-section" data-admin-section="add_guest" hidden>
-        <h3>Add Guest</h3>
+        <h3>Add guest</h3>
         <div class="grid-2">
           <label>
             Event
@@ -206,17 +202,17 @@
       </section>
 
       <section class="admin-block admin-section" data-admin-section="import_export" hidden>
-        <h3>Import Guests (Excel)</h3>
+        <h3>Import guests (Excel)</h3>
         <label>Event<select id="admin-import-event-select"></select></label>
         <label>
-          Excel File (.xlsx, col A=Name, col B=Surname)
+          Excel file (.xlsx, column A = name, column B = surname)
           <input id="admin-import-file" type="file" accept=".xlsx" />
         </label>
         <div class="admin-actions">
           <button id="admin-import-upload" type="button">Import Guests</button>
         </div>
-        <h3>Export Guests (Excel)</h3>
-        <p class="hint">Export all names and surnames from database.</p>
+        <h3>Export guests (Excel)</h3>
+        <p class="hint">Download all guest names and surnames.</p>
         <div class="admin-actions">
           <button id="admin-export-download" type="button">Download Excel</button>
         </div>
@@ -224,7 +220,7 @@
 
       <section class="admin-block admin-section" data-admin-section="guests" hidden>
         <div class="panel-head">
-          <h3>Search Guests</h3>
+          <h3>Guest list</h3>
           <button id="admin-guests-refresh" type="button">Refresh</button>
         </div>
         <div class="grid-2">

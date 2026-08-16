@@ -79,7 +79,7 @@ test('discounted attendee requires repost screenshot and updates final total', a
   await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
 
   await expect(page.locator('#summary')).toContainText('Base total: 2500.00');
-  await expect(page.locator('#summary')).toContainText('Repost discount available: 1000.00 per attendee.');
+  await expect(page.locator('#summary')).toContainText('Instagram repost discount: 1000.00 per guest.');
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]')).toBeDisabled();
 
   await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]').check();
@@ -87,10 +87,10 @@ test('discounted attendee requires repost screenshot and updates final total', a
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]')).toBeVisible();
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await expect(page.locator('#submit-booking')).toBeDisabled();
-  await expect(page.locator('#summary')).toContainText('Upload repost screenshot for each attendee marked for discount.');
+  await expect(page.locator('#summary')).toContainText('Upload a repost screenshot for each guest using the discount.');
 
   await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]').setInputFiles(proofFile);
-  await expect(page.locator('#summary')).not.toContainText('Upload repost screenshot for each attendee marked for discount.');
+  await expect(page.locator('#summary')).not.toContainText('Upload a repost screenshot for each guest using the discount.');
   await expect(page.locator('#status')).toHaveText('');
   await expect(page.locator('#summary')).toContainText('Repost discount: 1 x 1000.00 = 1000.00');
   await expect(page.locator('#summary')).toContainText('Final total: 1500.00');
@@ -116,6 +116,6 @@ test('admin can enable repost discount on existing event and guest sees it', asy
   await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
   await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
 
-  await expect(page.locator('#summary')).toContainText('Repost discount available: 1000.00 per attendee.');
+  await expect(page.locator('#summary')).toContainText('Instagram repost discount: 1000.00 per guest.');
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]')).toBeVisible();
 });

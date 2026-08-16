@@ -1,6 +1,8 @@
 import os
 import time
 from datetime import datetime, timedelta
+import hashlib
+import hmac
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -8,12 +10,12 @@ import json
 import uuid
 import urllib.request
 import urllib.error
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
@@ -31,6 +33,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
 DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
+ALLOW_TG_ID_FALLBACK = os.getenv("MINIAPP_ALLOW_TG_ID_FALLBACK", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 def _env_positive_float(name: str, default: float) -> float:
@@ -57,6 +64,7 @@ def _env_positive_int(name: str, default: int) -> int:
 
 UPLOAD_MAX_MB = _env_positive_float("UPLOAD_MAX_MB", 5.0)
 MAX_UPLOAD_BYTES = int(UPLOAD_MAX_MB * 1024 * 1024)
+TELEGRAM_AUTH_MAX_AGE_SECONDS = _env_positive_int("TELEGRAM_AUTH_MAX_AGE_SECONDS", 86400)
 UPLOAD_RETENTION_DAYS = _env_positive_int("UPLOAD_RETENTION_DAYS", 7)
 UPLOAD_CLEANUP_INTERVAL_SECONDS = _env_positive_int("UPLOAD_CLEANUP_INTERVAL_SECONDS", 3600)
 _LAST_UPLOAD_CLEANUP_TS = 0.0
@@ -67,6 +75,79 @@ db = Database(DATABASE_PATH)
 app = FastAPI(title="TicketBot Mini App Server")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' https://telegram.org; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-ancestors https://web.telegram.org https://*.telegram.org;",
+    )
+    return response
+
+
+def _fallback_auth_allowed() -> bool:
+    return ALLOW_TG_ID_FALLBACK or not BOT_TOKEN
+
+
+def _parse_telegram_init_data(init_data: str) -> Dict[str, str]:
+    return dict(parse_qsl(init_data, keep_blank_values=True, strict_parsing=False))
+
+
+def _verify_telegram_init_data(init_data: str) -> Dict[str, Any]:
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Telegram auth is not configured.")
+    if not init_data:
+        raise HTTPException(status_code=401, detail="Open this Mini App from Telegram.")
+
+    parsed = _parse_telegram_init_data(init_data)
+    received_hash = parsed.pop("hash", "")
+    if not received_hash:
+        raise HTTPException(status_code=401, detail="Telegram auth hash is missing.")
+
+    data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(parsed.items()))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_hash, received_hash):
+        raise HTTPException(status_code=401, detail="Telegram auth is invalid.")
+
+    try:
+        auth_date = int(parsed.get("auth_date", "0"))
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Telegram auth date is invalid.") from exc
+    if TELEGRAM_AUTH_MAX_AGE_SECONDS > 0 and time.time() - auth_date > TELEGRAM_AUTH_MAX_AGE_SECONDS:
+        raise HTTPException(status_code=401, detail="Telegram session expired. Reopen the Mini App.")
+
+    try:
+        user = json.loads(parsed.get("user", "{}"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=401, detail="Telegram user data is invalid.") from exc
+    if not isinstance(user, dict) or not user.get("id"):
+        raise HTTPException(status_code=401, detail="Telegram user is missing.")
+    return user
+
+
+def _request_tg_id(request: Request, provided_tg_id: Optional[int]) -> int:
+    init_data = request.headers.get("x-telegram-init-data", "")
+    if init_data:
+        user = _verify_telegram_init_data(init_data)
+        verified_tg_id = int(user["id"])
+        if provided_tg_id is not None and int(provided_tg_id) != verified_tg_id:
+            raise HTTPException(status_code=403, detail="Telegram user mismatch.")
+        return verified_tg_id
+    if provided_tg_id is not None and _fallback_auth_allowed():
+        return int(provided_tg_id)
+    raise HTTPException(status_code=401, detail="Open this Mini App from Telegram.")
 
 
 def _extract_upload_filename(payment_file_id: str) -> Optional[str]:
@@ -496,8 +577,8 @@ def root() -> FileResponse:
 
 
 @app.get("/admin")
-def admin_page() -> FileResponse:
-    return FileResponse(WEB_DIR / "admin.html")
+def admin_page() -> RedirectResponse:
+    return RedirectResponse(url="/?open_admin=1", status_code=307)
 
 
 @app.get("/health")
@@ -516,8 +597,9 @@ def list_events() -> Dict[str, Any]:
 
 
 @app.get("/api/me")
-def me(tg_id: int) -> Dict[str, Any]:
-    user = db.get_user(tg_id)
+def me(request: Request, tg_id: int) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, tg_id)
+    user = db.get_user(verified_tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
     return {
@@ -531,8 +613,9 @@ def me(tg_id: int) -> Dict[str, Any]:
 
 
 @app.get("/api/my_tickets")
-def my_tickets(tg_id: int, limit: int = 20) -> Dict[str, Any]:
-    user = db.get_user(tg_id)
+def my_tickets(request: Request, tg_id: int, limit: int = 20) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, tg_id)
+    user = db.get_user(verified_tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
     rows = db.list_reservations_for_user(user.id)[: max(1, min(limit, 100))]
@@ -569,6 +652,7 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
             girls = int(str(form.get("girls", "")).strip())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="tg_id, event_id, boys, and girls must be integers.") from exc
+        tg_id = _request_tg_id(request, tg_id)
         attendees = str(form.get("attendees", ""))
         payment_file = form.get("file")
         if not _is_upload_file(payment_file):
@@ -669,33 +753,38 @@ def quote(payload: QuoteRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/admin/bootstrap")
-def admin_bootstrap(tg_id: int) -> Dict[str, Any]:
-    _require_admin(tg_id)
-    return {"ok": True, "tg_id": tg_id}
+def admin_bootstrap(request: Request, tg_id: int) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, tg_id)
+    _require_admin(verified_tg_id)
+    return {"ok": True, "tg_id": verified_tg_id}
 
 
 @app.get("/api/admin/guests")
 def admin_guests(
+    request: Request,
     tg_id: int,
     sort_by: str = "newest",
     search: Optional[str] = None,
     limit: Optional[int] = None,
 ) -> Dict[str, Any]:
-    _require_admin(tg_id)
+    verified_tg_id = _request_tg_id(request, tg_id)
+    _require_admin(verified_tg_id)
     rows = db.list_guests(sort_by=sort_by, search=search, limit=limit)
     return {"items": [_row_dict(r) for r in rows]}
 
 
 @app.get("/api/admin/reservations")
-def admin_reservations(tg_id: int, search: Optional[str] = None, limit: int = 25) -> Dict[str, Any]:
-    _require_admin(tg_id)
+def admin_reservations(request: Request, tg_id: int, search: Optional[str] = None, limit: int = 25) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, tg_id)
+    _require_admin(verified_tg_id)
     rows = db.list_active_reservations(search=search, limit=limit)
     return {"items": [_row_dict(r) for r in rows]}
 
 
 @app.get("/api/admin/events")
-def admin_events(tg_id: int) -> Dict[str, Any]:
-    _require_admin(tg_id)
+def admin_events(request: Request, tg_id: int) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, tg_id)
+    _require_admin(verified_tg_id)
     items = []
     for event in db.list_events():
         payload = _event_payload(event)
@@ -719,8 +808,9 @@ def admin_events(tg_id: int) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/guest/add")
-def admin_guest_add(payload: AdminGuestAddRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_guest_add(request: Request, payload: AdminGuestAddRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message, reservation = db.admin_add_guest(
         reservation_code=payload.reservation_code.strip(),
         full_name=payload.full_name.strip(),
@@ -732,8 +822,9 @@ def admin_guest_add(payload: AdminGuestAddRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/guest/remove")
-def admin_guest_remove(payload: AdminGuestRemoveRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_guest_remove(request: Request, payload: AdminGuestRemoveRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message, reservation = db.admin_remove_guest(payload.attendee_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -741,8 +832,9 @@ def admin_guest_remove(payload: AdminGuestRemoveRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/guest/rename")
-def admin_guest_rename(payload: AdminGuestRenameRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_guest_rename(request: Request, payload: AdminGuestRenameRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message = db.admin_rename_guest(payload.attendee_id, payload.full_name.strip())
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -750,10 +842,11 @@ def admin_guest_rename(payload: AdminGuestRenameRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/guest/add_by_event")
-def admin_guest_add_by_event(payload: AdminGuestAddByEventRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_guest_add_by_event(request: Request, payload: AdminGuestAddByEventRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message, reservation = db.admin_add_guest_by_event(
-        admin_tg_id=payload.tg_id,
+        admin_tg_id=verified_tg_id,
         event_id=payload.event_id,
         name=payload.name.strip(),
         surname=payload.surname.strip(),
@@ -765,8 +858,9 @@ def admin_guest_add_by_event(payload: AdminGuestAddByEventRequest) -> Dict[str, 
 
 
 @app.post("/api/admin/guest/remove_by_name")
-def admin_guest_remove_by_name(payload: AdminGuestRemoveByNameRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_guest_remove_by_name(request: Request, payload: AdminGuestRemoveByNameRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message, reservation = db.admin_remove_guest_by_name(
         event_id=payload.event_id,
         name=payload.name.strip(),
@@ -779,15 +873,25 @@ def admin_guest_remove_by_name(payload: AdminGuestRemoveByNameRequest) -> Dict[s
 
 @app.post("/api/admin/guest/import_xlsx")
 async def admin_guest_import_xlsx(
+    request: Request,
     tg_id: int = Form(...),
     event_id: int = Form(...),
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
-    _require_admin(tg_id)
+    verified_tg_id = _request_tg_id(request, tg_id)
+    _require_admin(verified_tg_id)
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="Upload .xlsx file.")
 
-    raw = await file.read()
+    try:
+        raw = await file.read()
+    finally:
+        await file.close()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is too large. Max allowed size is {UPLOAD_MAX_MB:.1f} MB.",
+        )
     try:
         workbook = load_workbook(filename=BytesIO(raw), data_only=True)
     except Exception as exc:
@@ -811,7 +915,7 @@ async def admin_guest_import_xlsx(
         value_surname = parsed["surname"]
 
         ok, message, _reservation = db.admin_import_guest_by_event(
-            admin_tg_id=tg_id,
+            admin_tg_id=verified_tg_id,
             event_id=event_id,
             name=value_name,
             surname=value_surname,
@@ -831,8 +935,9 @@ async def admin_guest_import_xlsx(
 
 
 @app.get("/api/admin/guest/export_xlsx")
-def admin_guest_export_xlsx(tg_id: int) -> StreamingResponse:
-    _require_admin(tg_id)
+def admin_guest_export_xlsx(request: Request, tg_id: int) -> StreamingResponse:
+    verified_tg_id = _request_tg_id(request, tg_id)
+    _require_admin(verified_tg_id)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Guests"
@@ -852,8 +957,9 @@ def admin_guest_export_xlsx(tg_id: int) -> StreamingResponse:
 
 
 @app.post("/api/admin/event/update")
-def admin_event_update(payload: AdminEventUpdateRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_event_update(request: Request, payload: AdminEventUpdateRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message = db.set_event_fields(event_id=payload.event_id, updates=payload.updates)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -862,8 +968,9 @@ def admin_event_update(payload: AdminEventUpdateRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/event/delete")
-def admin_event_delete(payload: AdminEventDeleteRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_event_delete(request: Request, payload: AdminEventDeleteRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     ok, message, deleted = db.delete_event(event_id=payload.event_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -871,8 +978,9 @@ def admin_event_delete(payload: AdminEventDeleteRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/event/create_simple")
-def admin_event_create_simple(payload: AdminEventCreateSimpleRequest) -> Dict[str, Any]:
-    _require_admin(payload.tg_id)
+def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleRequest) -> Dict[str, Any]:
+    verified_tg_id = _request_tg_id(request, payload.tg_id)
+    _require_admin(verified_tg_id)
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")

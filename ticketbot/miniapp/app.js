@@ -2,6 +2,7 @@ const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : 
 const qs = new URLSearchParams(window.location.search);
 const fallbackTgId = Number(qs.get('tg_id') || 0);
 const tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
+const tgInitData = (tg && tg.initData) || '';
 const autoOpenAdmin = ['1', 'true', 'yes'].includes(
   (qs.get('open_admin') || qs.get('admin') || '').toLowerCase(),
 );
@@ -16,7 +17,6 @@ const statusEl = document.getElementById('status');
 const submitBtn = document.getElementById('submit-booking');
 const paymentProofEl = document.getElementById('payment-proof');
 const refreshBtn = document.getElementById('refresh-events');
-const debugPayloadEl = document.getElementById('debug-payload');
 const ticketsListEl = document.getElementById('tickets-list');
 const ticketsEmptyEl = document.getElementById('tickets-empty');
 const ticketsRefreshEl = document.getElementById('tickets-refresh');
@@ -90,7 +90,7 @@ const adminState = {
   selectedEventId: null,
 };
 
-const MISSING_REPOST_PROOF_MESSAGE = 'Upload repost screenshot for each attendee marked for discount.';
+const MISSING_REPOST_PROOF_MESSAGE = 'Upload a repost screenshot for each guest using the discount.';
 
 function money(value) {
   return Number(value || 0).toFixed(2);
@@ -148,6 +148,12 @@ function apiErrorText(err, fallback) {
   if (err.detail) return err.detail;
   if (err.message) return err.message;
   return fallback;
+}
+
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (tgInitData) headers['X-Telegram-Init-Data'] = tgInitData;
+  return headers;
 }
 
 function totalCount() {
@@ -246,7 +252,7 @@ async function copyText(text) {
 function renderSummary() {
   const event = selectedEvent();
   if (!event) {
-    summaryEl.innerHTML = '<p>Select event and attendee counts.</p>';
+    summaryEl.innerHTML = '<p>Choose an event and add your group size.</p>';
     submitBtn.disabled = true;
     return;
   }
@@ -276,7 +282,7 @@ function renderSummary() {
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
     const repostHint = repostEligible
-      ? `<div class="hint">Repost discount available: ${money(discountUnitAmount)} per attendee.</div>`
+      ? `<div class="hint">Instagram repost discount: ${money(discountUnitAmount)} per guest.</div>`
       : '';
     summaryEl.innerHTML = [
       `<strong>${safeTitle}</strong>`,
@@ -285,7 +291,7 @@ function renderSummary() {
       '<div>Boys: 0</div>',
       '<div>Girls: 0</div>',
       '<div><strong>Total: 0.00</strong></div>',
-      '<div class="hint">Attendees required: 0</div>',
+      '<div class="hint">Guests required: 0</div>',
       repostHint,
       paymentSection,
     ].join('');
@@ -299,7 +305,7 @@ function renderSummary() {
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
-      '<div>Calculating multi-tier quote...</div>',
+      '<div>Calculating your price...</div>',
       paymentSection,
     ].join('');
     submitBtn.disabled = true;
@@ -316,7 +322,7 @@ function renderSummary() {
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
-      '<div class="hint">Quote is unavailable. Try Refresh or change group details.</div>',
+      '<div class="hint">Price is not available yet. Refresh or adjust the group size.</div>',
       paymentSection,
     ].join('');
     submitBtn.disabled = true;
@@ -331,7 +337,7 @@ function renderSummary() {
   });
   const finalTotal = Math.max(0, baseTotal - appliedDiscountAmount);
   const repostHint = repostEligible
-    ? `<div class="hint">Repost discount available: ${money(discountUnitAmount)} per attendee.</div>`
+    ? `<div class="hint">Instagram repost discount: ${money(discountUnitAmount)} per guest.</div>`
     : '';
   const groupSummary = [
     `<div>Base total: ${money(baseTotal)}</div>`,
@@ -363,7 +369,7 @@ function renderSummary() {
     '<hr>',
     ...breakdownHtml,
     ...repostSummary,
-    `<div class="hint">Attendees required: ${qty}</div>`,
+    `<div class="hint">Guests required: ${qty}</div>`,
     repostMissingHint,
     paymentSection,
   ].join('');
@@ -387,7 +393,7 @@ async function refreshQuote() {
   try {
     const resp = await fetch('/api/quote', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         event_id: event.id,
         boys: state.boys,
@@ -468,10 +474,10 @@ function rebuildAttendees() {
       repostCheck.dataset.part = 'repost-check';
       repostCheck.checked = Boolean(existing.repostChecked);
       repostToggle.appendChild(repostCheck);
-      repostToggle.append(` Reposted on Instagram for ${money(discountUnitAmount)} discount`);
+      repostToggle.append(` Instagram repost discount (${money(discountUnitAmount)})`);
 
       const repostFileWrap = document.createElement('label');
-      repostFileWrap.textContent = 'Upload repost screenshot';
+      repostFileWrap.textContent = 'Repost screenshot';
       repostFileWrap.hidden = !repostCheck.checked;
       repostFileWrap.dataset.part = 'repost-file-wrap';
       const repostFile = document.createElement('input');
@@ -504,7 +510,7 @@ function rebuildAttendees() {
   }
 
   if (qty === 0) {
-    attendeesListEl.innerHTML = '<p class="hint">Set boys/girls count first.</p>';
+    attendeesListEl.innerHTML = '<p class="hint">Add the group size first.</p>';
   }
 
   renderSummary();
@@ -546,7 +552,7 @@ async function fetchEvents() {
   setStatus('Loading events...');
   try {
     const resp = await fetch('/api/events', { cache: 'no-store' });
-    if (!resp.ok) throw new Error('Failed to load events');
+    if (!resp.ok) throw new Error('Could not load events.');
     const data = await resp.json();
     state.events = Array.isArray(data.items) ? data.items : [];
     renderEvents();
@@ -605,13 +611,13 @@ async function submitDraft() {
   }
 
   if (payload.quantity <= 0) {
-    setStatus('At least one attendee is required.', true);
+    setStatus('Add at least one guest.', true);
     return;
   }
 
   for (const fullName of payload.attendees) {
     if (!fullName || fullName.split(' ').length < 2) {
-      setStatus('Each attendee must have name and surname.', true);
+      setStatus('Each guest needs a name and surname.', true);
       return;
     }
   }
@@ -621,7 +627,7 @@ async function submitDraft() {
     && Number(state.quote.boys) === Number(payload.boys)
     && Number(state.quote.girls) === Number(payload.girls);
   if (!quoteReady) {
-    setStatus('Quote is not ready. Please wait a moment and try again.', true);
+    setStatus('Price is still loading. Try again in a moment.', true);
     return;
   }
 
@@ -656,17 +662,18 @@ async function submitDraft() {
   }
 
   submitBtn.disabled = true;
-  setStatus('Submitting booking...');
+  setStatus('Sending booking...');
   try {
     const resp = await fetch('/api/book_with_payment', {
       method: 'POST',
+      headers: authHeaders(),
       body: formData,
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       throw new Error(apiErrorText(data, 'Booking failed.'));
     }
-    setStatus(`Your booking is pending. Code: ${data.code || '-'}`);
+    setStatus(`Booking sent for review. Code: ${data.code || '-'}`);
     if (paymentProofEl) paymentProofEl.value = '';
     await Promise.all([fetchEvents(), loadMeAndTickets()]);
   } catch (err) {
@@ -697,7 +704,7 @@ async function loadMeAndTickets() {
   try {
     const meUrl = new URL('/api/me', window.location.origin);
     meUrl.searchParams.set('tg_id', String(tgId));
-    const meResp = await fetch(meUrl.toString(), { cache: 'no-store' });
+    const meResp = await fetch(meUrl.toString(), { cache: 'no-store', headers: authHeaders() });
     if (meResp.ok) {
       const meData = await meResp.json();
       state.userProfile = meData.profile || null;
@@ -710,7 +717,7 @@ async function loadMeAndTickets() {
   try {
     const ticketsUrl = new URL('/api/my_tickets', window.location.origin);
     ticketsUrl.searchParams.set('tg_id', String(tgId));
-    const resp = await fetch(ticketsUrl.toString(), { cache: 'no-store' });
+    const resp = await fetch(ticketsUrl.toString(), { cache: 'no-store', headers: authHeaders() });
     if (!resp.ok) {
       ticketsEmptyEl.hidden = false;
       return;
@@ -738,7 +745,7 @@ async function adminGet(path, params = {}) {
       url.searchParams.set(k, String(v));
     }
   });
-  const res = await fetch(url.toString(), { cache: 'no-store' });
+  const res = await fetch(url.toString(), { cache: 'no-store', headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw data;
   return data;
@@ -749,7 +756,7 @@ async function adminPost(path, body = {}) {
   const payload = { ...body, tg_id: tgId };
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
@@ -762,6 +769,7 @@ async function adminUpload(path, formData) {
   formData.set('tg_id', String(tgId));
   const res = await fetch(path, {
     method: 'POST',
+    headers: authHeaders(),
     body: formData,
   });
   const data = await res.json().catch(() => ({}));
@@ -961,7 +969,7 @@ async function ensureAdmin() {
     const data = await adminGet('/api/admin/bootstrap');
     adminState.ready = true;
     adminEl.ident.textContent = `Admin Telegram ID: ${data.tg_id}`;
-    setAdminStatus('Admin access granted.');
+    setAdminStatus('Admin mode ready.');
     return true;
   } catch (err) {
     setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);
@@ -1034,14 +1042,32 @@ async function importGuestsXlsx() {
   }
 }
 
-function exportGuestsXlsx() {
+async function exportGuestsXlsx() {
   if (!tgId) {
     setAdminStatus('Cannot detect Telegram user id in Mini App.', true);
     return;
   }
   const url = new URL('/api/admin/guest/export_xlsx', window.location.origin);
   url.searchParams.set('tg_id', String(tgId));
-  window.open(url.toString(), '_blank', 'noopener,noreferrer');
+  try {
+    const resp = await fetch(url.toString(), { headers: authHeaders(), cache: 'no-store' });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw data;
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = 'guests_export.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    setAdminStatus('Guest list exported.');
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Failed to export guests.'), true);
+  }
 }
 
 async function saveAdminEvent() {
@@ -1149,7 +1175,7 @@ if (summaryEl) {
     if (copied) {
       setStatus('Payment link copied.');
     } else {
-      setStatus('Could not copy. Tap the payment link directly.', true);
+      setStatus('Could not copy it. Open the payment link directly.', true);
     }
   });
 }

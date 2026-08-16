@@ -1,12 +1,14 @@
 import json
 import importlib
+import hashlib
+import hmac
 import os
 import tempfile
 import time
 import unittest
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -153,6 +155,67 @@ class MiniAppAdminApiTests(unittest.TestCase):
             },
             files=files,
         )
+
+    def _telegram_init_data(self, tg_id: int, bot_token: str = "test-token", auth_date: int = None) -> str:
+        user_json = json.dumps({"id": tg_id, "first_name": "Admin"}, separators=(",", ":"))
+        pairs = {
+            "auth_date": str(int(auth_date or time.time())),
+            "query_id": "test-query",
+            "user": user_json,
+        }
+        data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
+        secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+        signature = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+        return "&".join(f"{key}={quote(value)}" for key, value in [*pairs.items(), ("hash", signature)])
+
+    def test_admin_page_redirects_to_current_mini_app_admin_mode(self):
+        response = self.client.get("/admin", follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        self.assertEqual(response.headers.get("location"), "/?open_admin=1")
+
+    def test_admin_api_requires_verified_telegram_init_data_when_bot_token_is_configured(self):
+        old_env = {key: os.environ.get(key) for key in self._env_keys}
+        auth_dir = tempfile.TemporaryDirectory()
+        auth_client = None
+        try:
+            os.environ["DATABASE_PATH"] = os.path.join(auth_dir.name, "auth.db")
+            os.environ["ADMIN_IDS"] = str(self.admin_tg_id)
+            os.environ["BOT_TOKEN"] = "test-token"
+            os.environ["WEB_APP_URL"] = "https://example.invalid"
+            os.environ["UPLOAD_DIR"] = os.path.join(auth_dir.name, "uploads")
+            os.environ["UPLOAD_MAX_MB"] = "5"
+            os.environ["UPLOAD_RETENTION_DAYS"] = "7"
+            os.environ["UPLOAD_CLEANUP_INTERVAL_SECONDS"] = "3600"
+
+            auth_server = importlib.reload(self.server)
+            auth_client = TestClient(auth_server.app)
+
+            forged = auth_client.get("/api/admin/bootstrap", params={"tg_id": self.admin_tg_id})
+            self.assertEqual(forged.status_code, 401, forged.text)
+
+            valid = auth_client.get(
+                "/api/admin/bootstrap",
+                params={"tg_id": self.admin_tg_id},
+                headers={"X-Telegram-Init-Data": self._telegram_init_data(self.admin_tg_id)},
+            )
+            self.assertEqual(valid.status_code, 200, valid.text)
+
+            mismatch = auth_client.get(
+                "/api/admin/bootstrap",
+                params={"tg_id": self.admin_tg_id},
+                headers={"X-Telegram-Init-Data": self._telegram_init_data(self.user_tg_id)},
+            )
+            self.assertEqual(mismatch.status_code, 403, mismatch.text)
+        finally:
+            if auth_client is not None:
+                auth_client.close()
+            auth_dir.cleanup()
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            self.server = importlib.reload(self.server)
 
     def test_logo_static_file_is_served(self):
         response = self.client.get("/static/logo.png")
@@ -359,6 +422,24 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(guests_resp.status_code, 200, guests_resp.text)
         guests = guests_resp.json().get("items", [])
         self.assertTrue(any(item.get("full_name") == "Horváth Tamás" for item in guests))
+
+    def test_import_xlsx_rejects_large_upload(self):
+        response = self.client.post(
+            "/api/admin/guest/import_xlsx",
+            data={
+                "tg_id": str(self.admin_tg_id),
+                "event_id": str(self.event_id),
+            },
+            files={
+                "file": (
+                    "people.xlsx",
+                    b"x" * (5 * 1024 * 1024 + 1),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertIn("Max allowed size", response.json().get("detail", ""))
 
     def test_admin_guests_without_limit_returns_all_rows(self):
         wb = Workbook()
