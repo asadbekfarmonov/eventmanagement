@@ -3,6 +3,8 @@ const qs = new URLSearchParams(window.location.search);
 const fallbackTgId = Number(qs.get('tg_id') || 0);
 const tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
 const tgInitData = (tg && tg.initData) || '';
+const WEB_SESSION_KEY = 'bt_web_session';
+let webSessionToken = localStorage.getItem(WEB_SESSION_KEY) || '';
 const autoOpenAdmin = ['1', 'true', 'yes'].includes(
   (qs.get('open_admin') || qs.get('admin') || '').toLowerCase(),
 );
@@ -24,6 +26,15 @@ const ticketsRefreshEl = document.getElementById('tickets-refresh');
 const adminOpenStatusEl = document.getElementById('admin-open-status');
 const pageTabs = Array.from(document.querySelectorAll('[data-page-tab]'));
 const pageSections = Array.from(document.querySelectorAll('[data-page-section]'));
+const carouselTrackEl = document.querySelector('.main-carousel-track');
+const carouselDots = Array.from(document.querySelectorAll('.main-carousel-dots span'));
+const accountPanelEl = document.getElementById('account-panel');
+const accountStateEl = document.getElementById('account-state');
+const accountStatusEl = document.getElementById('account-status');
+const accountNameEl = document.getElementById('account-name');
+const accountSurnameEl = document.getElementById('account-surname');
+const accountPhoneEl = document.getElementById('account-phone');
+const accountSaveEl = document.getElementById('account-save');
 
 const adminEl = {
   open: document.getElementById('admin-open'),
@@ -152,6 +163,7 @@ function setPageTab(tabKey) {
   if (key === 'tickets') {
     loadMeAndTickets();
   }
+  renderAccountPanel();
 }
 
 function setAdminSection(sectionKey) {
@@ -178,7 +190,47 @@ function apiErrorText(err, fallback) {
 function authHeaders(extra = {}) {
   const headers = { ...extra };
   if (tgInitData) headers['X-Telegram-Init-Data'] = tgInitData;
+  if (!tgInitData && webSessionToken) headers.Authorization = `Bearer ${webSessionToken}`;
   return headers;
+}
+
+function hasUserIdentity() {
+  return Boolean(tgId || webSessionToken);
+}
+
+function setAccountStatus(msg, isError = false) {
+  if (!accountStatusEl) return;
+  accountStatusEl.textContent = msg || '';
+  accountStatusEl.className = isError ? 'hint error' : 'hint';
+}
+
+function renderAccountPanel() {
+  if (!accountPanelEl) return;
+  const registered = Boolean(state.userProfile);
+  accountPanelEl.hidden = registered;
+  if (accountStateEl) {
+    if (registered) {
+      accountStateEl.textContent = `Signed in as ${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim();
+    } else if (tgId) {
+      accountStateEl.textContent = 'Telegram account';
+    } else {
+      accountStateEl.textContent = 'Website account';
+    }
+  }
+  if (registered) {
+    if (accountNameEl) accountNameEl.value = state.userProfile.name || '';
+    if (accountSurnameEl) accountSurnameEl.value = state.userProfile.surname || '';
+    if (accountPhoneEl) accountPhoneEl.value = state.userProfile.phone || '';
+  }
+}
+
+function updateCarouselDots() {
+  if (!carouselTrackEl || !carouselDots.length) return;
+  const width = carouselTrackEl.clientWidth || 1;
+  const index = Math.max(0, Math.min(carouselDots.length - 1, Math.round(carouselTrackEl.scrollLeft / width)));
+  carouselDots.forEach((dot, dotIndex) => {
+    dot.classList.toggle('active', dotIndex === index);
+  });
 }
 
 function totalCount() {
@@ -402,7 +454,14 @@ function renderSummary() {
     repostMissingHint,
     paymentSection,
   ].join('');
-  submitBtn.disabled = !(qty > 0 && namesReady && hasPaymentProof() && termsAccepted() && missingRepostProofs.length === 0);
+  submitBtn.disabled = !(
+    qty > 0
+    && namesReady
+    && hasPaymentProof()
+    && termsAccepted()
+    && missingRepostProofs.length === 0
+    && hasUserIdentity()
+  );
 }
 
 async function refreshQuote() {
@@ -660,8 +719,9 @@ async function submitDraft() {
     return;
   }
 
-  if (!tgId) {
-    setStatus('Cannot detect Telegram user id in Mini App.', true);
+  if (!hasUserIdentity()) {
+    setStatus('Register your details before booking.', true);
+    if (accountPanelEl) accountPanelEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
   const discountSelections = attendeeDiscountSelections();
@@ -681,7 +741,7 @@ async function submitDraft() {
   }
 
   const formData = new FormData();
-  formData.set('tg_id', String(tgId));
+  if (tgId) formData.set('tg_id', String(tgId));
   formData.set('event_id', String(payload.event_id));
   formData.set('boys', String(payload.boys));
   formData.set('girls', String(payload.girls));
@@ -740,14 +800,23 @@ function renderTickets(items) {
 }
 
 async function loadMeAndTickets() {
-  if (!tgId) return;
+  if (!hasUserIdentity()) {
+    renderAccountPanel();
+    renderTickets([]);
+    if (ticketsEmptyEl) {
+      ticketsEmptyEl.textContent = 'Register in the Book section to see your tickets here.';
+      ticketsEmptyEl.hidden = false;
+    }
+    return;
+  }
   try {
     const meUrl = new URL('/api/me', window.location.origin);
-    meUrl.searchParams.set('tg_id', String(tgId));
+    if (tgId) meUrl.searchParams.set('tg_id', String(tgId));
     const meResp = await fetch(meUrl.toString(), { cache: 'no-store', headers: authHeaders() });
     if (meResp.ok) {
       const meData = await meResp.json();
       state.userProfile = meData.profile || null;
+      renderAccountPanel();
       rebuildAttendees();
     }
   } catch (_err) {
@@ -756,7 +825,7 @@ async function loadMeAndTickets() {
 
   try {
     const ticketsUrl = new URL('/api/my_tickets', window.location.origin);
-    ticketsUrl.searchParams.set('tg_id', String(tgId));
+    if (tgId) ticketsUrl.searchParams.set('tg_id', String(tgId));
     const resp = await fetch(ticketsUrl.toString(), { cache: 'no-store', headers: authHeaders() });
     if (!resp.ok) {
       ticketsEmptyEl.hidden = false;
@@ -767,6 +836,42 @@ async function loadMeAndTickets() {
     renderTickets(items);
   } catch (_err) {
     ticketsEmptyEl.hidden = false;
+  }
+}
+
+async function registerWebsiteAccount() {
+  if (!accountNameEl || !accountSurnameEl || !accountPhoneEl) return;
+  const payload = {
+    name: accountNameEl.value.trim(),
+    surname: accountSurnameEl.value.trim(),
+    phone: accountPhoneEl.value.trim(),
+  };
+  if (!payload.name || !payload.surname || !payload.phone) {
+    setAccountStatus('Add your name, surname, and phone number.', true);
+    return;
+  }
+
+  if (accountSaveEl) accountSaveEl.disabled = true;
+  setAccountStatus('Saving your details...');
+  try {
+    const resp = await fetch('/api/web/register', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw data;
+    webSessionToken = data.session_token || '';
+    if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
+    state.userProfile = data.profile || null;
+    setAccountStatus('Saved. You can book now.');
+    renderAccountPanel();
+    rebuildAttendees();
+    await loadMeAndTickets();
+  } catch (err) {
+    setAccountStatus(apiErrorText(err, 'Could not save your details.'), true);
+  } finally {
+    if (accountSaveEl) accountSaveEl.disabled = false;
   }
 }
 
@@ -1227,6 +1332,25 @@ if (paymentProofEl) {
 if (termsAcceptedEl) {
   termsAcceptedEl.addEventListener('change', renderSummary);
 }
+if (accountSaveEl) {
+  accountSaveEl.addEventListener('click', registerWebsiteAccount);
+}
+if (carouselTrackEl && carouselDots.length) {
+  let carouselFrame = 0;
+  carouselTrackEl.addEventListener('scroll', () => {
+    window.cancelAnimationFrame(carouselFrame);
+    carouselFrame = window.requestAnimationFrame(updateCarouselDots);
+  }, { passive: true });
+  carouselDots.forEach((dot, index) => {
+    dot.addEventListener('click', () => {
+      carouselTrackEl.scrollTo({
+        left: carouselTrackEl.clientWidth * index,
+        behavior: 'smooth',
+      });
+    });
+  });
+  window.addEventListener('resize', updateCarouselDots);
+}
 if (summaryEl) {
   summaryEl.addEventListener('click', async (event) => {
     const target = event.target && event.target.closest ? event.target.closest('button.copy-pay-link') : null;
@@ -1351,6 +1475,8 @@ if (ticketsRefreshEl) {
 initTelegram();
 setPageTab('main');
 setAdminSection('events');
+renderAccountPanel();
+updateCarouselDots();
 rebuildAttendees();
 fetchEvents();
 loadMeAndTickets();

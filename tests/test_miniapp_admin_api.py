@@ -244,12 +244,63 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260816n", index_response.text)
-        self.assertIn("/static/app.js?v=20260816e", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817a", index_response.text)
+        self.assertIn("/static/app.js?v=20260817a", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
         self.assertEqual(js_response.headers.get("cache-control"), "no-store, max-age=0")
+
+    def test_website_registration_can_book_and_read_tickets_without_telegram(self):
+        register_resp = self.client.post(
+            "/api/web/register",
+            json={"name": "Web", "surname": "Guest", "phone": "+36 20 123 4567"},
+        )
+        self.assertEqual(register_resp.status_code, 200, register_resp.text)
+        token = register_resp.json()["session_token"]
+        self.assertTrue(token)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        me_resp = self.client.get("/api/me", headers=headers)
+        self.assertEqual(me_resp.status_code, 200, me_resp.text)
+        self.assertEqual(me_resp.json()["profile"]["source"], "website")
+
+        files = [("file", ("proof.png", PNG_BYTES, "image/png"))]
+        booking_resp = self.client.post(
+            "/api/book_with_payment",
+            data={
+                "event_id": str(self.event_id),
+                "boys": "1",
+                "girls": "0",
+                "attendees": json.dumps(["Web Guest"]),
+                "discounted_attendee_indexes": "[]",
+                "terms_accepted": "true",
+            },
+            files=files,
+            headers=headers,
+        )
+        self.assertEqual(booking_resp.status_code, 200, booking_resp.text)
+
+        tickets_resp = self.client.get("/api/my_tickets", headers=headers)
+        self.assertEqual(tickets_resp.status_code, 200, tickets_resp.text)
+        items = tickets_resp.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["attendees"], ["Web Guest"])
+
+    def test_booking_without_telegram_or_web_session_is_rejected(self):
+        response = self.client.post(
+            "/api/book_with_payment",
+            data={
+                "event_id": str(self.event_id),
+                "boys": "1",
+                "girls": "0",
+                "attendees": json.dumps(["No Session"]),
+                "discounted_attendee_indexes": "[]",
+                "terms_accepted": "true",
+            },
+            files=[("file", ("proof.png", PNG_BYTES, "image/png"))],
+        )
+        self.assertEqual(response.status_code, 401, response.text)
 
     def test_admin_guest_rename_and_remove_api(self):
         reservation = self._create_reservation("Azat Jolamanov", status="approved")
@@ -699,7 +750,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             mime="image/png",
         )
         self.assertEqual(response.status_code, 404, response.text)
-        self.assertIn("Run /start in bot", response.json().get("detail", ""))
+        self.assertIn("Create your profile before booking", response.json().get("detail", ""))
 
     def test_book_with_payment_rate_limit(self):
         self.server.BOOKING_RATE_LIMIT = 1

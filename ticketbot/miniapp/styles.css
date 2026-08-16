@@ -331,10 +331,23 @@ h3 {
 }
 
 .grid-2,
+.grid-3,
 .admin-grid2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.account-panel[hidden] {
+  display: none;
+}
+
+.account-form {
+  margin-top: 14px;
 }
 
 .admin-grid3 {
@@ -580,7 +593,7 @@ input[type="file"]::file-selector-button {
   background: rgba(255, 255, 255, 0.34);
 }
 
-.main-carousel-dots span:first-child {
+.main-carousel-dots span.active {
   width: 18px;
   background: rgba(255, 255, 255, 0.76);
 }
@@ -815,6 +828,7 @@ input[type="file"]::file-selector-button {
   }
 
   .grid-2,
+  .grid-3,
   .admin-grid2,
   .admin-grid3,
   .attendee-row {

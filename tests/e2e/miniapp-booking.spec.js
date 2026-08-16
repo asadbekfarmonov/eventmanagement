@@ -165,6 +165,23 @@ test('top navigation shows one public section at a time', async ({ page }) => {
   await expect(page.locator('#contact-panel')).toBeVisible();
 });
 
+test('website visitor registers before booking', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Book' }).click();
+  await expect(page.locator('#account-panel')).toBeVisible();
+
+  await page.locator('#account-name').fill('Web');
+  await page.locator('#account-surname').fill('Guest');
+  await page.locator('#account-phone').fill('+36 20 555 0101');
+  await page.locator('#account-save').click();
+
+  await expect(page.locator('#account-panel')).toBeHidden();
+  await page.locator('#boys').fill('1');
+  await expect(page.locator('input[data-part="first"]').first()).toHaveValue('Web');
+  await expect(page.locator('input[data-part="surname"]').first()).toHaveValue('Guest');
+});
+
 test('admin navigation appears for admins only', async ({ page }) => {
   await page.goto('/?tg_id=7164876915');
 

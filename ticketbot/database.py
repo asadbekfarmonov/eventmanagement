@@ -1,4 +1,6 @@
 import os
+import hashlib
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -138,6 +140,17 @@ class Database:
                 ticket_tier TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'reserved',
                 FOREIGN KEY (reservation_id) REFERENCES reservations(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS web_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         )
@@ -577,6 +590,88 @@ class Database:
             (tg_id, name, surname, phone),
         )
         self.conn.commit()
+
+    def create_web_user(self, name: str, surname: str, phone: str) -> Tuple[User, str]:
+        normalized_phone = " ".join((phone or "").strip().split())
+        if not normalized_phone:
+            raise ValueError("Phone number is required")
+        cursor = self.conn.cursor()
+        tg_id = self._next_web_tg_id(cursor)
+        cursor.execute(
+            """
+            INSERT INTO users (tg_id, name, surname, phone, blocked, blocked_reason)
+            VALUES (?, ?, ?, ?, 0, '')
+            """,
+            (tg_id, (name or "").strip(), (surname or "").strip(), normalized_phone),
+        )
+        user_id = int(cursor.lastrowid)
+
+        token = secrets.token_urlsafe(32)
+        token_hash = self._web_session_hash(token)
+        now = self._utc_now()
+        cursor.execute(
+            """
+            INSERT INTO web_sessions (token_hash, user_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (token_hash, user_id, now, now),
+        )
+        self.conn.commit()
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("Could not create user profile")
+        return user, token
+
+    def update_web_user_profile(self, user_id: int, name: str, surname: str, phone: str) -> User:
+        normalized_phone = " ".join((phone or "").strip().split())
+        if not normalized_phone:
+            raise ValueError("Phone number is required")
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE users
+            SET name = ?, surname = ?, phone = ?
+            WHERE id = ?
+            """,
+            ((name or "").strip(), (surname or "").strip(), normalized_phone, int(user_id)),
+        )
+        self.conn.commit()
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("Could not update user profile")
+        return user
+
+    def _next_web_tg_id(self, cursor: sqlite3.Cursor) -> int:
+        while True:
+            tg_id = -secrets.randbelow(2_000_000_000) - 1
+            cursor.execute("SELECT id FROM users WHERE tg_id = ?", (tg_id,))
+            if not cursor.fetchone():
+                return tg_id
+
+    def _web_session_hash(self, token: str) -> str:
+        return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def get_user_by_web_session(self, token: str) -> Optional[User]:
+        raw = (token or "").strip()
+        if not raw:
+            return None
+        token_hash = self._web_session_hash(raw)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT u.*
+            FROM web_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.token_hash = ?
+            """,
+            (token_hash,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cursor.execute("UPDATE web_sessions SET last_seen_at = ? WHERE token_hash = ?", (self._utc_now(), token_hash))
+        self.conn.commit()
+        return User(**dict(row))
 
     def get_user(self, tg_id: int) -> Optional[User]:
         cursor = self.conn.cursor()

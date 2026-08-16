@@ -157,6 +157,31 @@ def _request_tg_id(request: Request, provided_tg_id: Optional[int]) -> int:
     raise HTTPException(status_code=401, detail="Open this Mini App from Telegram.")
 
 
+def _request_web_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-web-session", "").strip()
+
+
+def _request_user(request: Request, provided_tg_id: Optional[int]) -> Tuple[Any, Optional[int]]:
+    try:
+        tg_id = _request_tg_id(request, provided_tg_id)
+    except HTTPException as exc:
+        if exc.status_code not in {401, 403}:
+            raise
+    else:
+        user = db.get_user(tg_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Create your profile before booking.")
+        return user, tg_id
+
+    user = db.get_user_by_web_session(_request_web_token(request))
+    if not user:
+        raise HTTPException(status_code=401, detail="Register or log in before booking.")
+    return user, None
+
+
 def _extract_upload_filename(payment_file_id: str) -> Optional[str]:
     raw = (payment_file_id or "").strip()
     if not raw:
@@ -522,6 +547,12 @@ class QuoteRequest(BaseModel):
     girls: int = Field(ge=0)
 
 
+class WebRegisterRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    surname: str = Field(min_length=1, max_length=80)
+    phone: str = Field(min_length=5, max_length=40)
+
+
 class AdminGuestAddRequest(BaseModel):
     tg_id: int
     reservation_code: str
@@ -697,28 +728,49 @@ def list_events() -> Dict[str, Any]:
     return {"items": items}
 
 
-@app.get("/api/me")
-def me(request: Request, tg_id: int) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    user = db.get_user(verified_tg_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
+def _profile_payload(user) -> Dict[str, Any]:
     return {
-        "profile": {
-            "tg_id": user.tg_id,
-            "name": user.name,
-            "surname": user.surname,
-            "phone": user.phone,
-        }
+        "tg_id": user.tg_id,
+        "name": user.name,
+        "surname": user.surname,
+        "phone": user.phone,
+        "source": "telegram" if int(user.tg_id) > 0 else "website",
     }
 
 
+@app.post("/api/web/register")
+def web_register(request: Request, payload: WebRegisterRequest) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "web_register", 20)
+    try:
+        existing_user = db.get_user_by_web_session(_request_web_token(request))
+        if existing_user:
+            user = db.update_web_user_profile(
+                existing_user.id,
+                payload.name.strip(),
+                payload.surname.strip(),
+                payload.phone.strip(),
+            )
+            token = _request_web_token(request)
+        else:
+            user, token = db.create_web_user(
+                payload.name.strip(),
+                payload.surname.strip(),
+                payload.phone.strip(),
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+
+
+@app.get("/api/me")
+def me(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    user, _verified_tg_id = _request_user(request, tg_id)
+    return {"profile": _profile_payload(user)}
+
+
 @app.get("/api/my_tickets")
-def my_tickets(request: Request, tg_id: int, limit: int = 20) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    user = db.get_user(verified_tg_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
+def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -> Dict[str, Any]:
+    user, _verified_tg_id = _request_user(request, tg_id)
     rows = db.list_reservations_for_user(user.id)[: max(1, min(limit, 100))]
     items = []
     for reservation in rows:
@@ -747,24 +799,24 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
     upload_values = [value for _, value in form.multi_items() if _is_upload_file(value)]
     try:
         try:
-            tg_id = int(str(form.get("tg_id", "")).strip())
             event_id = int(str(form.get("event_id", "")).strip())
             boys = int(str(form.get("boys", "")).strip())
             girls = int(str(form.get("girls", "")).strip())
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="tg_id, event_id, boys, and girls must be integers.") from exc
-        tg_id = _request_tg_id(request, tg_id)
-        _enforce_rate_limit(request, "booking", BOOKING_RATE_LIMIT, tg_id)
+            raise HTTPException(status_code=400, detail="event_id, boys, and girls must be integers.") from exc
+        raw_tg_id = str(form.get("tg_id", "")).strip()
+        try:
+            provided_tg_id = int(raw_tg_id) if raw_tg_id else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="tg_id must be an integer when provided.") from exc
+        user, verified_tg_id = _request_user(request, provided_tg_id)
+        _enforce_rate_limit(request, "booking", BOOKING_RATE_LIMIT, verified_tg_id or user.id)
         if not _truthy_form_value(form.get("terms_accepted")):
             raise HTTPException(status_code=400, detail="Accept the booking terms before booking.")
         attendees = str(form.get("attendees", ""))
         payment_file = form.get("file")
         if not _is_upload_file(payment_file):
             raise HTTPException(status_code=400, detail="Payment proof file is required.")
-
-        user = db.get_user(tg_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User profile not found. Run /start in bot.")
 
         try:
             attendees_list = json.loads(attendees)
@@ -829,7 +881,8 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         _notify_admins_pending_from_miniapp(reservation)
-        _notify_user_pending_from_miniapp(reservation, tg_id)
+        if verified_tg_id is not None and verified_tg_id > 0:
+            _notify_user_pending_from_miniapp(reservation, verified_tg_id)
         return {
             "ok": True,
             "code": reservation.code,
