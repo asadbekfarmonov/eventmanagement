@@ -7,13 +7,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260816b">
+  <link rel="stylesheet" href="/static/styles.css?v=20260816c">
 </head>
 <body>
   <main class="app-shell">
     <header class="hero">
       <div class="hero-top">
-        <button id="admin-open" type="button" class="admin-btn">Admin</button>
         <div class="brand-logo-wrap">
           <img class="brand-logo" src="/static/logo.png?v=20260311f" alt="Budapest Tunderi logo" />
         </div>
@@ -23,14 +22,43 @@
       <p class="sub">Вы сделаете эту ночь</p>
       <p id="admin-open-status" class="admin-open-status" role="status" aria-live="polite"></p>
       <nav class="top-nav" aria-label="Page sections">
-        <button type="button" class="top-nav-item active" data-page-tab="book">Book</button>
+        <button type="button" class="top-nav-item active" data-page-tab="main">Main</button>
+        <button type="button" class="top-nav-item" data-page-tab="book">Book</button>
         <button type="button" class="top-nav-item" data-page-tab="tickets">My tickets</button>
-        <button type="button" class="top-nav-item" data-page-tab="about">About</button>
         <button type="button" class="top-nav-item" data-page-tab="contact">Contact</button>
+        <button id="admin-open" type="button" class="top-nav-item admin-nav-item" data-page-tab="admin" hidden>Admin</button>
       </nav>
     </header>
 
-    <section class="panel page-section" id="events-panel" data-page-section="book">
+    <section class="panel page-section main-panel" id="main-panel" data-page-section="main">
+      <img class="main-photo" src="/static/main-photo.jpg?v=20260816a" alt="Budapest Tunderi night gathering" />
+      <div class="main-copy">
+        <p class="eyebrow">Main</p>
+        <h2>Budapest Tunderi</h2>
+        <p>
+          “Tunderi” means “nights” in Kazakh: Budapest nights. The name is also a small nod to
+          <em>Almatynyn Tunderi-ai</em>, the well-known Kazakh song that captures that special feeling of a city after dark.
+        </p>
+        <p>
+          Budapest Tunderi started with a simple idea: bring a little bit of Almaty's nightlife energy to Budapest
+          and create a place where Central Asians living far from home could find each other.
+        </p>
+        <p>
+          What began as a small circle of students has slowly grown into something bigger. A community of familiar
+          faces, new friendships, shared music, conversations, dancing, and nights you actually remember.
+        </p>
+        <p>
+          For us, comfort is not about how expensive or exclusive a place is. It is that feeling when you walk in and
+          already feel like you belong. When you recognize people, meet someone new, hear a song that reminds you of
+          home, and suddenly Budapest feels a little more familiar.
+        </p>
+        <p>
+          That is Budapest Tunderi: our nights, our people, and a little piece of home in Budapest.
+        </p>
+      </div>
+    </section>
+
+    <section class="panel page-section" id="events-panel" data-page-section="book" hidden>
       <div class="panel-head">
         <h2>Choose event</h2>
         <button id="refresh-events" type="button">Refresh</button>
@@ -39,7 +67,7 @@
       <p id="events-empty" class="hint" hidden>No active events right now.</p>
     </section>
 
-    <section class="panel page-section" id="group-panel" data-page-section="book">
+    <section class="panel page-section" id="group-panel" data-page-section="book" hidden>
       <h2>Group size</h2>
       <div class="grid-2">
         <label>
@@ -54,13 +82,13 @@
       <p class="hint">We will create one name field for each guest.</p>
     </section>
 
-    <section class="panel page-section" id="attendees-panel" data-page-section="book">
+    <section class="panel page-section" id="attendees-panel" data-page-section="book" hidden>
       <h2>Guest names</h2>
       <p class="hint">Use the name and surname from the passport or ID.</p>
       <div id="attendees-list" class="attendees"></div>
     </section>
 
-    <section class="panel page-section" id="summary-panel" data-page-section="book">
+    <section class="panel page-section" id="summary-panel" data-page-section="book" hidden>
       <h2>Review and book</h2>
       <div id="summary" class="summary-card">
         <p>Choose an event and add your group size.</p>
@@ -82,31 +110,6 @@
       <p id="tickets-empty" class="hint" hidden>No tickets yet.</p>
     </section>
 
-    <section class="panel page-section about-panel" id="about-panel" data-page-section="about" hidden>
-      <p class="eyebrow">About</p>
-      <h2>Budapest Tunderi</h2>
-      <p>
-        “Tunderi” means “nights” in Kazakh: Budapest nights. The name is also a small nod to
-        <em>Almatynyn Tunderi-ai</em>, the well-known Kazakh song that captures that special feeling of a city after dark.
-      </p>
-      <p>
-        Budapest Tunderi started with a simple idea: bring a little bit of Almaty's nightlife energy to Budapest
-        and create a place where Central Asians living far from home could find each other.
-      </p>
-      <p>
-        What began as a small circle of students has slowly grown into something bigger. A community of familiar
-        faces, new friendships, shared music, conversations, dancing, and nights you actually remember.
-      </p>
-      <p>
-        For us, comfort is not about how expensive or exclusive a place is. It is that feeling when you walk in and
-        already feel like you belong. When you recognize people, meet someone new, hear a song that reminds you of
-        home, and suddenly Budapest feels a little more familiar.
-      </p>
-      <p>
-        That is Budapest Tunderi: our nights, our people, and a little piece of home in Budapest.
-      </p>
-    </section>
-
     <section class="panel page-section contact-panel" id="contact-panel" data-page-section="contact" hidden>
       <p class="eyebrow">Contact</p>
       <h2>Talk to us</h2>
@@ -117,7 +120,7 @@
       </div>
     </section>
 
-    <section class="panel" id="admin-area" hidden>
+    <section class="panel page-section" id="admin-area" data-page-section="admin" hidden>
       <div class="panel-head">
         <h2>Admin dashboard</h2>
         <button id="admin-refresh-all" type="button">Refresh all</button>
@@ -280,6 +283,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260816b" defer></script>
+  <script src="/static/app.js?v=20260816c" defer></script>
 </body>
 </html>

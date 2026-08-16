@@ -139,7 +139,7 @@ function clearStatusIfMatches(message) {
 }
 
 function setPageTab(tabKey) {
-  const key = tabKey || 'book';
+  const key = tabKey || 'main';
   for (const tab of pageTabs) {
     const active = tab.dataset.pageTab === key;
     tab.classList.toggle('active', active);
@@ -1005,10 +1005,25 @@ async function ensureAdmin() {
   }
 }
 
+async function checkAdminAvailability() {
+  if (!adminEl.open || !tgId) return false;
+  try {
+    const data = await adminGet('/api/admin/bootstrap');
+    adminState.ready = true;
+    adminEl.ident.textContent = `Admin Telegram ID: ${data.tg_id}`;
+    adminEl.open.hidden = false;
+    setAdminStatus('Admin mode ready.');
+    return true;
+  } catch (_err) {
+    adminEl.open.hidden = true;
+    return false;
+  }
+}
+
 async function openAdminMode() {
   const ok = await ensureAdmin();
   if (!ok) return;
-  adminEl.area.hidden = false;
+  setPageTab('admin');
   adminEl.open.classList.add('active');
   setAdminOpenStatus('');
   setAdminSection(adminState.activeSection || 'events');
@@ -1215,7 +1230,12 @@ if (adminEl.open) {
 if (pageTabs.length) {
   for (const tab of pageTabs) {
     tab.addEventListener('click', () => {
-      setPageTab(tab.dataset.pageTab || 'book');
+      const key = tab.dataset.pageTab || 'main';
+      if (key === 'admin') {
+        openAdminMode();
+        return;
+      }
+      setPageTab(key);
     });
   }
 }
@@ -1310,7 +1330,7 @@ if (ticketsRefreshEl) {
 }
 
 initTelegram();
-setPageTab('book');
+setPageTab('main');
 setAdminSection('events');
 rebuildAttendees();
 fetchEvents();
@@ -1319,4 +1339,6 @@ if (autoOpenAdmin && adminEl.open) {
   openAdminMode().catch((err) => {
     setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);
   });
+} else {
+  checkAdminAvailability();
 }

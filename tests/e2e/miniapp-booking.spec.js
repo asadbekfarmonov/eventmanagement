@@ -11,6 +11,7 @@ const proofFile = {
 
 async function openBooking(page) {
   await page.goto('/?tg_id=511308234');
+  await page.getByRole('button', { name: 'Book' }).click();
   await expect(page.locator('#events-list .event-card')).toHaveCount(2);
 }
 
@@ -110,6 +111,7 @@ test('admin can enable repost discount on existing event and guest sees it', asy
   await expect(page.locator('#admin-ev-repost-amount')).toHaveValue('1000');
 
   await page.goto('/?tg_id=511308234');
+  await page.getByRole('button', { name: 'Book' }).click();
   await expect(page.locator('#events-list .event-card')).toHaveCount(2);
   await selectEventByTitle(page, 'Playwright Event');
   await page.locator('#boys').fill('1');
@@ -120,32 +122,43 @@ test('admin can enable repost discount on existing event and guest sees it', asy
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]')).toBeVisible();
 });
 
-test('non-admin sees a readable admin access message', async ({ page }) => {
-  await openBooking(page);
+test('admin navigation is hidden for non-admins', async ({ page }) => {
+  await page.goto('/?tg_id=511308234');
 
-  await page.locator('#admin-open').click();
-
-  await expect(page.locator('#admin-open-status')).toContainText('Admin access denied.');
+  await expect(page.locator('#admin-open')).toBeHidden();
   await expect(page.locator('#admin-area')).toBeHidden();
 });
 
 test('top navigation shows one public section at a time', async ({ page }) => {
-  await openBooking(page);
+  await page.goto('/?tg_id=511308234');
 
-  await expect(page.locator('#events-panel')).toBeVisible();
+  await expect(page.locator('#main-panel')).toBeVisible();
+  await expect(page.locator('#main-panel')).toContainText('Budapest Tunderi started');
+  await expect(page.locator('#events-panel')).toBeHidden();
   await expect(page.locator('#tickets-panel')).toBeHidden();
-  await expect(page.locator('#about-panel')).toBeHidden();
   await expect(page.locator('#contact-panel')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Book' }).click();
+  await expect(page.locator('#main-panel')).toBeHidden();
+  await expect(page.locator('#events-panel')).toBeVisible();
 
   await page.getByRole('button', { name: 'My tickets' }).click();
   await expect(page.locator('#events-panel')).toBeHidden();
   await expect(page.locator('#tickets-panel')).toBeVisible();
 
-  await page.getByRole('button', { name: 'About' }).click();
+  await page.getByRole('button', { name: 'Main' }).click();
   await expect(page.locator('#tickets-panel')).toBeHidden();
-  await expect(page.locator('#about-panel')).toBeVisible();
+  await expect(page.locator('#main-panel')).toBeVisible();
 
   await page.getByRole('button', { name: 'Contact' }).click();
-  await expect(page.locator('#about-panel')).toBeHidden();
+  await expect(page.locator('#main-panel')).toBeHidden();
   await expect(page.locator('#contact-panel')).toBeVisible();
+});
+
+test('admin navigation appears for admins only', async ({ page }) => {
+  await page.goto('/?tg_id=7164876915');
+
+  await expect(page.locator('#admin-open')).toBeVisible();
+  await page.locator('#admin-open').click();
+  await expect(page.locator('#admin-area')).toBeVisible();
 });
