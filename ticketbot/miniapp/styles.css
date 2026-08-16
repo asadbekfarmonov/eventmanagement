@@ -163,6 +163,14 @@ textarea:focus-visible {
   line-height: 1.55;
 }
 
+.admin-open-status {
+  min-height: 20px;
+  margin: 12px 0 0;
+  color: #bffcf2;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .steps {
   display: flex;
   gap: 8px;
@@ -419,6 +427,50 @@ input[type="file"]::file-selector-button {
   color: var(--danger);
 }
 
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--teal);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.about-panel p:not(.eyebrow),
+.contact-panel p:not(.eyebrow) {
+  margin: 10px 0 0;
+  color: #c5cedc;
+  line-height: 1.62;
+}
+
+.contact-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.contact-links a {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+  text-decoration: none;
+}
+
+.contact-links a:hover {
+  border-color: rgba(53, 212, 189, 0.48);
+  background: rgba(53, 212, 189, 0.1);
+}
+
 .payment-links {
   margin-top: 12px;
   border: 1px solid rgba(53, 212, 189, 0.22);
@@ -578,6 +630,10 @@ input[type="file"]::file-selector-button {
   .payment-link-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .contact-links {
+    grid-template-columns: 1fr;
   }
 
   .copy-pay-link {

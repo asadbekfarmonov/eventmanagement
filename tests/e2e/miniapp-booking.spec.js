@@ -119,3 +119,12 @@ test('admin can enable repost discount on existing event and guest sees it', asy
   await expect(page.locator('#summary')).toContainText('Instagram repost discount: 1000.00 per guest.');
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]')).toBeVisible();
 });
+
+test('non-admin sees a readable admin access message', async ({ page }) => {
+  await openBooking(page);
+
+  await page.locator('#admin-open').click();
+
+  await expect(page.locator('#admin-open-status')).toContainText('Admin access denied.');
+  await expect(page.locator('#admin-area')).toBeHidden();
+});

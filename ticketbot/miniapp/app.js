@@ -20,6 +20,7 @@ const refreshBtn = document.getElementById('refresh-events');
 const ticketsListEl = document.getElementById('tickets-list');
 const ticketsEmptyEl = document.getElementById('tickets-empty');
 const ticketsRefreshEl = document.getElementById('tickets-refresh');
+const adminOpenStatusEl = document.getElementById('admin-open-status');
 
 const adminEl = {
   open: document.getElementById('admin-open'),
@@ -121,6 +122,12 @@ function setAdminStatus(msg, isError = false) {
   if (!adminEl.status) return;
   adminEl.status.textContent = msg || '';
   adminEl.status.className = isError ? 'hint error' : 'hint';
+}
+
+function setAdminOpenStatus(msg, isError = false) {
+  if (!adminOpenStatusEl) return;
+  adminOpenStatusEl.textContent = msg || '';
+  adminOpenStatusEl.className = isError ? 'admin-open-status error' : 'admin-open-status';
 }
 
 function clearStatusIfMatches(message) {
@@ -965,14 +972,18 @@ async function refreshAdminAll() {
 
 async function ensureAdmin() {
   if (adminState.ready) return true;
+  setAdminOpenStatus('Checking admin access...');
   try {
     const data = await adminGet('/api/admin/bootstrap');
     adminState.ready = true;
     adminEl.ident.textContent = `Admin Telegram ID: ${data.tg_id}`;
     setAdminStatus('Admin mode ready.');
+    setAdminOpenStatus('');
     return true;
   } catch (err) {
-    setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);
+    const message = apiErrorText(err, 'Admin access denied.');
+    setAdminStatus(message, true);
+    setAdminOpenStatus(message, true);
     return false;
   }
 }
@@ -982,6 +993,7 @@ async function openAdminMode() {
   if (!ok) return;
   adminEl.area.hidden = false;
   adminEl.open.classList.add('active');
+  setAdminOpenStatus('');
   setAdminSection(adminState.activeSection || 'events');
   await refreshAdminAll();
 }
