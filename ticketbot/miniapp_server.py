@@ -10,7 +10,7 @@ import json
 import uuid
 import urllib.request
 import urllib.error
-from urllib.parse import parse_qsl, unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -67,14 +67,18 @@ MAX_UPLOAD_BYTES = int(UPLOAD_MAX_MB * 1024 * 1024)
 TELEGRAM_AUTH_MAX_AGE_SECONDS = _env_positive_int("TELEGRAM_AUTH_MAX_AGE_SECONDS", 86400)
 UPLOAD_RETENTION_DAYS = _env_positive_int("UPLOAD_RETENTION_DAYS", 7)
 UPLOAD_CLEANUP_INTERVAL_SECONDS = _env_positive_int("UPLOAD_CLEANUP_INTERVAL_SECONDS", 3600)
+UPLOAD_LINK_TTL_SECONDS = _env_positive_int("UPLOAD_LINK_TTL_SECONDS", UPLOAD_RETENTION_DAYS * 24 * 60 * 60)
+RATE_LIMIT_WINDOW_SECONDS = _env_positive_int("RATE_LIMIT_WINDOW_SECONDS", 60)
+QUOTE_RATE_LIMIT = _env_positive_int("QUOTE_RATE_LIMIT", 120)
+BOOKING_RATE_LIMIT = _env_positive_int("BOOKING_RATE_LIMIT", 12)
 _LAST_UPLOAD_CLEANUP_TS = 0.0
+_RATE_LIMIT_BUCKETS: Dict[Tuple[str, str], List[float]] = {}
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 db = Database(DATABASE_PATH)
 
 app = FastAPI(title="TicketBot Mini App Server")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.middleware("http")
@@ -167,8 +171,28 @@ def _extract_upload_filename(payment_file_id: str) -> Optional[str]:
     return filename
 
 
+def _upload_signing_secret() -> bytes:
+    secret = os.getenv("UPLOAD_LINK_SECRET", "") or BOT_TOKEN or "dev-upload-link-secret"
+    return secret.encode("utf-8")
+
+
+def _sign_upload(filename: str, expires: int) -> str:
+    payload = f"{filename}:{expires}".encode("utf-8")
+    return hmac.new(_upload_signing_secret(), payload, hashlib.sha256).hexdigest()
+
+
+def _verify_upload_token(filename: str, expires: int, token: str) -> None:
+    if expires < int(time.time()):
+        raise HTTPException(status_code=403, detail="Upload link expired.")
+    expected = _sign_upload(filename, expires)
+    if not hmac.compare_digest(expected, token or ""):
+        raise HTTPException(status_code=403, detail="Invalid upload link.")
+
+
 def _build_upload_url(stored_name: str) -> str:
-    proof_url = f"/uploads/{stored_name}"
+    expires = int(time.time()) + UPLOAD_LINK_TTL_SECONDS
+    query = urlencode({"expires": str(expires), "token": _sign_upload(stored_name, expires)})
+    proof_url = f"/uploads/{stored_name}?{query}"
     if WEB_APP_URL:
         proof_url = f"{WEB_APP_URL}{proof_url}"
     return proof_url
@@ -181,20 +205,11 @@ def _is_upload_file(value: Any) -> bool:
 async def _store_upload_file(file: StarletteUploadFile, *, label: str, allow_pdf: bool) -> Tuple[str, str]:
     mime = (file.content_type or "").lower()
     if allow_pdf:
-        if not (mime.startswith("image/") or mime == "application/pdf"):
-            raise HTTPException(status_code=400, detail=f"Only image or PDF is accepted for {label}.")
-    elif not mime.startswith("image/"):
-        raise HTTPException(status_code=400, detail=f"Only image is accepted for {label}.")
+        if mime not in {"image/jpeg", "image/png", "application/pdf"}:
+            raise HTTPException(status_code=400, detail=f"Only JPG, PNG, or PDF is accepted for {label}.")
+    elif mime not in {"image/jpeg", "image/png"}:
+        raise HTTPException(status_code=400, detail=f"Only JPG or PNG is accepted for {label}.")
 
-    if mime == "application/pdf":
-        suffix = ".pdf"
-    elif mime == "image/png":
-        suffix = ".png"
-    else:
-        suffix = ".jpg"
-
-    stored_name = f"{uuid.uuid4().hex}{suffix}"
-    stored_path = Path(UPLOAD_DIR) / stored_name
     try:
         content = await file.read()
         if not content:
@@ -206,11 +221,69 @@ async def _store_upload_file(file: StarletteUploadFile, *, label: str, allow_pdf
             )
     finally:
         await file.close()
+
+    actual_mime = _detect_upload_mime(content)
+    if allow_pdf:
+        allowed_actual = {"image/jpeg", "image/png", "application/pdf"}
+    else:
+        allowed_actual = {"image/jpeg", "image/png"}
+    if actual_mime not in allowed_actual:
+        raise HTTPException(status_code=400, detail=f"Uploaded {label} is not a valid JPG, PNG, or PDF.")
+    if actual_mime != mime:
+        raise HTTPException(status_code=400, detail=f"Uploaded {label} type does not match the file content.")
+
+    suffix = { "application/pdf": ".pdf", "image/png": ".png", "image/jpeg": ".jpg" }[actual_mime]
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    stored_path = Path(UPLOAD_DIR) / stored_name
     try:
         stored_path.write_bytes(content)
     except OSError as exc:
         raise HTTPException(status_code=507, detail=f"Upload storage error: {exc}") from exc
     return _build_upload_url(stored_name), "external"
+
+
+def _detect_upload_mime(content: bytes) -> str:
+    if content.startswith(b"%PDF-"):
+        return "application/pdf"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return ""
+
+
+def _client_rate_key(request: Request, scope: str, tg_id: Optional[int] = None) -> Tuple[str, str]:
+    if tg_id is not None:
+        return scope, f"tg:{tg_id}"
+    forwarded = request.headers.get("x-forwarded-for", "")
+    host = forwarded.split(",", 1)[0].strip()
+    if not host and request.client:
+        host = request.client.host
+    return scope, host or "unknown"
+
+
+def _enforce_rate_limit(request: Request, scope: str, limit: int, tg_id: Optional[int] = None) -> None:
+    now = time.time()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    key = _client_rate_key(request, scope, tg_id)
+    bucket = [ts for ts in _RATE_LIMIT_BUCKETS.get(key, []) if ts >= cutoff]
+    if len(bucket) >= limit:
+        raise HTTPException(status_code=429, detail="Too many requests. Try again shortly.")
+    bucket.append(now)
+    _RATE_LIMIT_BUCKETS[key] = bucket
+
+
+def _safe_upload_path(filename: str) -> Path:
+    clean_name = Path(unquote(filename or "")).name
+    if not clean_name or clean_name != filename or clean_name in {".", ".."}:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    file_path = (Path(UPLOAD_DIR) / clean_name).resolve()
+    upload_root = Path(UPLOAD_DIR).resolve()
+    if upload_root not in file_path.parents:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    return file_path
 
 
 def _pending_status(status: str) -> bool:
@@ -589,6 +662,27 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/uploads/{filename}")
+def signed_upload(filename: str, expires: int, token: str) -> FileResponse:
+    _verify_upload_token(filename, expires, token)
+    file_path = _safe_upload_path(filename)
+    suffix = file_path.suffix.lower()
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".pdf": "application/pdf",
+    }.get(suffix, "application/octet-stream")
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": f'inline; filename="{file_path.name}"',
+        },
+    )
+
+
 @app.get("/api/events")
 def list_events() -> Dict[str, Any]:
     items = []
@@ -656,6 +750,7 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="tg_id, event_id, boys, and girls must be integers.") from exc
         tg_id = _request_tg_id(request, tg_id)
+        _enforce_rate_limit(request, "booking", BOOKING_RATE_LIMIT, tg_id)
         attendees = str(form.get("attendees", ""))
         payment_file = form.get("file")
         if not _is_upload_file(payment_file):
@@ -743,7 +838,8 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
 
 
 @app.post("/api/quote")
-def quote(payload: QuoteRequest) -> Dict[str, Any]:
+def quote(request: Request, payload: QuoteRequest) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "quote", QUOTE_RATE_LIMIT)
     try:
         return db.quote_booking(payload.event_id, payload.boys, payload.girls)
     except ValueError as exc:

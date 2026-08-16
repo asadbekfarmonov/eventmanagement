@@ -8,10 +8,17 @@ import time
 import unittest
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
+
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+    b"\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02"
+    b"\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00\x02\xeb"
+    b"\x01\xf6\xc5\xbb\xc7\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 class MiniAppAdminApiTests(unittest.TestCase):
@@ -29,6 +36,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
             "UPLOAD_MAX_MB",
             "UPLOAD_RETENTION_DAYS",
             "UPLOAD_CLEANUP_INTERVAL_SECONDS",
+            "UPLOAD_LINK_TTL_SECONDS",
+            "RATE_LIMIT_WINDOW_SECONDS",
+            "QUOTE_RATE_LIMIT",
+            "BOOKING_RATE_LIMIT",
         )
         self._env_backup = {key: os.environ.get(key) for key in self._env_keys}
         os.environ["DATABASE_PATH"] = self.db_path
@@ -39,6 +50,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
         os.environ["UPLOAD_MAX_MB"] = "5"
         os.environ["UPLOAD_RETENTION_DAYS"] = "7"
         os.environ["UPLOAD_CLEANUP_INTERVAL_SECONDS"] = "3600"
+        os.environ["UPLOAD_LINK_TTL_SECONDS"] = "604800"
+        os.environ["RATE_LIMIT_WINDOW_SECONDS"] = "60"
+        os.environ["QUOTE_RATE_LIMIT"] = "120"
+        os.environ["BOOKING_RATE_LIMIT"] = "12"
 
         import ticketbot.miniapp_server as miniapp_server
 
@@ -117,7 +132,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
         discounted_attendee_indexes=None,
         repost_files=None,
         filename="proof.png",
-        content=b"image-bytes",
+        content=PNG_BYTES,
         mime="image/png",
     ):
         names = attendees or ["John Doe"]
@@ -227,7 +242,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/app.js?v=20260816c", index_response.text)
+        self.assertIn("/static/styles.css?v=20260816f", index_response.text)
+        self.assertIn("/static/app.js?v=20260816d", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
@@ -326,6 +342,29 @@ class MiniAppAdminApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 409, response.text)
+
+    def test_quote_api_rate_limit(self):
+        self.server.QUOTE_RATE_LIMIT = 1
+        first = self.client.post(
+            "/api/quote",
+            json={
+                "event_id": self.event_id,
+                "boys": 1,
+                "girls": 0,
+            },
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+
+        second = self.client.post(
+            "/api/quote",
+            json={
+                "event_id": self.event_id,
+                "boys": 1,
+                "girls": 0,
+            },
+        )
+        self.assertEqual(second.status_code, 429, second.text)
+        self.assertIn("Too many requests", second.json().get("detail", ""))
 
     def test_admin_guest_remove_allows_legacy_pending_status(self):
         reservation = self._create_reservation("Legacy Pending", status="pending")
@@ -554,7 +593,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             boys=2,
             girls=1,
             attendees=["John Doe", "Jane Doe", "Alex Doe"],
-            content=b"fake-png",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -575,6 +614,20 @@ class MiniAppAdminApiTests(unittest.TestCase):
         upload_name = Path(urlparse(reservation.payment_file_id).path).name
         self.assertTrue(upload_name)
         self.assertTrue(Path(os.environ["UPLOAD_DIR"], upload_name).exists())
+        parsed_upload = urlparse(reservation.payment_file_id)
+        signed_params = parse_qs(parsed_upload.query)
+        self.assertIn("expires", signed_params)
+        self.assertIn("token", signed_params)
+
+        signed_upload_resp = self.client.get(f"{parsed_upload.path}?{parsed_upload.query}")
+        self.assertEqual(signed_upload_resp.status_code, 200, signed_upload_resp.text)
+        self.assertTrue(signed_upload_resp.headers.get("content-type", "").startswith("image/png"))
+
+        unsigned_upload_resp = self.client.get(parsed_upload.path)
+        self.assertIn(unsigned_upload_resp.status_code, {403, 422})
+
+        bad_signed_upload_resp = self.client.get(f"{parsed_upload.path}?expires={signed_params['expires'][0]}&token=bad")
+        self.assertEqual(bad_signed_upload_resp.status_code, 403)
 
         event_after = self.db.get_event(self.event_id)
         self.assertEqual(event_after.early_bird_qty, 0)
@@ -602,15 +655,26 @@ class MiniAppAdminApiTests(unittest.TestCase):
             mime="text/plain",
         )
         self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn("Only image or PDF is accepted", response.json().get("detail", ""))
+        self.assertIn("Only JPG, PNG, or PDF is accepted", response.json().get("detail", ""))
         reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
         self.assertEqual(reservation_count, 0)
         self.assertEqual(len(list(Path(os.environ["UPLOAD_DIR"]).glob("*"))), 0)
 
+    def test_book_with_payment_rejects_spoofed_image_upload(self):
+        response = self._book_with_payment(
+            filename="proof.png",
+            content=b"not actually a png",
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("not a valid", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+
     def test_book_with_payment_rejects_attendee_name_without_surname(self):
         response = self._book_with_payment(
             attendees=["SingleNameOnly"],
-            content=b"fake-png",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 400, response.text)
@@ -621,11 +685,28 @@ class MiniAppAdminApiTests(unittest.TestCase):
     def test_book_with_payment_requires_existing_user_profile(self):
         response = self._book_with_payment(
             tg_id=999999999,
-            content=b"fake-png",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 404, response.text)
         self.assertIn("Run /start in bot", response.json().get("detail", ""))
+
+    def test_book_with_payment_rate_limit(self):
+        self.server.BOOKING_RATE_LIMIT = 1
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "early_qty": 5,
+                "tier1_qty": 5,
+                "tier2_qty": 5,
+            },
+        )
+        first = self._book_with_payment(attendees=["First User"])
+        self.assertEqual(first.status_code, 200, first.text)
+
+        second = self._book_with_payment(attendees=["Second User"])
+        self.assertEqual(second.status_code, 429, second.text)
+        self.assertIn("Too many requests", second.json().get("detail", ""))
 
     def test_book_with_payment_applies_repost_discount_per_attendee(self):
         self.db.set_event_fields(
@@ -641,10 +722,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
             attendees=["John Doe", "Jane Doe", "Alex Doe"],
             discounted_attendee_indexes=[0, 2],
             repost_files={
-                0: ("repost-0.png", b"repost-zero", "image/png"),
-                2: ("repost-2.jpg", b"repost-two", "image/jpeg"),
+                0: ("repost-0.png", PNG_BYTES, "image/png"),
+                2: ("repost-2.png", PNG_BYTES, "image/png"),
             },
-            content=b"payment-proof",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -675,7 +756,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             boys=4,
             girls=0,
             attendees=["John Doe", "Jane Doe", "Alex Doe", "Mark Doe"],
-            content=b"payment-proof",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -704,11 +785,11 @@ class MiniAppAdminApiTests(unittest.TestCase):
             attendees=["John Doe", "Jane Doe", "Alex Doe"],
             discounted_attendee_indexes=[0, 1, 2],
             repost_files={
-                0: ("repost-0.png", b"repost-zero", "image/png"),
-                1: ("repost-1.jpg", b"repost-one", "image/jpeg"),
-                2: ("repost-2.jpg", b"repost-two", "image/jpeg"),
+                0: ("repost-0.png", PNG_BYTES, "image/png"),
+                1: ("repost-1.png", PNG_BYTES, "image/png"),
+                2: ("repost-2.png", PNG_BYTES, "image/png"),
             },
-            content=b"payment-proof",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -734,7 +815,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
         response = self._book_with_payment(
             attendees=["John Doe"],
             discounted_attendee_indexes=[0],
-            content=b"payment-proof",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 400, response.text)
@@ -756,11 +837,11 @@ class MiniAppAdminApiTests(unittest.TestCase):
             repost_files={
                 0: ("repost.pdf", b"%PDF-1.4", "application/pdf"),
             },
-            content=b"payment-proof",
+            content=PNG_BYTES,
             mime="image/png",
         )
         self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn("Only image is accepted", response.json().get("detail", ""))
+        self.assertIn("Only JPG or PNG is accepted", response.json().get("detail", ""))
         reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
         self.assertEqual(reservation_count, 0)
 

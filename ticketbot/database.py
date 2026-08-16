@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,6 +20,7 @@ LEGACY_PENDING_STATUSES = {"pending"}
 
 class Database:
     def __init__(self, path: str) -> None:
+        self._lock = threading.RLock()
         dir_name = os.path.dirname(path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
@@ -29,6 +31,17 @@ class Database:
         self.conn.execute("PRAGMA synchronous = NORMAL")
         self._init_schema()
         self._migrate_schema()
+
+    def __getattribute__(self, name: str):
+        attr = object.__getattribute__(self, name)
+        if name.startswith("_") or name in {"conn"} or not callable(attr):
+            return attr
+
+        def locked(*args, **kwargs):
+            with object.__getattribute__(self, "_lock"):
+                return attr(*args, **kwargs)
+
+        return locked
 
     def _init_schema(self) -> None:
         cursor = self.conn.cursor()

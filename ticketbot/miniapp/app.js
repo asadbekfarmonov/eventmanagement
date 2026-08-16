@@ -714,10 +714,16 @@ function renderTickets(items) {
   for (const item of items) {
     const card = document.createElement('div');
     card.className = 'admin-card';
+    const safeCode = escapeHtml(item.code || '');
+    const safeStatus = escapeHtml(item.status || '');
+    const safeEventTitle = escapeHtml(item.event_title || '');
+    const safeTierLabel = escapeHtml(item.tier_label || '');
+    const safeBoys = escapeHtml(item.boys ?? 0);
+    const safeGirls = escapeHtml(item.girls ?? 0);
     card.innerHTML = `
-      <p class="admin-card-title">${item.code} | ${item.status}</p>
-      <p class="admin-card-meta">${item.event_title}</p>
-      <p class="admin-card-meta">Tier: ${item.tier_label} | Boys: ${item.boys} | Girls: ${item.girls} | Total: ${money(item.total_price)}</p>
+      <p class="admin-card-title">${safeCode} | ${safeStatus}</p>
+      <p class="admin-card-meta">${safeEventTitle}</p>
+      <p class="admin-card-meta">Tier: ${safeTierLabel} | Boys: ${safeBoys} | Girls: ${safeGirls} | Total: ${money(item.total_price)}</p>
     `;
     ticketsListEl.appendChild(card);
   }
