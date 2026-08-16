@@ -128,3 +128,24 @@ test('non-admin sees a readable admin access message', async ({ page }) => {
   await expect(page.locator('#admin-open-status')).toContainText('Admin access denied.');
   await expect(page.locator('#admin-area')).toBeHidden();
 });
+
+test('top navigation shows one public section at a time', async ({ page }) => {
+  await openBooking(page);
+
+  await expect(page.locator('#events-panel')).toBeVisible();
+  await expect(page.locator('#tickets-panel')).toBeHidden();
+  await expect(page.locator('#about-panel')).toBeHidden();
+  await expect(page.locator('#contact-panel')).toBeHidden();
+
+  await page.getByRole('button', { name: 'My tickets' }).click();
+  await expect(page.locator('#events-panel')).toBeHidden();
+  await expect(page.locator('#tickets-panel')).toBeVisible();
+
+  await page.getByRole('button', { name: 'About' }).click();
+  await expect(page.locator('#tickets-panel')).toBeHidden();
+  await expect(page.locator('#about-panel')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Contact' }).click();
+  await expect(page.locator('#about-panel')).toBeHidden();
+  await expect(page.locator('#contact-panel')).toBeVisible();
+});

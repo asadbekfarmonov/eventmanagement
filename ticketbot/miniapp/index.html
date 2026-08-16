@@ -23,14 +23,14 @@
       <p class="sub">Вы сделаете эту ночь</p>
       <p id="admin-open-status" class="admin-open-status" role="status" aria-live="polite"></p>
       <nav class="top-nav" aria-label="Page sections">
-        <a href="#events-panel">Book</a>
-        <a href="#tickets-panel">Tickets</a>
-        <a href="#about-panel">About</a>
-        <a href="#contact-panel">Contact</a>
+        <button type="button" class="top-nav-item active" data-page-tab="book">Book</button>
+        <button type="button" class="top-nav-item" data-page-tab="tickets">My tickets</button>
+        <button type="button" class="top-nav-item" data-page-tab="about">About</button>
+        <button type="button" class="top-nav-item" data-page-tab="contact">Contact</button>
       </nav>
     </header>
 
-    <section class="panel" id="events-panel">
+    <section class="panel page-section" id="events-panel" data-page-section="book">
       <div class="panel-head">
         <h2>Choose event</h2>
         <button id="refresh-events" type="button">Refresh</button>
@@ -39,7 +39,7 @@
       <p id="events-empty" class="hint" hidden>No active events right now.</p>
     </section>
 
-    <section class="panel" id="group-panel">
+    <section class="panel page-section" id="group-panel" data-page-section="book">
       <h2>Group size</h2>
       <div class="grid-2">
         <label>
@@ -54,13 +54,13 @@
       <p class="hint">We will create one name field for each guest.</p>
     </section>
 
-    <section class="panel" id="attendees-panel">
+    <section class="panel page-section" id="attendees-panel" data-page-section="book">
       <h2>Guest names</h2>
       <p class="hint">Use the name and surname from the passport or ID.</p>
       <div id="attendees-list" class="attendees"></div>
     </section>
 
-    <section class="panel" id="summary-panel">
+    <section class="panel page-section" id="summary-panel" data-page-section="book">
       <h2>Review and book</h2>
       <div id="summary" class="summary-card">
         <p>Choose an event and add your group size.</p>
@@ -73,7 +73,7 @@
       <p id="status" class="hint"></p>
     </section>
 
-    <section class="panel" id="tickets-panel">
+    <section class="panel page-section" id="tickets-panel" data-page-section="tickets" hidden>
       <div class="panel-head">
         <h2>My tickets</h2>
         <button id="tickets-refresh" type="button">Refresh</button>
@@ -82,7 +82,7 @@
       <p id="tickets-empty" class="hint" hidden>No tickets yet.</p>
     </section>
 
-    <section class="panel about-panel" id="about-panel">
+    <section class="panel page-section about-panel" id="about-panel" data-page-section="about" hidden>
       <p class="eyebrow">About</p>
       <h2>Budapest Tunderi</h2>
       <p>
@@ -99,7 +99,7 @@
       </p>
     </section>
 
-    <section class="panel contact-panel" id="contact-panel">
+    <section class="panel page-section contact-panel" id="contact-panel" data-page-section="contact" hidden>
       <p class="eyebrow">Contact</p>
       <h2>Talk to us</h2>
       <div class="contact-links">

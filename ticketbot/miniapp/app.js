@@ -21,6 +21,8 @@ const ticketsListEl = document.getElementById('tickets-list');
 const ticketsEmptyEl = document.getElementById('tickets-empty');
 const ticketsRefreshEl = document.getElementById('tickets-refresh');
 const adminOpenStatusEl = document.getElementById('admin-open-status');
+const pageTabs = Array.from(document.querySelectorAll('[data-page-tab]'));
+const pageSections = Array.from(document.querySelectorAll('[data-page-section]'));
 
 const adminEl = {
   open: document.getElementById('admin-open'),
@@ -133,6 +135,21 @@ function setAdminOpenStatus(msg, isError = false) {
 function clearStatusIfMatches(message) {
   if ((statusEl.textContent || '').trim() === message) {
     setStatus('');
+  }
+}
+
+function setPageTab(tabKey) {
+  const key = tabKey || 'book';
+  for (const tab of pageTabs) {
+    const active = tab.dataset.pageTab === key;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  }
+  for (const section of pageSections) {
+    section.hidden = section.dataset.pageSection !== key;
+  }
+  if (key === 'tickets') {
+    loadMeAndTickets();
   }
 }
 
@@ -1195,6 +1212,13 @@ if (summaryEl) {
 if (adminEl.open) {
   adminEl.open.addEventListener('click', openAdminMode);
 }
+if (pageTabs.length) {
+  for (const tab of pageTabs) {
+    tab.addEventListener('click', () => {
+      setPageTab(tab.dataset.pageTab || 'book');
+    });
+  }
+}
 if (adminEl.tabs && adminEl.tabs.length) {
   for (const tabBtn of adminEl.tabs) {
     tabBtn.addEventListener('click', () => {
@@ -1286,6 +1310,7 @@ if (ticketsRefreshEl) {
 }
 
 initTelegram();
+setPageTab('book');
 setAdminSection('events');
 rebuildAttendees();
 fetchEvents();

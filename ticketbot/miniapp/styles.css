@@ -178,7 +178,7 @@ textarea:focus-visible {
   flex-wrap: wrap;
 }
 
-.top-nav a {
+.top-nav-item {
   display: inline-flex;
   min-height: 38px;
   align-items: center;
@@ -190,14 +190,19 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.08);
   font-size: 13px;
   font-weight: 800;
-  text-decoration: none;
   transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
 }
 
-.top-nav a:hover {
+.top-nav-item:hover {
   border-color: rgba(53, 212, 189, 0.5);
   background: rgba(53, 212, 189, 0.12);
   transform: translateY(-1px);
+}
+
+.top-nav-item.active {
+  border-color: rgba(255, 106, 26, 0.72);
+  background: linear-gradient(135deg, rgba(255, 106, 26, 0.28), rgba(255, 61, 90, 0.18));
+  color: #ffffff;
 }
 
 .panel {
@@ -208,6 +213,11 @@ textarea:focus-visible {
   margin-top: 14px;
   box-shadow: var(--shadow);
   animation: riseIn 0.4s ease both;
+}
+
+.page-section[hidden],
+#admin-area[hidden] {
+  display: none;
 }
 
 #group-panel {
@@ -612,8 +622,8 @@ input[type="file"]::file-selector-button {
     margin-top: 16px;
   }
 
-  .about-panel,
-  .contact-panel {
+  .about-panel:not([hidden]),
+  .contact-panel:not([hidden]) {
     display: inline-grid;
     width: calc(50% - 8px);
     vertical-align: top;
