@@ -154,6 +154,15 @@ class Database:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_web_sessions (
+                token_hash TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def _migrate_schema(self) -> None:
@@ -672,6 +681,37 @@ class Database:
         cursor.execute("UPDATE web_sessions SET last_seen_at = ? WHERE token_hash = ?", (self._utc_now(), token_hash))
         self.conn.commit()
         return User(**dict(row))
+
+    def create_admin_web_session(self) -> str:
+        token = secrets.token_urlsafe(32)
+        token_hash = self._web_session_hash(token)
+        now = self._utc_now()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO admin_web_sessions (token_hash, created_at, last_seen_at)
+            VALUES (?, ?, ?)
+            """,
+            (token_hash, now, now),
+        )
+        self.conn.commit()
+        return token
+
+    def is_valid_admin_web_session(self, token: str) -> bool:
+        raw = (token or "").strip()
+        if not raw:
+            return False
+        token_hash = self._web_session_hash(raw)
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT token_hash FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
+        if not cursor.fetchone():
+            return False
+        cursor.execute(
+            "UPDATE admin_web_sessions SET last_seen_at = ? WHERE token_hash = ?",
+            (self._utc_now(), token_hash),
+        )
+        self.conn.commit()
+        return True
 
     def get_user(self, tg_id: int) -> Optional[User]:
         cursor = self.conn.cursor()

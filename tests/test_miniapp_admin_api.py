@@ -40,6 +40,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             "RATE_LIMIT_WINDOW_SECONDS",
             "QUOTE_RATE_LIMIT",
             "BOOKING_RATE_LIMIT",
+            "ADMIN_WEB_PASSWORD",
         )
         self._env_backup = {key: os.environ.get(key) for key in self._env_keys}
         os.environ["DATABASE_PATH"] = self.db_path
@@ -54,6 +55,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
         os.environ["RATE_LIMIT_WINDOW_SECONDS"] = "60"
         os.environ["QUOTE_RATE_LIMIT"] = "120"
         os.environ["BOOKING_RATE_LIMIT"] = "12"
+        os.environ["ADMIN_WEB_PASSWORD"] = "test-admin-password"
 
         import ticketbot.miniapp_server as miniapp_server
 
@@ -244,8 +246,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817a", index_response.text)
-        self.assertIn("/static/app.js?v=20260817a", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817b", index_response.text)
+        self.assertIn("/static/app.js?v=20260817b", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
@@ -286,6 +288,38 @@ class MiniAppAdminApiTests(unittest.TestCase):
         items = tickets_resp.json()["items"]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["attendees"], ["Web Guest"])
+
+    def test_website_admin_login_can_access_admin_apis(self):
+        login_resp = self.client.post(
+            "/api/admin/login",
+            json={"password": "test-admin-password"},
+        )
+        self.assertEqual(login_resp.status_code, 200, login_resp.text)
+        token = login_resp.json()["admin_session"]
+        self.assertTrue(token)
+        headers = {"X-Admin-Session": token}
+
+        bootstrap_resp = self.client.get("/api/admin/bootstrap", headers=headers)
+        self.assertEqual(bootstrap_resp.status_code, 200, bootstrap_resp.text)
+        self.assertEqual(bootstrap_resp.json()["source"], "website")
+
+        events_resp = self.client.get("/api/admin/events", headers=headers)
+        self.assertEqual(events_resp.status_code, 200, events_resp.text)
+        self.assertEqual(len(events_resp.json()["items"]), 1)
+
+    def test_user_web_session_cannot_access_admin_apis(self):
+        register_resp = self.client.post(
+            "/api/web/register",
+            json={"name": "Not", "surname": "Admin", "phone": "+36 20 777 0000"},
+        )
+        self.assertEqual(register_resp.status_code, 200, register_resp.text)
+        user_token = register_resp.json()["session_token"]
+
+        response = self.client.get(
+            "/api/admin/events",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        self.assertEqual(response.status_code, 401, response.text)
 
     def test_booking_without_telegram_or_web_session_is_rejected(self):
         response = self.client.post(

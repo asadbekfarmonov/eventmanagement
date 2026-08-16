@@ -4,7 +4,9 @@ const fallbackTgId = Number(qs.get('tg_id') || 0);
 const tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
 const tgInitData = (tg && tg.initData) || '';
 const WEB_SESSION_KEY = 'bt_web_session';
+const ADMIN_SESSION_KEY = 'bt_admin_session';
 let webSessionToken = localStorage.getItem(WEB_SESSION_KEY) || '';
+let adminSessionToken = localStorage.getItem(ADMIN_SESSION_KEY) || '';
 const autoOpenAdmin = ['1', 'true', 'yes'].includes(
   (qs.get('open_admin') || qs.get('admin') || '').toLowerCase(),
 );
@@ -39,6 +41,9 @@ const accountSaveEl = document.getElementById('account-save');
 const adminEl = {
   open: document.getElementById('admin-open'),
   area: document.getElementById('admin-area'),
+  loginPanel: document.getElementById('admin-login-panel'),
+  login: document.getElementById('admin-login'),
+  password: document.getElementById('admin-password'),
   refreshAll: document.getElementById('admin-refresh-all'),
   ident: document.getElementById('admin-ident'),
   status: document.getElementById('admin-status'),
@@ -179,6 +184,11 @@ function setAdminSection(sectionKey) {
   }
 }
 
+function setAdminLocked(locked) {
+  if (!adminEl.area) return;
+  adminEl.area.classList.toggle('admin-locked', Boolean(locked));
+}
+
 function apiErrorText(err, fallback) {
   if (!err) return fallback;
   if (typeof err === 'string') return err;
@@ -191,6 +201,12 @@ function authHeaders(extra = {}) {
   const headers = { ...extra };
   if (tgInitData) headers['X-Telegram-Init-Data'] = tgInitData;
   if (!tgInitData && webSessionToken) headers.Authorization = `Bearer ${webSessionToken}`;
+  return headers;
+}
+
+function adminHeaders(extra = {}) {
+  const headers = authHeaders(extra);
+  if (adminSessionToken) headers['X-Admin-Session'] = adminSessionToken;
   return headers;
 }
 
@@ -882,26 +898,25 @@ function initTelegram() {
 }
 
 async function adminGet(path, params = {}) {
-  if (!tgId) throw new Error('Cannot detect Telegram user id in Mini App.');
   const url = new URL(path, window.location.origin);
-  url.searchParams.set('tg_id', String(tgId));
+  if (tgId) url.searchParams.set('tg_id', String(tgId));
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null && String(v).trim() !== '') {
       url.searchParams.set(k, String(v));
     }
   });
-  const res = await fetch(url.toString(), { cache: 'no-store', headers: authHeaders() });
+  const res = await fetch(url.toString(), { cache: 'no-store', headers: adminHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw data;
   return data;
 }
 
 async function adminPost(path, body = {}) {
-  if (!tgId) throw new Error('Cannot detect Telegram user id in Mini App.');
-  const payload = { ...body, tg_id: tgId };
+  const payload = { ...body };
+  if (tgId) payload.tg_id = tgId;
   const res = await fetch(path, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    headers: adminHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
@@ -910,11 +925,10 @@ async function adminPost(path, body = {}) {
 }
 
 async function adminUpload(path, formData) {
-  if (!tgId) throw new Error('Cannot detect Telegram user id in Mini App.');
-  formData.set('tg_id', String(tgId));
+  if (tgId) formData.set('tg_id', String(tgId));
   const res = await fetch(path, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: adminHeaders(),
     body: formData,
   });
   const data = await res.json().catch(() => ({}));
@@ -1114,12 +1128,24 @@ async function ensureAdmin() {
   try {
     const data = await adminGet('/api/admin/bootstrap');
     adminState.ready = true;
-    adminEl.ident.textContent = `Admin Telegram ID: ${data.tg_id}`;
+    setAdminLocked(false);
+    if (adminEl.loginPanel) adminEl.loginPanel.hidden = true;
+    adminEl.ident.textContent = data.source === 'website'
+      ? 'Admin session: website'
+      : `Admin Telegram ID: ${data.tg_id}`;
     setAdminStatus('Admin mode ready.');
     setAdminOpenStatus('');
     return true;
   } catch (err) {
     const message = apiErrorText(err, 'Admin access denied.');
+    if (autoOpenAdmin && adminEl.loginPanel) {
+      setPageTab('admin');
+      setAdminLocked(true);
+      adminEl.loginPanel.hidden = false;
+      setAdminOpenStatus('');
+      setAdminStatus('Log in to continue.');
+      return false;
+    }
     setAdminStatus(message, true);
     setAdminOpenStatus(message, true);
     return false;
@@ -1127,7 +1153,15 @@ async function ensureAdmin() {
 }
 
 async function checkAdminAvailability() {
-  if (!adminEl.open || !tgId) return false;
+  if (!adminEl.open) return false;
+  if (adminSessionToken) {
+    adminEl.open.hidden = false;
+    return true;
+  }
+  if (!tgId) {
+    adminEl.open.hidden = true;
+    return false;
+  }
   try {
     const data = await adminGet('/api/admin/bootstrap');
     adminState.ready = true;
@@ -1144,11 +1178,41 @@ async function checkAdminAvailability() {
 async function openAdminMode() {
   const ok = await ensureAdmin();
   if (!ok) return;
+  setAdminLocked(false);
   setPageTab('admin');
   adminEl.open.classList.add('active');
   setAdminOpenStatus('');
   setAdminSection(adminState.activeSection || 'events');
   await refreshAdminAll();
+}
+
+async function loginAdmin() {
+  const password = adminEl.password ? adminEl.password.value : '';
+  if (!password.trim()) {
+    setAdminStatus('Enter admin password.', true);
+    return;
+  }
+  if (adminEl.login) adminEl.login.disabled = true;
+  setAdminStatus('Logging in...');
+  try {
+    const res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw data;
+    adminSessionToken = data.admin_session || '';
+    if (adminSessionToken) localStorage.setItem(ADMIN_SESSION_KEY, adminSessionToken);
+    if (adminEl.password) adminEl.password.value = '';
+    if (adminEl.open) adminEl.open.hidden = false;
+    adminState.ready = false;
+    await openAdminMode();
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Admin login failed.'), true);
+  } finally {
+    if (adminEl.login) adminEl.login.disabled = false;
+  }
 }
 
 async function addAdminGuest() {
@@ -1208,14 +1272,10 @@ async function importGuestsXlsx() {
 }
 
 async function exportGuestsXlsx() {
-  if (!tgId) {
-    setAdminStatus('Cannot detect Telegram user id in Mini App.', true);
-    return;
-  }
   const url = new URL('/api/admin/guest/export_xlsx', window.location.origin);
-  url.searchParams.set('tg_id', String(tgId));
+  if (tgId) url.searchParams.set('tg_id', String(tgId));
   try {
-    const resp = await fetch(url.toString(), { headers: authHeaders(), cache: 'no-store' });
+    const resp = await fetch(url.toString(), { headers: adminHeaders(), cache: 'no-store' });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       throw data;
@@ -1370,6 +1430,14 @@ if (summaryEl) {
 if (adminEl.open) {
   adminEl.open.addEventListener('click', openAdminMode);
 }
+if (adminEl.login) {
+  adminEl.login.addEventListener('click', loginAdmin);
+}
+if (adminEl.password) {
+  adminEl.password.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') loginAdmin();
+  });
+}
 if (pageTabs.length) {
   for (const tab of pageTabs) {
     tab.addEventListener('click', () => {
@@ -1475,6 +1543,7 @@ if (ticketsRefreshEl) {
 initTelegram();
 setPageTab('main');
 setAdminSection('events');
+setAdminLocked(true);
 renderAccountPanel();
 updateCarouselDots();
 rebuildAttendees();

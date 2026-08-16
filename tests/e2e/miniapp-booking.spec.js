@@ -182,6 +182,22 @@ test('website visitor registers before booking', async ({ page }) => {
   await expect(page.locator('input[data-part="surname"]').first()).toHaveValue('Guest');
 });
 
+test('website admin logs in from admin page', async ({ page }) => {
+  await page.goto('/admin');
+
+  await expect(page.locator('#admin-area')).toBeVisible();
+  await expect(page.locator('#admin-login-panel')).toBeVisible();
+  await expect(page.locator('.admin-tabs')).toBeHidden();
+
+  await page.locator('#admin-password').fill('playwright-admin-password');
+  await page.locator('#admin-login').click();
+
+  await expect(page.locator('#admin-login-panel')).toBeHidden();
+  await expect(page.locator('#admin-ident')).toContainText('website');
+  await expect(page.locator('.admin-tabs')).toBeVisible();
+  await expect(page.locator('#admin-event-select')).toContainText('Playwright Event');
+});
+
 test('admin navigation appears for admins only', async ({ page }) => {
   await page.goto('/?tg_id=7164876915');
 

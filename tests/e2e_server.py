@@ -20,6 +20,7 @@ def main() -> None:
     os.environ["UPLOAD_MAX_MB"] = "5"
     os.environ["UPLOAD_RETENTION_DAYS"] = "7"
     os.environ["UPLOAD_CLEANUP_INTERVAL_SECONDS"] = "3600"
+    os.environ["ADMIN_WEB_PASSWORD"] = "playwright-admin-password"
 
     import ticketbot.miniapp_server as miniapp_server
 

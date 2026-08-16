@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260817a">
+  <link rel="stylesheet" href="/static/styles.css?v=20260817b">
 </head>
 <body>
   <main class="app-shell">
@@ -235,6 +235,16 @@
       <p id="admin-ident" class="hint"></p>
       <p id="admin-status" class="hint"></p>
 
+      <div id="admin-login-panel" class="admin-login-panel">
+        <p class="eyebrow">Admin login</p>
+        <h3>Enter admin password</h3>
+        <label>
+          Password
+          <input id="admin-password" type="password" autocomplete="current-password" />
+        </label>
+        <button id="admin-login" class="primary" type="button">Log in</button>
+      </div>
+
       <nav class="admin-tabs" aria-label="Admin sections">
         <button type="button" class="admin-tab active" data-admin-tab="events">Events</button>
         <button type="button" class="admin-tab" data-admin-tab="guests">Guests</button>
@@ -390,6 +400,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260817a" defer></script>
+  <script src="/static/app.js?v=20260817b" defer></script>
 </body>
 </html>

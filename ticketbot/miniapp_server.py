@@ -31,6 +31,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "data/bot.db")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
+ADMIN_WEB_PASSWORD = os.getenv("ADMIN_WEB_PASSWORD", "")
 DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
 ALLOW_TG_ID_FALLBACK = os.getenv("MINIAPP_ALLOW_TG_ID_FALLBACK", "0").strip().lower() in {
@@ -553,37 +554,41 @@ class WebRegisterRequest(BaseModel):
     phone: str = Field(min_length=5, max_length=40)
 
 
+class AdminWebLoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
 class AdminGuestAddRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     reservation_code: str
     gender: str
     full_name: str
 
 
 class AdminGuestRemoveRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     attendee_id: int
 
 
 class AdminGuestRenameRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     attendee_id: int
     full_name: str
 
 
 class AdminEventUpdateRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     event_id: int
     updates: Dict[str, Any]
 
 
 class AdminEventDeleteRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     event_id: int
 
 
 class AdminEventCreateSimpleRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     title: str
     caption: str = ""
     early_boy: float = Field(ge=0)
@@ -610,7 +615,7 @@ class AdminEventCreateSimpleRequest(BaseModel):
 
 
 class AdminGuestAddByEventRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     event_id: int
     name: str
     surname: str
@@ -618,7 +623,7 @@ class AdminGuestAddByEventRequest(BaseModel):
 
 
 class AdminGuestRemoveByNameRequest(BaseModel):
-    tg_id: int
+    tg_id: Optional[int] = None
     event_id: int
     name: str
     surname: str
@@ -630,6 +635,20 @@ def _require_admin(tg_id: Optional[int]) -> int:
     if tg_id not in ADMIN_IDS:
         raise HTTPException(status_code=403, detail="Admin access denied.")
     return tg_id
+
+
+def _request_admin(request: Request, provided_tg_id: Optional[int] = None) -> int:
+    token = request.headers.get("x-admin-session", "").strip()
+    if token and db.is_valid_admin_web_session(token):
+        return 0
+
+    try:
+        verified_tg_id = _request_tg_id(request, provided_tg_id)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise HTTPException(status_code=401, detail="Admin login required.") from exc
+        raise
+    return _require_admin(verified_tg_id)
 
 
 def _row_dict(row) -> Dict[str, Any]:
@@ -910,39 +929,55 @@ def quote(request: Request, payload: QuoteRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=text) from exc
 
 
+@app.post("/api/admin/login")
+def admin_login(request: Request, payload: AdminWebLoginRequest) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "admin_login", 10)
+    if not ADMIN_WEB_PASSWORD:
+        raise HTTPException(status_code=503, detail="Website admin login is not configured.")
+    if not hmac.compare_digest(payload.password, ADMIN_WEB_PASSWORD):
+        raise HTTPException(status_code=403, detail="Wrong admin password.")
+    token = db.create_admin_web_session()
+    return {"ok": True, "admin_session": token}
+
+
 @app.get("/api/admin/bootstrap")
-def admin_bootstrap(request: Request, tg_id: int) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    _require_admin(verified_tg_id)
-    return {"ok": True, "tg_id": verified_tg_id}
+def admin_bootstrap(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    verified_tg_id = _request_admin(request, tg_id)
+    return {
+        "ok": True,
+        "tg_id": verified_tg_id if verified_tg_id else None,
+        "source": "telegram" if verified_tg_id else "website",
+    }
 
 
 @app.get("/api/admin/guests")
 def admin_guests(
     request: Request,
-    tg_id: int,
+    tg_id: Optional[int] = None,
     sort_by: str = "newest",
     search: Optional[str] = None,
     limit: Optional[int] = None,
 ) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, tg_id)
     rows = db.list_guests(sort_by=sort_by, search=search, limit=limit)
     return {"items": [_row_dict(r) for r in rows]}
 
 
 @app.get("/api/admin/reservations")
-def admin_reservations(request: Request, tg_id: int, search: Optional[str] = None, limit: int = 25) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    _require_admin(verified_tg_id)
+def admin_reservations(
+    request: Request,
+    tg_id: Optional[int] = None,
+    search: Optional[str] = None,
+    limit: int = 25,
+) -> Dict[str, Any]:
+    verified_tg_id = _request_admin(request, tg_id)
     rows = db.list_active_reservations(search=search, limit=limit)
     return {"items": [_row_dict(r) for r in rows]}
 
 
 @app.get("/api/admin/events")
-def admin_events(request: Request, tg_id: int) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    _require_admin(verified_tg_id)
+def admin_events(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    verified_tg_id = _request_admin(request, tg_id)
     items = []
     for event in db.list_events():
         payload = _event_payload(event)
@@ -967,8 +1002,7 @@ def admin_events(request: Request, tg_id: int) -> Dict[str, Any]:
 
 @app.post("/api/admin/guest/add")
 def admin_guest_add(request: Request, payload: AdminGuestAddRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message, reservation = db.admin_add_guest(
         reservation_code=payload.reservation_code.strip(),
         full_name=payload.full_name.strip(),
@@ -981,8 +1015,7 @@ def admin_guest_add(request: Request, payload: AdminGuestAddRequest) -> Dict[str
 
 @app.post("/api/admin/guest/remove")
 def admin_guest_remove(request: Request, payload: AdminGuestRemoveRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message, reservation = db.admin_remove_guest(payload.attendee_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -991,8 +1024,7 @@ def admin_guest_remove(request: Request, payload: AdminGuestRemoveRequest) -> Di
 
 @app.post("/api/admin/guest/rename")
 def admin_guest_rename(request: Request, payload: AdminGuestRenameRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message = db.admin_rename_guest(payload.attendee_id, payload.full_name.strip())
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -1001,8 +1033,7 @@ def admin_guest_rename(request: Request, payload: AdminGuestRenameRequest) -> Di
 
 @app.post("/api/admin/guest/add_by_event")
 def admin_guest_add_by_event(request: Request, payload: AdminGuestAddByEventRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message, reservation = db.admin_add_guest_by_event(
         admin_tg_id=verified_tg_id,
         event_id=payload.event_id,
@@ -1017,8 +1048,7 @@ def admin_guest_add_by_event(request: Request, payload: AdminGuestAddByEventRequ
 
 @app.post("/api/admin/guest/remove_by_name")
 def admin_guest_remove_by_name(request: Request, payload: AdminGuestRemoveByNameRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message, reservation = db.admin_remove_guest_by_name(
         event_id=payload.event_id,
         name=payload.name.strip(),
@@ -1032,12 +1062,11 @@ def admin_guest_remove_by_name(request: Request, payload: AdminGuestRemoveByName
 @app.post("/api/admin/guest/import_xlsx")
 async def admin_guest_import_xlsx(
     request: Request,
-    tg_id: int = Form(...),
+    tg_id: Optional[int] = Form(None),
     event_id: int = Form(...),
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, tg_id)
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="Upload .xlsx file.")
 
@@ -1093,9 +1122,8 @@ async def admin_guest_import_xlsx(
 
 
 @app.get("/api/admin/guest/export_xlsx")
-def admin_guest_export_xlsx(request: Request, tg_id: int) -> StreamingResponse:
-    verified_tg_id = _request_tg_id(request, tg_id)
-    _require_admin(verified_tg_id)
+def admin_guest_export_xlsx(request: Request, tg_id: Optional[int] = None) -> StreamingResponse:
+    verified_tg_id = _request_admin(request, tg_id)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Guests"
@@ -1116,8 +1144,7 @@ def admin_guest_export_xlsx(request: Request, tg_id: int) -> StreamingResponse:
 
 @app.post("/api/admin/event/update")
 def admin_event_update(request: Request, payload: AdminEventUpdateRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message = db.set_event_fields(event_id=payload.event_id, updates=payload.updates)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -1127,8 +1154,7 @@ def admin_event_update(request: Request, payload: AdminEventUpdateRequest) -> Di
 
 @app.post("/api/admin/event/delete")
 def admin_event_delete(request: Request, payload: AdminEventDeleteRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     ok, message, deleted = db.delete_event(event_id=payload.event_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -1137,8 +1163,7 @@ def admin_event_delete(request: Request, payload: AdminEventDeleteRequest) -> Di
 
 @app.post("/api/admin/event/create_simple")
 def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleRequest) -> Dict[str, Any]:
-    verified_tg_id = _request_tg_id(request, payload.tg_id)
-    _require_admin(verified_tg_id)
+    verified_tg_id = _request_admin(request, payload.tg_id)
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
