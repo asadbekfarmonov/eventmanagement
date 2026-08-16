@@ -571,9 +571,10 @@ input[type="file"]::file-selector-button {
   min-height: 46px;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 10px 12px;
+  border-radius: 16px;
+  padding: 11px 12px;
   color: var(--ink);
   background: rgba(255, 255, 255, 0.07);
   font-size: 13px;
@@ -582,9 +583,16 @@ input[type="file"]::file-selector-button {
   text-decoration: none;
 }
 
+.contact-icon {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  fill: currentColor;
+}
+
 .contact-links a:hover {
-  border-color: rgba(53, 212, 189, 0.48);
-  background: rgba(53, 212, 189, 0.1);
+  border-color: rgba(10, 132, 255, 0.44);
+  background: rgba(10, 132, 255, 0.12);
 }
 
 .payment-links {
