@@ -177,6 +177,7 @@ textarea:focus-visible {
   border-radius: 999px;
   background: rgba(118, 118, 128, 0.16);
   backdrop-filter: blur(18px);
+  overflow: hidden;
 }
 
 .top-nav-item {
@@ -191,18 +192,18 @@ textarea:focus-visible {
   background: transparent;
   font-size: 13px;
   font-weight: 800;
-  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .top-nav-item:hover {
   background: rgba(255, 255, 255, 0.08);
-  transform: translateY(-1px);
 }
 
 .top-nav-item.active {
   background: rgba(255, 255, 255, 0.92);
   color: #111113;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
 .panel {
@@ -739,10 +740,21 @@ input[type="file"]::file-selector-button {
 
   .top-nav {
     width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .top-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .top-nav-item {
-    flex: 1 1 auto;
+    flex: 1 0 auto;
+    min-width: max-content;
+    padding-inline: 12px;
   }
 
   .instagram-post-card {
