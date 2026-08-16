@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260816k">
+  <link rel="stylesheet" href="/static/styles.css?v=20260816m">
 </head>
 <body>
   <main class="app-shell">
@@ -31,21 +31,42 @@
     </header>
 
     <section class="panel page-section main-panel" id="main-panel" data-page-section="main">
-      <a
-        class="instagram-post-card"
-        href="https://www.instagram.com/p/DHoj5EEuqGT/?img_index=1"
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label="Open Budapest Tunderi on Instagram"
-      >
-        <span class="instagram-post-icon" aria-hidden="true">IG</span>
-        <span class="instagram-post-body">
-          <span class="instagram-post-kicker">Instagram post</span>
-          <span class="instagram-post-title">@budapest_tunderi</span>
-          <span class="instagram-post-text">Open the original post on Instagram.</span>
-        </span>
-        <span class="instagram-post-action">Open</span>
-      </a>
+      <div class="main-carousel" aria-label="Budapest Tunderi photos">
+        <div class="main-carousel-track">
+          <a
+            class="main-carousel-slide"
+            href="https://www.instagram.com/p/DHoj5EEuqGT/?img_index=1"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open Budapest Tunderi photo 1 on Instagram"
+          >
+            <img src="/static/main-carousel-1.jpg?v=20260816a" alt="Budapest Tunderi dance floor crowd" />
+          </a>
+          <a
+            class="main-carousel-slide"
+            href="https://www.instagram.com/p/DHoj5EEuqGT/?img_index=2"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open Budapest Tunderi photo 2 on Instagram"
+          >
+            <img src="/static/main-carousel-2.jpg?v=20260816a" alt="Budapest Tunderi guests posing at the party" />
+          </a>
+          <a
+            class="main-carousel-slide"
+            href="https://www.instagram.com/p/DHoj5EEuqGT/?img_index=3"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open Budapest Tunderi photo 3 on Instagram"
+          >
+            <img src="/static/main-carousel-3.jpg?v=20260816a" alt="Budapest Tunderi guests near the Kazakhstan flag" />
+          </a>
+        </div>
+        <div class="main-carousel-dots" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
       <div class="main-copy">
         <p class="eyebrow">Main</p>
         <h2>Budapest Tunderi</h2>

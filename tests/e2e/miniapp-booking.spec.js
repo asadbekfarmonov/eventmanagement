@@ -142,6 +142,8 @@ test('top navigation shows one public section at a time', async ({ page }) => {
 
   await expect(page.locator('#main-panel')).toBeVisible();
   await expect(page.locator('#main-panel')).toContainText('Budapest Tunderi started');
+  await expect(page.locator('.main-carousel-slide img')).toHaveCount(3);
+  await expect(page.locator('.main-carousel-slide img').first()).toBeVisible();
   await expect(page.locator('#events-panel')).toBeHidden();
   await expect(page.locator('#tickets-panel')).toBeHidden();
   await expect(page.locator('#contact-panel')).toBeHidden();
