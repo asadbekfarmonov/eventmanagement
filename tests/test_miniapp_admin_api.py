@@ -223,6 +223,16 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertTrue(response.headers.get("content-type", "").startswith("image/png"))
         self.assertGreater(len(response.content), 1000)
 
+    def test_frontend_assets_are_not_cached(self):
+        index_response = self.client.get("/")
+        self.assertEqual(index_response.status_code, 200)
+        self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
+        self.assertIn("/static/app.js?v=20260816b", index_response.text)
+
+        js_response = self.client.get("/static/app.js")
+        self.assertEqual(js_response.status_code, 200)
+        self.assertEqual(js_response.headers.get("cache-control"), "no-store, max-age=0")
+
     def test_admin_guest_rename_and_remove_api(self):
         reservation = self._create_reservation("Azat Jolamanov", status="approved")
         attendee_id = self.db.list_attendees(reservation.id)[0]["id"]

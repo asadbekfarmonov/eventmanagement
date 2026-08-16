@@ -93,6 +93,9 @@ async def add_security_headers(request: Request, call_next):
         "connect-src 'self'; "
         "frame-ancestors https://web.telegram.org https://*.telegram.org;",
     )
+    path = request.url.path
+    if path in {"/", "/admin"} or path.endswith((".html", ".js", ".css")):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 
 
