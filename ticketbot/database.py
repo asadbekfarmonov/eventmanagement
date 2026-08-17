@@ -54,6 +54,7 @@ class Database:
                 tg_id INTEGER UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 surname TEXT NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
                 phone TEXT NOT NULL,
                 blocked INTEGER DEFAULT 0,
                 blocked_reason TEXT
@@ -163,10 +164,28 @@ class Database:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_login_codes (
+                email TEXT PRIMARY KEY,
+                code_hash TEXT NOT NULL,
+                name TEXT NOT NULL,
+                surname TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
         self.conn.commit()
 
     def _migrate_schema(self) -> None:
         cursor = self.conn.cursor()
+
+        user_cols = self._table_columns("users")
+        if "email" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
 
         event_cols = self._table_columns("events")
         if "caption" not in event_cols:
@@ -280,6 +299,21 @@ class Database:
                 WHERE r.id = attendees.reservation_id
             )
             WHERE ticket_tier = ''
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_login_codes (
+                email TEXT PRIMARY KEY,
+                code_hash TEXT NOT NULL,
+                name TEXT NOT NULL,
+                surname TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
+            )
             """
         )
 
@@ -630,6 +664,124 @@ class Database:
         if not user:
             raise ValueError("Could not create user profile")
         return user, token
+
+    def create_or_update_web_user_by_email(
+        self,
+        name: str,
+        surname: str,
+        email: str,
+        phone: str,
+    ) -> Tuple[User, str]:
+        normalized_email = (email or "").strip().lower()
+        normalized_phone = " ".join((phone or "").strip().split())
+        if not normalized_email:
+            raise ValueError("Email is required")
+        if not normalized_phone:
+            raise ValueError("Phone number is required")
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE lower(email) = ?", (normalized_email,))
+        existing = cursor.fetchone()
+        now = self._utc_now()
+        if existing:
+            user_id = int(existing["id"])
+            cursor.execute(
+                """
+                UPDATE users
+                SET name = ?, surname = ?, email = ?, phone = ?
+                WHERE id = ?
+                """,
+                ((name or "").strip(), (surname or "").strip(), normalized_email, normalized_phone, user_id),
+            )
+        else:
+            tg_id = self._next_web_tg_id(cursor)
+            cursor.execute(
+                """
+                INSERT INTO users (tg_id, name, surname, email, phone, blocked, blocked_reason)
+                VALUES (?, ?, ?, ?, ?, 0, '')
+                """,
+                (tg_id, (name or "").strip(), (surname or "").strip(), normalized_email, normalized_phone),
+            )
+            user_id = int(cursor.lastrowid)
+
+        token = secrets.token_urlsafe(32)
+        token_hash = self._web_session_hash(token)
+        cursor.execute(
+            """
+            INSERT INTO web_sessions (token_hash, user_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (token_hash, user_id, now, now),
+        )
+        self.conn.commit()
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("Could not create user profile")
+        return user, token
+
+    def save_email_login_code(
+        self,
+        email: str,
+        code_hash: str,
+        name: str,
+        surname: str,
+        phone: str,
+        expires_at: str,
+    ) -> None:
+        normalized_email = (email or "").strip().lower()
+        now = self._utc_now()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO email_login_codes (email, code_hash, name, surname, phone, created_at, expires_at, attempts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(email) DO UPDATE SET
+                code_hash=excluded.code_hash,
+                name=excluded.name,
+                surname=excluded.surname,
+                phone=excluded.phone,
+                created_at=excluded.created_at,
+                expires_at=excluded.expires_at,
+                attempts=0
+            """,
+            (
+                normalized_email,
+                code_hash,
+                (name or "").strip(),
+                (surname or "").strip(),
+                " ".join((phone or "").strip().split()),
+                now,
+                expires_at,
+            ),
+        )
+        self.conn.commit()
+
+    def get_email_login_code(self, email: str) -> Optional[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM email_login_codes WHERE email = ?",
+            ((email or "").strip().lower(),),
+        )
+        return cursor.fetchone()
+
+    def increment_email_login_attempts(self, email: str) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE email_login_codes SET attempts = attempts + 1 WHERE email = ?",
+            ((email or "").strip().lower(),),
+        )
+        cursor.execute(
+            "SELECT attempts FROM email_login_codes WHERE email = ?",
+            ((email or "").strip().lower(),),
+        )
+        row = cursor.fetchone()
+        self.conn.commit()
+        return int(row["attempts"]) if row else 0
+
+    def delete_email_login_code(self, email: str) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM email_login_codes WHERE email = ?", ((email or "").strip().lower(),))
+        self.conn.commit()
 
     def update_web_user_profile(self, user_id: int, name: str, surname: str, phone: str) -> User:
         normalized_phone = " ".join((phone or "").strip().split())

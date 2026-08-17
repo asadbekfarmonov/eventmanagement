@@ -173,8 +173,12 @@ test('website visitor registers before booking', async ({ page }) => {
 
   await page.locator('#account-name').fill('Web');
   await page.locator('#account-surname').fill('Guest');
+  await page.locator('#account-email').fill('web.guest@example.invalid');
   await page.locator('#account-phone').fill('+36 20 555 0101');
-  await page.locator('#account-save').click();
+  await expect(page.locator('#account-send-code')).toBeVisible();
+  await page.locator('#account-send-code').click();
+  await expect(page.locator('#account-code-panel')).toBeVisible();
+  await page.locator('#account-verify').click();
 
   await expect(page.locator('#account-panel')).toBeHidden();
   await page.locator('#boys').fill('1');

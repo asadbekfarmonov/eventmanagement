@@ -1,6 +1,8 @@
 import os
+import re
+import secrets
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from io import BytesIO
@@ -72,6 +74,17 @@ UPLOAD_LINK_TTL_SECONDS = _env_positive_int("UPLOAD_LINK_TTL_SECONDS", UPLOAD_RE
 RATE_LIMIT_WINDOW_SECONDS = _env_positive_int("RATE_LIMIT_WINDOW_SECONDS", 60)
 QUOTE_RATE_LIMIT = _env_positive_int("QUOTE_RATE_LIMIT", 120)
 BOOKING_RATE_LIMIT = _env_positive_int("BOOKING_RATE_LIMIT", 12)
+EMAIL_LOGIN_TTL_SECONDS = _env_positive_int("EMAIL_LOGIN_TTL_SECONDS", 600)
+EMAIL_LOGIN_RATE_LIMIT = _env_positive_int("EMAIL_LOGIN_RATE_LIMIT", 8)
+EMAIL_CODE_ATTEMPT_LIMIT = _env_positive_int("EMAIL_CODE_ATTEMPT_LIMIT", 5)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "").strip()
+EMAIL_LOGIN_DEV_MODE = os.getenv("EMAIL_LOGIN_DEV_MODE", "0").strip().lower() in {"1", "true", "yes"}
+LEGACY_WEB_REGISTER_ENABLED = os.getenv("LEGACY_WEB_REGISTER_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 _LAST_UPLOAD_CLEANUP_TS = 0.0
 _RATE_LIMIT_BUCKETS: Dict[Tuple[str, str], List[float]] = {}
 
@@ -301,6 +314,76 @@ def _enforce_rate_limit(request: Request, scope: str, limit: int, tg_id: Optiona
         raise HTTPException(status_code=429, detail="Too many requests. Try again shortly.")
     bucket.append(now)
     _RATE_LIMIT_BUCKETS[key] = bucket
+
+
+def _email_login_configured() -> bool:
+    return EMAIL_LOGIN_DEV_MODE or bool(RESEND_API_KEY and RESEND_FROM_EMAIL)
+
+
+def _normalize_email(value: str) -> str:
+    email = (value or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    return email
+
+
+def _email_login_secret() -> bytes:
+    secret = (
+        os.getenv("EMAIL_LOGIN_SECRET", "")
+        or os.getenv("UPLOAD_LINK_SECRET", "")
+        or BOT_TOKEN
+        or ADMIN_WEB_PASSWORD
+    )
+    if not secret:
+        secret = "dev-email-login-secret"
+    return secret.encode("utf-8")
+
+
+def _email_code_hash(email: str, code: str) -> str:
+    normalized_code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    payload = f"{email}:{normalized_code}".encode("utf-8")
+    return "hmac-sha256:" + hmac.new(_email_login_secret(), payload, hashlib.sha256).hexdigest()
+
+
+def _send_login_code(email: str, code: str) -> None:
+    if EMAIL_LOGIN_DEV_MODE:
+        return
+    if not RESEND_API_KEY or not RESEND_FROM_EMAIL:
+        raise HTTPException(status_code=503, detail="Email login is not configured yet.")
+
+    body = json.dumps(
+        {
+            "from": RESEND_FROM_EMAIL,
+            "to": [email],
+            "subject": "Your Budapest Tunderi login code",
+            "text": (
+                f"Your Budapest Tunderi login code is {code}. "
+                f"It expires in {max(1, EMAIL_LOGIN_TTL_SECONDS // 60)} minutes."
+            ),
+            "html": (
+                "<p>Your Budapest Tunderi login code is "
+                f"<strong>{code}</strong>.</p>"
+                f"<p>It expires in {max(1, EMAIL_LOGIN_TTL_SECONDS // 60)} minutes.</p>"
+            ),
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status >= 400:
+                raise HTTPException(status_code=502, detail="Could not send the login code.")
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Could not send the login code.") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail="Email service is temporarily unavailable.") from exc
 
 
 def _safe_upload_path(filename: str) -> Path:
@@ -554,6 +637,18 @@ class WebRegisterRequest(BaseModel):
     phone: str = Field(min_length=5, max_length=40)
 
 
+class WebEmailLoginStartRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    surname: str = Field(min_length=1, max_length=80)
+    email: str = Field(min_length=5, max_length=254)
+    phone: str = Field(min_length=5, max_length=40)
+
+
+class WebEmailLoginVerifyRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    code: str = Field(min_length=4, max_length=12)
+
+
 class AdminWebLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
@@ -752,13 +847,24 @@ def _profile_payload(user) -> Dict[str, Any]:
         "tg_id": user.tg_id,
         "name": user.name,
         "surname": user.surname,
+        "email": getattr(user, "email", "") or "",
         "phone": user.phone,
         "source": "telegram" if int(user.tg_id) > 0 else "website",
     }
 
 
+@app.get("/api/web/auth_config")
+def web_auth_config() -> Dict[str, Any]:
+    return {
+        "email_login_enabled": _email_login_configured(),
+        "code_ttl_seconds": EMAIL_LOGIN_TTL_SECONDS,
+    }
+
+
 @app.post("/api/web/register")
 def web_register(request: Request, payload: WebRegisterRequest) -> Dict[str, Any]:
+    if _email_login_configured() and not LEGACY_WEB_REGISTER_ENABLED:
+        raise HTTPException(status_code=410, detail="Use email verification to continue.")
     _enforce_rate_limit(request, "web_register", 20)
     try:
         existing_user = db.get_user_by_web_session(_request_web_token(request))
@@ -778,6 +884,77 @@ def web_register(request: Request, payload: WebRegisterRequest) -> Dict[str, Any
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+
+
+@app.post("/api/web/login/start")
+def web_email_login_start(request: Request, payload: WebEmailLoginStartRequest) -> Dict[str, Any]:
+    if not _email_login_configured():
+        raise HTTPException(status_code=503, detail="Email login is not configured yet.")
+    _enforce_rate_limit(request, "web_email_login", EMAIL_LOGIN_RATE_LIMIT)
+    email = _normalize_email(payload.email)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=EMAIL_LOGIN_TTL_SECONDS)
+    db.save_email_login_code(
+        email=email,
+        code_hash=_email_code_hash(email, code),
+        name=payload.name.strip(),
+        surname=payload.surname.strip(),
+        phone=payload.phone.strip(),
+        expires_at=expires_at.isoformat(),
+    )
+    _send_login_code(email, code)
+    response: Dict[str, Any] = {"ok": True, "message": "Code sent."}
+    if EMAIL_LOGIN_DEV_MODE:
+        response["dev_code"] = code
+    return response
+
+
+@app.post("/api/web/login/verify")
+def web_email_login_verify(request: Request, payload: WebEmailLoginVerifyRequest) -> Dict[str, Any]:
+    if not _email_login_configured():
+        raise HTTPException(status_code=503, detail="Email login is not configured yet.")
+    _enforce_rate_limit(request, "web_email_verify", EMAIL_LOGIN_RATE_LIMIT)
+    email = _normalize_email(payload.email)
+    code = "".join(ch for ch in (payload.code or "") if ch.isdigit())
+    if len(code) != 6:
+        raise HTTPException(status_code=400, detail="Enter the 6-digit code.")
+
+    row = db.get_email_login_code(email)
+    if not row:
+        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
+    try:
+        expires_at = datetime.fromisoformat(row["expires_at"])
+    except ValueError as exc:
+        db.delete_email_login_code(email)
+        raise HTTPException(status_code=400, detail="Code expired. Request a new one.") from exc
+    if expires_at < datetime.now(timezone.utc):
+        db.delete_email_login_code(email)
+        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
+    if int(row["attempts"] or 0) >= EMAIL_CODE_ATTEMPT_LIMIT:
+        db.delete_email_login_code(email)
+        raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
+
+    expected = str(row["code_hash"])
+    actual = _email_code_hash(email, code)
+    if not hmac.compare_digest(expected, actual):
+        attempts = db.increment_email_login_attempts(email)
+        if attempts >= EMAIL_CODE_ATTEMPT_LIMIT:
+            db.delete_email_login_code(email)
+            raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
+        raise HTTPException(status_code=400, detail="Wrong code. Check your email and try again.")
+
+    try:
+        user, token = db.create_or_update_web_user_by_email(
+            row["name"],
+            row["surname"],
+            email,
+            row["phone"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        db.delete_email_login_code(email)
     return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
 
 

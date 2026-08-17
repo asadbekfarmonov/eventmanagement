@@ -41,6 +41,13 @@ class MiniAppAdminApiTests(unittest.TestCase):
             "QUOTE_RATE_LIMIT",
             "BOOKING_RATE_LIMIT",
             "ADMIN_WEB_PASSWORD",
+            "EMAIL_LOGIN_DEV_MODE",
+            "EMAIL_LOGIN_TTL_SECONDS",
+            "EMAIL_LOGIN_RATE_LIMIT",
+            "EMAIL_CODE_ATTEMPT_LIMIT",
+            "RESEND_API_KEY",
+            "RESEND_FROM_EMAIL",
+            "LEGACY_WEB_REGISTER_ENABLED",
         )
         self._env_backup = {key: os.environ.get(key) for key in self._env_keys}
         os.environ["DATABASE_PATH"] = self.db_path
@@ -56,6 +63,13 @@ class MiniAppAdminApiTests(unittest.TestCase):
         os.environ["QUOTE_RATE_LIMIT"] = "120"
         os.environ["BOOKING_RATE_LIMIT"] = "12"
         os.environ["ADMIN_WEB_PASSWORD"] = "test-admin-password"
+        os.environ["EMAIL_LOGIN_DEV_MODE"] = "1"
+        os.environ["EMAIL_LOGIN_TTL_SECONDS"] = "600"
+        os.environ["EMAIL_LOGIN_RATE_LIMIT"] = "20"
+        os.environ["EMAIL_CODE_ATTEMPT_LIMIT"] = "5"
+        os.environ["RESEND_API_KEY"] = ""
+        os.environ["RESEND_FROM_EMAIL"] = ""
+        os.environ["LEGACY_WEB_REGISTER_ENABLED"] = "0"
 
         import ticketbot.miniapp_server as miniapp_server
 
@@ -246,26 +260,45 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817b", index_response.text)
-        self.assertIn("/static/app.js?v=20260817b", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817c", index_response.text)
+        self.assertIn("/static/app.js?v=20260817c", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
         self.assertEqual(js_response.headers.get("cache-control"), "no-store, max-age=0")
 
     def test_website_registration_can_book_and_read_tickets_without_telegram(self):
-        register_resp = self.client.post(
-            "/api/web/register",
-            json={"name": "Web", "surname": "Guest", "phone": "+36 20 123 4567"},
+        start_resp = self.client.post(
+            "/api/web/login/start",
+            json={
+                "name": "Web",
+                "surname": "Guest",
+                "email": "web.guest@example.invalid",
+                "phone": "+36 20 123 4567",
+            },
         )
-        self.assertEqual(register_resp.status_code, 200, register_resp.text)
-        token = register_resp.json()["session_token"]
+        self.assertEqual(start_resp.status_code, 200, start_resp.text)
+        code = start_resp.json()["dev_code"]
+
+        wrong_resp = self.client.post(
+            "/api/web/login/verify",
+            json={"email": "web.guest@example.invalid", "code": "000000"},
+        )
+        self.assertEqual(wrong_resp.status_code, 400, wrong_resp.text)
+
+        verify_resp = self.client.post(
+            "/api/web/login/verify",
+            json={"email": "web.guest@example.invalid", "code": code},
+        )
+        self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
+        token = verify_resp.json()["session_token"]
         self.assertTrue(token)
         headers = {"Authorization": f"Bearer {token}"}
 
         me_resp = self.client.get("/api/me", headers=headers)
         self.assertEqual(me_resp.status_code, 200, me_resp.text)
         self.assertEqual(me_resp.json()["profile"]["source"], "website")
+        self.assertEqual(me_resp.json()["profile"]["email"], "web.guest@example.invalid")
 
         files = [("file", ("proof.png", PNG_BYTES, "image/png"))]
         booking_resp = self.client.post(
@@ -308,12 +341,22 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(len(events_resp.json()["items"]), 1)
 
     def test_user_web_session_cannot_access_admin_apis(self):
-        register_resp = self.client.post(
-            "/api/web/register",
-            json={"name": "Not", "surname": "Admin", "phone": "+36 20 777 0000"},
+        start_resp = self.client.post(
+            "/api/web/login/start",
+            json={
+                "name": "Not",
+                "surname": "Admin",
+                "email": "not.admin@example.invalid",
+                "phone": "+36 20 777 0000",
+            },
         )
-        self.assertEqual(register_resp.status_code, 200, register_resp.text)
-        user_token = register_resp.json()["session_token"]
+        self.assertEqual(start_resp.status_code, 200, start_resp.text)
+        verify_resp = self.client.post(
+            "/api/web/login/verify",
+            json={"email": "not.admin@example.invalid", "code": start_resp.json()["dev_code"]},
+        )
+        self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
+        user_token = verify_resp.json()["session_token"]
 
         response = self.client.get(
             "/api/admin/events",

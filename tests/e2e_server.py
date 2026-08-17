@@ -21,6 +21,9 @@ def main() -> None:
     os.environ["UPLOAD_RETENTION_DAYS"] = "7"
     os.environ["UPLOAD_CLEANUP_INTERVAL_SECONDS"] = "3600"
     os.environ["ADMIN_WEB_PASSWORD"] = "playwright-admin-password"
+    os.environ["EMAIL_LOGIN_DEV_MODE"] = "1"
+    os.environ["EMAIL_LOGIN_TTL_SECONDS"] = "600"
+    os.environ["EMAIL_LOGIN_RATE_LIMIT"] = "20"
 
     import ticketbot.miniapp_server as miniapp_server
 

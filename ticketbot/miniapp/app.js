@@ -36,7 +36,13 @@ const accountStatusEl = document.getElementById('account-status');
 const accountNameEl = document.getElementById('account-name');
 const accountSurnameEl = document.getElementById('account-surname');
 const accountPhoneEl = document.getElementById('account-phone');
+const accountEmailEl = document.getElementById('account-email');
+const accountHelpEl = document.getElementById('account-help');
 const accountSaveEl = document.getElementById('account-save');
+const accountSendCodeEl = document.getElementById('account-send-code');
+const accountCodePanelEl = document.getElementById('account-code-panel');
+const accountCodeEl = document.getElementById('account-code');
+const accountVerifyEl = document.getElementById('account-verify');
 
 const adminEl = {
   open: document.getElementById('admin-open'),
@@ -98,6 +104,8 @@ const state = {
   quote: null,
   quoteSeq: 0,
   quoteLoading: false,
+  emailLoginEnabled: false,
+  emailCodeSent: false,
 };
 
 const adminState = {
@@ -224,6 +232,14 @@ function renderAccountPanel() {
   if (!accountPanelEl) return;
   const registered = Boolean(state.userProfile);
   accountPanelEl.hidden = registered;
+  if (accountHelpEl) {
+    accountHelpEl.textContent = state.emailLoginEnabled
+      ? 'Enter your details and verify your email. We use it to keep your tickets together.'
+      : 'Register once with your phone number. We use it to keep your tickets together when you book from the website.';
+  }
+  if (accountSaveEl) accountSaveEl.hidden = state.emailLoginEnabled;
+  if (accountSendCodeEl) accountSendCodeEl.hidden = !state.emailLoginEnabled;
+  if (accountCodePanelEl) accountCodePanelEl.hidden = !state.emailLoginEnabled || !state.emailCodeSent;
   if (accountStateEl) {
     if (registered) {
       accountStateEl.textContent = `Signed in as ${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim();
@@ -237,6 +253,7 @@ function renderAccountPanel() {
     if (accountNameEl) accountNameEl.value = state.userProfile.name || '';
     if (accountSurnameEl) accountSurnameEl.value = state.userProfile.surname || '';
     if (accountPhoneEl) accountPhoneEl.value = state.userProfile.phone || '';
+    if (accountEmailEl) accountEmailEl.value = state.userProfile.email || '';
   }
 }
 
@@ -855,6 +872,19 @@ async function loadMeAndTickets() {
   }
 }
 
+async function loadAuthConfig() {
+  try {
+    const resp = await fetch('/api/web/auth_config', { cache: 'no-store' });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      state.emailLoginEnabled = Boolean(data.email_login_enabled);
+      renderAccountPanel();
+    }
+  } catch (_err) {
+    state.emailLoginEnabled = false;
+  }
+}
+
 async function registerWebsiteAccount() {
   if (!accountNameEl || !accountSurnameEl || !accountPhoneEl) return;
   const payload = {
@@ -888,6 +918,76 @@ async function registerWebsiteAccount() {
     setAccountStatus(apiErrorText(err, 'Could not save your details.'), true);
   } finally {
     if (accountSaveEl) accountSaveEl.disabled = false;
+  }
+}
+
+function emailLoginPayload() {
+  return {
+    name: (accountNameEl && accountNameEl.value ? accountNameEl.value : '').trim(),
+    surname: (accountSurnameEl && accountSurnameEl.value ? accountSurnameEl.value : '').trim(),
+    email: (accountEmailEl && accountEmailEl.value ? accountEmailEl.value : '').trim(),
+    phone: (accountPhoneEl && accountPhoneEl.value ? accountPhoneEl.value : '').trim(),
+  };
+}
+
+async function sendWebsiteLoginCode() {
+  const payload = emailLoginPayload();
+  if (!payload.name || !payload.surname || !payload.email || !payload.phone) {
+    setAccountStatus('Add your name, surname, email, and phone number.', true);
+    return;
+  }
+
+  if (accountSendCodeEl) accountSendCodeEl.disabled = true;
+  setAccountStatus('Sending code...');
+  try {
+    const resp = await fetch('/api/web/login/start', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw data;
+    state.emailCodeSent = true;
+    if (accountCodeEl && data.dev_code) accountCodeEl.value = data.dev_code;
+    setAccountStatus('Code sent. Check your email.');
+    renderAccountPanel();
+  } catch (err) {
+    setAccountStatus(apiErrorText(err, 'Could not send the code.'), true);
+  } finally {
+    if (accountSendCodeEl) accountSendCodeEl.disabled = false;
+  }
+}
+
+async function verifyWebsiteLoginCode() {
+  const email = accountEmailEl && accountEmailEl.value ? accountEmailEl.value.trim() : '';
+  const code = accountCodeEl && accountCodeEl.value ? accountCodeEl.value.trim() : '';
+  if (!email || !code) {
+    setAccountStatus('Enter the code from your email.', true);
+    return;
+  }
+
+  if (accountVerifyEl) accountVerifyEl.disabled = true;
+  setAccountStatus('Verifying code...');
+  try {
+    const resp = await fetch('/api/web/login/verify', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ email, code }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw data;
+    webSessionToken = data.session_token || '';
+    if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
+    state.userProfile = data.profile || null;
+    state.emailCodeSent = false;
+    setAccountStatus('Verified. You can book now.');
+    renderAccountPanel();
+    rebuildAttendees();
+    await loadMeAndTickets();
+  } catch (err) {
+    setAccountStatus(apiErrorText(err, 'Could not verify the code.'), true);
+  } finally {
+    if (accountVerifyEl) accountVerifyEl.disabled = false;
   }
 }
 
@@ -1395,6 +1495,19 @@ if (termsAcceptedEl) {
 if (accountSaveEl) {
   accountSaveEl.addEventListener('click', registerWebsiteAccount);
 }
+if (accountSendCodeEl) {
+  accountSendCodeEl.addEventListener('click', sendWebsiteLoginCode);
+}
+if (accountVerifyEl) {
+  accountVerifyEl.addEventListener('click', verifyWebsiteLoginCode);
+}
+if (accountCodeEl) {
+  accountCodeEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      verifyWebsiteLoginCode();
+    }
+  });
+}
 if (carouselTrackEl && carouselDots.length) {
   let carouselFrame = 0;
   carouselTrackEl.addEventListener('scroll', () => {
@@ -1547,6 +1660,7 @@ setAdminLocked(true);
 renderAccountPanel();
 updateCarouselDots();
 rebuildAttendees();
+loadAuthConfig();
 fetchEvents();
 loadMeAndTickets();
 if (autoOpenAdmin && adminEl.open) {

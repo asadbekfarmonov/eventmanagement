@@ -350,6 +350,17 @@ h3 {
   margin-top: 14px;
 }
 
+.account-actions,
+.account-code-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.account-code-panel[hidden] {
+  display: none;
+}
+
 .admin-grid3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

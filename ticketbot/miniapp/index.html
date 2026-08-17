@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260817b">
+  <link rel="stylesheet" href="/static/styles.css?v=20260817c">
 </head>
 <body>
   <main class="app-shell">
@@ -102,8 +102,8 @@
         </div>
         <p id="account-state" class="hint"></p>
       </div>
-      <p class="hint">Register once with your phone number. We use it to keep your tickets together when you book from the website.</p>
-      <div class="grid-3 account-form">
+      <p id="account-help" class="hint">Register once so we can keep your tickets together when you book from the website.</p>
+      <div class="grid-2 account-form">
         <label>
           Name
           <input id="account-name" type="text" autocomplete="given-name" placeholder="Name" />
@@ -116,8 +116,22 @@
           Phone
           <input id="account-phone" type="tel" autocomplete="tel" placeholder="+36..." />
         </label>
+        <label>
+          Email
+          <input id="account-email" type="email" autocomplete="email" placeholder="you@example.com" />
+        </label>
       </div>
-      <button id="account-save" class="primary" type="button">Continue</button>
+      <div class="account-actions">
+        <button id="account-save" class="primary" type="button">Continue</button>
+        <button id="account-send-code" class="primary" type="button" hidden>Send code</button>
+      </div>
+      <div id="account-code-panel" class="account-code-panel" hidden>
+        <label>
+          Email code
+          <input id="account-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" />
+        </label>
+        <button id="account-verify" class="primary" type="button">Verify and continue</button>
+      </div>
       <p id="account-status" class="hint"></p>
     </section>
 
@@ -400,6 +414,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260817b" defer></script>
+  <script src="/static/app.js?v=20260817c" defer></script>
 </body>
 </html>

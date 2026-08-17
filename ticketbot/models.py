@@ -71,3 +71,4 @@ class User:
     phone: str
     blocked: int
     blocked_reason: Optional[str]
+    email: str = ""
