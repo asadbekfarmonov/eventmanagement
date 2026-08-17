@@ -676,8 +676,6 @@ class Database:
         normalized_phone = " ".join((phone or "").strip().split())
         if not normalized_email:
             raise ValueError("Email is required")
-        if not normalized_phone:
-            raise ValueError("Phone number is required")
 
         cursor = self.conn.cursor()
         cursor.execute("SELECT id FROM users WHERE lower(email) = ?", (normalized_email,))

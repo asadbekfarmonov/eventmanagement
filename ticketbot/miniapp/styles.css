@@ -357,6 +357,39 @@ h3 {
   margin-top: 14px;
 }
 
+.google-signin-wrap {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  margin-top: 14px;
+}
+
+.google-signin-wrap[hidden] {
+  display: none;
+}
+
+.account-divider {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.account-divider::before,
+.account-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.account-divider span {
+  padding: 0 10px;
+}
+
 .account-code-panel[hidden] {
   display: none;
 }

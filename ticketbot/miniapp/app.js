@@ -43,6 +43,8 @@ const accountSendCodeEl = document.getElementById('account-send-code');
 const accountCodePanelEl = document.getElementById('account-code-panel');
 const accountCodeEl = document.getElementById('account-code');
 const accountVerifyEl = document.getElementById('account-verify');
+const googleSigninWrapEl = document.getElementById('google-signin-wrap');
+const googleSigninButtonEl = document.getElementById('google-signin-button');
 
 const adminEl = {
   open: document.getElementById('admin-open'),
@@ -106,6 +108,8 @@ const state = {
   quoteLoading: false,
   emailLoginEnabled: false,
   emailCodeSent: false,
+  googleClientId: '',
+  googleReady: false,
 };
 
 const adminState = {
@@ -231,15 +235,22 @@ function setAccountStatus(msg, isError = false) {
 function renderAccountPanel() {
   if (!accountPanelEl) return;
   const registered = Boolean(state.userProfile);
-  accountPanelEl.hidden = registered;
+  const needsProfileCompletion = registered && !tgId && !(state.userProfile.phone || '').trim();
+  accountPanelEl.hidden = registered && !needsProfileCompletion;
   if (accountHelpEl) {
-    accountHelpEl.textContent = state.emailLoginEnabled
+    accountHelpEl.textContent = needsProfileCompletion
+      ? 'Add your phone number so we can contact you about your booking.'
+      : state.emailLoginEnabled
       ? 'Enter your details and verify your email. We use it to keep your tickets together.'
       : 'Register once with your phone number. We use it to keep your tickets together when you book from the website.';
   }
-  if (accountSaveEl) accountSaveEl.hidden = state.emailLoginEnabled;
-  if (accountSendCodeEl) accountSendCodeEl.hidden = !state.emailLoginEnabled;
+  if (accountSaveEl) {
+    accountSaveEl.hidden = state.emailLoginEnabled && !needsProfileCompletion;
+    accountSaveEl.textContent = needsProfileCompletion ? 'Save details' : 'Continue';
+  }
+  if (accountSendCodeEl) accountSendCodeEl.hidden = !state.emailLoginEnabled || needsProfileCompletion;
   if (accountCodePanelEl) accountCodePanelEl.hidden = !state.emailLoginEnabled || !state.emailCodeSent;
+  if (googleSigninWrapEl) googleSigninWrapEl.hidden = registered || !state.googleClientId;
   if (accountStateEl) {
     if (registered) {
       accountStateEl.textContent = `Signed in as ${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim();
@@ -757,6 +768,12 @@ async function submitDraft() {
     if (accountPanelEl) accountPanelEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
+  if (!tgId && state.userProfile && !(state.userProfile.phone || '').trim()) {
+    setStatus('Add your phone number before booking.', true);
+    renderAccountPanel();
+    if (accountPanelEl) accountPanelEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
   const discountSelections = attendeeDiscountSelections();
   const missingRepostProofs = discountSelections.filter((item) => item.checked && !item.file);
   if (missingRepostProofs.length) {
@@ -878,10 +895,48 @@ async function loadAuthConfig() {
     const data = await resp.json().catch(() => ({}));
     if (resp.ok) {
       state.emailLoginEnabled = Boolean(data.email_login_enabled);
+      state.googleClientId = data.google_client_id || '';
       renderAccountPanel();
+      ensureGoogleSignin();
     }
   } catch (_err) {
     state.emailLoginEnabled = false;
+  }
+}
+
+function ensureGoogleSignin() {
+  if (!state.googleClientId || state.googleReady || !googleSigninButtonEl) return;
+  const start = () => {
+    if (!window.google || !window.google.accounts || !window.google.accounts.id) return;
+    window.google.accounts.id.initialize({
+      client_id: state.googleClientId,
+      callback: handleGoogleCredential,
+    });
+    window.google.accounts.id.renderButton(googleSigninButtonEl, {
+      theme: 'outline',
+      size: 'large',
+      width: Math.min(360, Math.max(220, googleSigninButtonEl.clientWidth || 280)),
+      text: 'continue_with',
+      shape: 'rectangular',
+    });
+    state.googleReady = true;
+    renderAccountPanel();
+  };
+  if (window.google && window.google.accounts && window.google.accounts.id) {
+    start();
+    return;
+  }
+  let script = document.querySelector('script[data-google-identity]');
+  if (!script) {
+    script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleIdentity = '1';
+    script.onload = start;
+    document.head.appendChild(script);
+  } else {
+    script.addEventListener('load', start, { once: true });
   }
 }
 
@@ -900,14 +955,15 @@ async function registerWebsiteAccount() {
   if (accountSaveEl) accountSaveEl.disabled = true;
   setAccountStatus('Saving your details...');
   try {
-    const resp = await fetch('/api/web/register', {
-      method: 'POST',
+    const updatingProfile = Boolean(state.userProfile);
+    const resp = await fetch(updatingProfile ? '/api/web/profile' : '/api/web/register', {
+      method: updatingProfile ? 'PUT' : 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
-    webSessionToken = data.session_token || '';
+    webSessionToken = data.session_token || webSessionToken;
     if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
     state.userProfile = data.profile || null;
     setAccountStatus('Saved. You can book now.');
@@ -919,6 +975,17 @@ async function registerWebsiteAccount() {
   } finally {
     if (accountSaveEl) accountSaveEl.disabled = false;
   }
+}
+
+async function finishWebsiteLogin(data, message) {
+  webSessionToken = data.session_token || '';
+  if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
+  state.userProfile = data.profile || null;
+  state.emailCodeSent = false;
+  setAccountStatus(message || 'Signed in. You can book now.');
+  renderAccountPanel();
+  rebuildAttendees();
+  await loadMeAndTickets();
 }
 
 function emailLoginPayload() {
@@ -976,18 +1043,35 @@ async function verifyWebsiteLoginCode() {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
-    webSessionToken = data.session_token || '';
-    if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
-    state.userProfile = data.profile || null;
-    state.emailCodeSent = false;
-    setAccountStatus('Verified. You can book now.');
-    renderAccountPanel();
-    rebuildAttendees();
-    await loadMeAndTickets();
+    await finishWebsiteLogin(data, 'Verified. You can book now.');
   } catch (err) {
     setAccountStatus(apiErrorText(err, 'Could not verify the code.'), true);
   } finally {
     if (accountVerifyEl) accountVerifyEl.disabled = false;
+  }
+}
+
+async function handleGoogleCredential(response) {
+  const credential = response && response.credential ? response.credential : '';
+  if (!credential) {
+    setAccountStatus('Google sign-in did not return a token.', true);
+    return;
+  }
+  setAccountStatus('Signing in with Google...');
+  try {
+    const resp = await fetch('/api/web/login/google', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        credential,
+        phone: accountPhoneEl && accountPhoneEl.value ? accountPhoneEl.value.trim() : '',
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw data;
+    await finishWebsiteLogin(data, 'Signed in with Google. You can book now.');
+  } catch (err) {
+    setAccountStatus(apiErrorText(err, 'Google sign-in failed.'), true);
   }
 }
 

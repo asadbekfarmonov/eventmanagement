@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260817c">
+  <link rel="stylesheet" href="/static/styles.css?v=20260817d">
 </head>
 <body>
   <main class="app-shell">
@@ -124,6 +124,10 @@
       <div class="account-actions">
         <button id="account-save" class="primary" type="button">Continue</button>
         <button id="account-send-code" class="primary" type="button" hidden>Send code</button>
+      </div>
+      <div id="google-signin-wrap" class="google-signin-wrap" hidden>
+        <div class="account-divider"><span>or</span></div>
+        <div id="google-signin-button"></div>
       </div>
       <div id="account-code-panel" class="account-code-panel" hidden>
         <label>
@@ -414,6 +418,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260817c" defer></script>
+  <script src="/static/app.js?v=20260817d" defer></script>
 </body>
 </html>

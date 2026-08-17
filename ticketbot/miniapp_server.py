@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
@@ -34,6 +34,7 @@ ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
 ADMIN_WEB_PASSWORD = os.getenv("ADMIN_WEB_PASSWORD", "")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
 ALLOW_TG_ID_FALLBACK = os.getenv("MINIAPP_ALLOW_TG_ID_FALLBACK", "0").strip().lower() in {
@@ -85,6 +86,9 @@ LEGACY_WEB_REGISTER_ENABLED = os.getenv("LEGACY_WEB_REGISTER_ENABLED", "0").stri
     "true",
     "yes",
 }
+WEB_SESSION_COOKIE = "bt_web_session"
+ADMIN_SESSION_COOKIE = "bt_admin_session"
+SESSION_COOKIE_MAX_AGE_SECONDS = _env_positive_int("SESSION_COOKIE_MAX_AGE_SECONDS", 60 * 60 * 24 * 90)
 _LAST_UPLOAD_CLEANUP_TS = 0.0
 _RATE_LIMIT_BUCKETS: Dict[Tuple[str, str], List[float]] = {}
 
@@ -104,11 +108,12 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' https://telegram.org; "
+        "script-src 'self' https://telegram.org https://accounts.google.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
         "connect-src 'self'; "
+        "frame-src https://accounts.google.com; "
         "frame-ancestors https://web.telegram.org https://*.telegram.org;",
     )
     path = request.url.path
@@ -118,7 +123,7 @@ async def add_security_headers(request: Request, call_next):
 
 
 def _fallback_auth_allowed() -> bool:
-    return ALLOW_TG_ID_FALLBACK or not BOT_TOKEN
+    return ALLOW_TG_ID_FALLBACK
 
 
 def _parse_telegram_init_data(init_data: str) -> Dict[str, str]:
@@ -175,7 +180,34 @@ def _request_web_token(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    return request.headers.get("x-web-session", "").strip()
+    header_token = request.headers.get("x-web-session", "").strip()
+    if header_token:
+        return header_token
+    return (request.cookies.get(WEB_SESSION_COOKIE) or "").strip()
+
+
+def _request_admin_token(request: Request) -> str:
+    token = request.headers.get("x-admin-session", "").strip()
+    if token:
+        return token
+    return (request.cookies.get(ADMIN_SESSION_COOKIE) or "").strip()
+
+
+def _cookie_secure(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    return forwarded_proto == "https" or request.url.scheme == "https"
+
+
+def _set_session_cookie(request: Request, response: Response, name: str, token: str) -> None:
+    response.set_cookie(
+        key=name,
+        value=token,
+        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
 
 
 def _request_user(request: Request, provided_tg_id: Optional[int]) -> Tuple[Any, Optional[int]]:
@@ -385,6 +417,58 @@ def _send_login_code(email: str, code: str) -> None:
         raise HTTPException(status_code=502, detail="Could not send the login code.") from exc
     except urllib.error.URLError as exc:
         raise HTTPException(status_code=502, detail="Email service is temporarily unavailable.") from exc
+
+
+def _split_google_name(payload: Dict[str, Any]) -> Tuple[str, str]:
+    given = str(payload.get("given_name") or "").strip()
+    family = str(payload.get("family_name") or "").strip()
+    if given:
+        return given, family or "-"
+    full = str(payload.get("name") or "").strip()
+    parts = [part for part in full.split() if part]
+    if not parts:
+        return "Guest", "-"
+    if len(parts) == 1:
+        return parts[0], "-"
+    return parts[0], " ".join(parts[1:])
+
+
+def _verify_google_credential(credential: str) -> Dict[str, Any]:
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured yet.")
+    token = (credential or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Google sign-in token is missing.")
+
+    url = "https://oauth2.googleapis.com/tokeninfo?" + urlencode({"id_token": token})
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "BudapestTunderiTicketBot/1.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(status_code=401, detail="Google sign-in token is invalid.") from exc
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="Google sign-in is temporarily unavailable.") from exc
+
+    if str(payload.get("aud") or "") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Google sign-in token is for another app.")
+    if str(payload.get("iss") or "") not in {"accounts.google.com", "https://accounts.google.com"}:
+        raise HTTPException(status_code=401, detail="Google sign-in token issuer is invalid.")
+    try:
+        exp = int(payload.get("exp") or "0")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Google sign-in token expiry is invalid.") from exc
+    if exp < int(time.time()):
+        raise HTTPException(status_code=401, detail="Google sign-in token expired.")
+    if str(payload.get("email_verified") or "").lower() != "true":
+        raise HTTPException(status_code=401, detail="Google email is not verified.")
+    email = _normalize_email(str(payload.get("email") or ""))
+    payload["email"] = email
+    return payload
 
 
 def _safe_upload_path(filename: str) -> Path:
@@ -650,6 +734,17 @@ class WebEmailLoginVerifyRequest(BaseModel):
     code: str = Field(min_length=4, max_length=12)
 
 
+class WebGoogleLoginRequest(BaseModel):
+    credential: str = Field(min_length=20, max_length=4096)
+    phone: str = Field(default="", max_length=40)
+
+
+class WebProfileUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    surname: str = Field(min_length=1, max_length=80)
+    phone: str = Field(min_length=5, max_length=40)
+
+
 class AdminWebLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
@@ -734,7 +829,7 @@ def _require_admin(tg_id: Optional[int]) -> int:
 
 
 def _request_admin(request: Request, provided_tg_id: Optional[int] = None) -> int:
-    token = request.headers.get("x-admin-session", "").strip()
+    token = _request_admin_token(request)
     if token and db.is_valid_admin_web_session(token):
         return 0
 
@@ -859,11 +954,12 @@ def web_auth_config() -> Dict[str, Any]:
     return {
         "email_login_enabled": _email_login_configured(),
         "code_ttl_seconds": EMAIL_LOGIN_TTL_SECONDS,
+        "google_client_id": GOOGLE_CLIENT_ID,
     }
 
 
 @app.post("/api/web/register")
-def web_register(request: Request, payload: WebRegisterRequest) -> Dict[str, Any]:
+def web_register(request: Request, response: Response, payload: WebRegisterRequest) -> Dict[str, Any]:
     if _email_login_configured() and not LEGACY_WEB_REGISTER_ENABLED:
         raise HTTPException(status_code=410, detail="Use email verification to continue.")
     _enforce_rate_limit(request, "web_register", 20)
@@ -885,6 +981,7 @@ def web_register(request: Request, payload: WebRegisterRequest) -> Dict[str, Any
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
     return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
 
 
@@ -912,7 +1009,7 @@ def web_email_login_start(request: Request, payload: WebEmailLoginStartRequest) 
 
 
 @app.post("/api/web/login/verify")
-def web_email_login_verify(request: Request, payload: WebEmailLoginVerifyRequest) -> Dict[str, Any]:
+def web_email_login_verify(request: Request, response: Response, payload: WebEmailLoginVerifyRequest) -> Dict[str, Any]:
     if not _email_login_configured():
         raise HTTPException(status_code=503, detail="Email login is not configured yet.")
     _enforce_rate_limit(request, "web_email_verify", EMAIL_LOGIN_RATE_LIMIT)
@@ -956,7 +1053,44 @@ def web_email_login_verify(request: Request, payload: WebEmailLoginVerifyRequest
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.delete_email_login_code(email)
+    _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
     return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+
+
+@app.post("/api/web/login/google")
+def web_google_login(request: Request, response: Response, payload: WebGoogleLoginRequest) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "web_google_login", EMAIL_LOGIN_RATE_LIMIT)
+    google_payload = _verify_google_credential(payload.credential)
+    name, surname = _split_google_name(google_payload)
+    try:
+        user, token = db.create_or_update_web_user_by_email(
+            name,
+            surname,
+            google_payload["email"],
+            payload.phone.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
+    return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+
+
+@app.put("/api/web/profile")
+def web_profile_update(request: Request, response: Response, payload: WebProfileUpdateRequest) -> Dict[str, Any]:
+    user, _verified_tg_id = _request_user(request, None)
+    try:
+        updated = db.update_web_user_profile(
+            user.id,
+            payload.name.strip(),
+            payload.surname.strip(),
+            payload.phone.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token = _request_web_token(request)
+    if token:
+        _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
+    return {"ok": True, "profile": _profile_payload(updated)}
 
 
 @app.get("/api/me")
@@ -1108,13 +1242,14 @@ def quote(request: Request, payload: QuoteRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/admin/login")
-def admin_login(request: Request, payload: AdminWebLoginRequest) -> Dict[str, Any]:
+def admin_login(request: Request, response: Response, payload: AdminWebLoginRequest) -> Dict[str, Any]:
     _enforce_rate_limit(request, "admin_login", 10)
     if not ADMIN_WEB_PASSWORD:
         raise HTTPException(status_code=503, detail="Website admin login is not configured.")
     if not hmac.compare_digest(payload.password, ADMIN_WEB_PASSWORD):
         raise HTTPException(status_code=403, detail="Wrong admin password.")
     token = db.create_admin_web_session()
+    _set_session_cookie(request, response, ADMIN_SESSION_COOKIE, token)
     return {"ok": True, "admin_session": token}
 
 

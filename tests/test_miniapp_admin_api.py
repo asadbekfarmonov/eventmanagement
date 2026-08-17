@@ -31,6 +31,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             "DATABASE_PATH",
             "ADMIN_IDS",
             "BOT_TOKEN",
+            "MINIAPP_ALLOW_TG_ID_FALLBACK",
             "WEB_APP_URL",
             "UPLOAD_DIR",
             "UPLOAD_MAX_MB",
@@ -48,11 +49,14 @@ class MiniAppAdminApiTests(unittest.TestCase):
             "RESEND_API_KEY",
             "RESEND_FROM_EMAIL",
             "LEGACY_WEB_REGISTER_ENABLED",
+            "SESSION_COOKIE_MAX_AGE_SECONDS",
+            "GOOGLE_CLIENT_ID",
         )
         self._env_backup = {key: os.environ.get(key) for key in self._env_keys}
         os.environ["DATABASE_PATH"] = self.db_path
         os.environ["ADMIN_IDS"] = str(self.admin_tg_id)
         os.environ["BOT_TOKEN"] = ""
+        os.environ["MINIAPP_ALLOW_TG_ID_FALLBACK"] = "1"
         os.environ["WEB_APP_URL"] = "https://example.invalid"
         os.environ["UPLOAD_DIR"] = os.path.join(self.temp_dir.name, "uploads")
         os.environ["UPLOAD_MAX_MB"] = "5"
@@ -70,6 +74,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         os.environ["RESEND_API_KEY"] = ""
         os.environ["RESEND_FROM_EMAIL"] = ""
         os.environ["LEGACY_WEB_REGISTER_ENABLED"] = "0"
+        os.environ["SESSION_COOKIE_MAX_AGE_SECONDS"] = "7776000"
+        os.environ["GOOGLE_CLIENT_ID"] = ""
 
         import ticketbot.miniapp_server as miniapp_server
 
@@ -214,6 +220,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             os.environ["DATABASE_PATH"] = os.path.join(auth_dir.name, "auth.db")
             os.environ["ADMIN_IDS"] = str(self.admin_tg_id)
             os.environ["BOT_TOKEN"] = "test-token"
+            os.environ["MINIAPP_ALLOW_TG_ID_FALLBACK"] = "0"
             os.environ["WEB_APP_URL"] = "https://example.invalid"
             os.environ["UPLOAD_DIR"] = os.path.join(auth_dir.name, "uploads")
             os.environ["UPLOAD_MAX_MB"] = "5"
@@ -260,8 +267,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817c", index_response.text)
-        self.assertIn("/static/app.js?v=20260817c", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817d", index_response.text)
+        self.assertIn("/static/app.js?v=20260817d", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
@@ -291,6 +298,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             json={"email": "web.guest@example.invalid", "code": code},
         )
         self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
+        self.assertIn("bt_web_session=", verify_resp.headers.get("set-cookie", ""))
         token = verify_resp.json()["session_token"]
         self.assertTrue(token)
         headers = {"Authorization": f"Bearer {token}"}
@@ -299,6 +307,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(me_resp.status_code, 200, me_resp.text)
         self.assertEqual(me_resp.json()["profile"]["source"], "website")
         self.assertEqual(me_resp.json()["profile"]["email"], "web.guest@example.invalid")
+
+        cookie_me_resp = self.client.get("/api/me")
+        self.assertEqual(cookie_me_resp.status_code, 200, cookie_me_resp.text)
+        self.assertEqual(cookie_me_resp.json()["profile"]["email"], "web.guest@example.invalid")
 
         files = [("file", ("proof.png", PNG_BYTES, "image/png"))]
         booking_resp = self.client.post(
@@ -328,6 +340,7 @@ class MiniAppAdminApiTests(unittest.TestCase):
             json={"password": "test-admin-password"},
         )
         self.assertEqual(login_resp.status_code, 200, login_resp.text)
+        self.assertIn("bt_admin_session=", login_resp.headers.get("set-cookie", ""))
         token = login_resp.json()["admin_session"]
         self.assertTrue(token)
         headers = {"X-Admin-Session": token}
@@ -339,6 +352,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
         events_resp = self.client.get("/api/admin/events", headers=headers)
         self.assertEqual(events_resp.status_code, 200, events_resp.text)
         self.assertEqual(len(events_resp.json()["items"]), 1)
+
+        cookie_events_resp = self.client.get("/api/admin/events")
+        self.assertEqual(cookie_events_resp.status_code, 200, cookie_events_resp.text)
+        self.assertEqual(len(cookie_events_resp.json()["items"]), 1)
 
     def test_user_web_session_cannot_access_admin_apis(self):
         start_resp = self.client.post(
@@ -363,6 +380,17 @@ class MiniAppAdminApiTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {user_token}"},
         )
         self.assertEqual(response.status_code, 401, response.text)
+
+    def test_google_login_is_disabled_without_client_id(self):
+        config_resp = self.client.get("/api/web/auth_config")
+        self.assertEqual(config_resp.status_code, 200, config_resp.text)
+        self.assertEqual(config_resp.json()["google_client_id"], "")
+
+        response = self.client.post(
+            "/api/web/login/google",
+            json={"credential": "x" * 40, "phone": "+36 20 111 1111"},
+        )
+        self.assertEqual(response.status_code, 503, response.text)
 
     def test_booking_without_telegram_or_web_session_is_rejected(self):
         response = self.client.post(

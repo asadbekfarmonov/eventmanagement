@@ -16,6 +16,7 @@ def main() -> None:
     os.environ["UPLOAD_DIR"] = str(temp_root / "uploads")
     os.environ["ADMIN_IDS"] = "7164876915"
     os.environ["BOT_TOKEN"] = ""
+    os.environ["MINIAPP_ALLOW_TG_ID_FALLBACK"] = "1"
     os.environ["WEB_APP_URL"] = "http://127.0.0.1:8000"
     os.environ["UPLOAD_MAX_MB"] = "5"
     os.environ["UPLOAD_RETENTION_DAYS"] = "7"
