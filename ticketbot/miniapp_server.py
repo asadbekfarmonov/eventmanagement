@@ -15,6 +15,7 @@ import urllib.error
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
+import qrcode
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
@@ -104,7 +105,7 @@ async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
@@ -649,6 +650,51 @@ def _tier_label(tier_key: str) -> str:
     return labels.get(tier_key, tier_key)
 
 
+def _ticket_token_from_value(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    parsed = urlparse(cleaned)
+    if parsed.scheme and parsed.netloc:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) >= 2 and path_parts[-2] == "checkin":
+            return unquote(path_parts[-1]).strip()
+        query = dict(parse_qsl(parsed.query, keep_blank_values=False))
+        return (query.get("token") or "").strip()
+    if cleaned.startswith("/checkin/"):
+        return unquote(cleaned.split("/checkin/", 1)[1].split("?", 1)[0]).strip()
+    return cleaned
+
+
+def _ticket_payload(row) -> Dict[str, Any]:
+    checked_in_at = row["checked_in_at"] if row else None
+    return {
+        "attendee_id": row["attendee_id"],
+        "full_name": row["full_name"],
+        "gender": row["gender"],
+        "reservation_code": row["reservation_code"],
+        "reservation_status": row["reservation_status"],
+        "event_id": row["event_id"],
+        "event_title": row["event_title"],
+        "event_datetime": row["event_datetime"],
+        "buyer_name": row["buyer_name"],
+        "buyer_surname": row["buyer_surname"],
+        "checked_in": bool((checked_in_at or "").strip()),
+        "checked_in_at": checked_in_at,
+        "checked_in_by_admin_tg_id": row["checked_in_by_admin_tg_id"],
+    }
+
+
+def _ticket_qr_text(request: Request, token: str) -> str:
+    base_url = WEB_APP_URL or str(request.base_url).rstrip("/")
+    return f"{base_url}/checkin/{token}"
+
+
+def _ticket_qr_signature(token: str) -> str:
+    secret = os.getenv("TICKET_QR_SECRET", "") or BOT_TOKEN or ADMIN_WEB_PASSWORD or "dev-ticket-qr-secret"
+    return hmac.new(secret.encode("utf-8"), (token or "").strip().encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def _bot_api(method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if not BOT_TOKEN:
         return {"ok": False, "description": "BOT_TOKEN is missing"}
@@ -748,6 +794,11 @@ class QuoteRequest(BaseModel):
     event_id: int
     boys: int = Field(ge=0)
     girls: int = Field(ge=0)
+
+
+class CheckInRequest(BaseModel):
+    tg_id: Optional[int] = None
+    token: str
 
 
 class WebRegisterRequest(BaseModel):
@@ -943,6 +994,12 @@ def root() -> FileResponse:
 @app.get("/admin")
 def admin_page() -> RedirectResponse:
     return RedirectResponse(url="/?open_admin=1", status_code=307)
+
+
+@app.get("/checkin/{token}")
+def checkin_page(token: str) -> RedirectResponse:
+    encoded = urlencode({"open_admin": "1", "checkin": token})
+    return RedirectResponse(url=f"/?{encoded}", status_code=307)
 
 
 @app.get("/health")
@@ -1175,6 +1232,20 @@ def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -
     for reservation in rows:
         event = db.get_event(reservation.event_id)
         attendees = db.list_attendees(reservation.id)
+        ticket_items = []
+        for row in attendees:
+            checked_in_at = row["checked_in_at"]
+            ticket_item = {
+                "attendee_id": row["id"],
+                "full_name": row["full_name"],
+                "status": row["status"],
+                "checked_in": bool((checked_in_at or "").strip()),
+                "checked_in_at": checked_in_at,
+            }
+            if (reservation.status or "").strip().lower() == "approved":
+                token = row["ticket_token"]
+                ticket_item["qr_url"] = f"/api/tickets/{token}/qr?sig={_ticket_qr_signature(token)}"
+            ticket_items.append(ticket_item)
         items.append(
             {
                 "code": reservation.code,
@@ -1186,9 +1257,43 @@ def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -
                 "girls": reservation.girls,
                 "total_price": reservation.total_price,
                 "attendees": [row["full_name"] for row in attendees],
+                "tickets": ticket_items,
             }
         )
     return {"items": items}
+
+
+@app.get("/api/tickets/{token}/qr")
+def ticket_qr(request: Request, token: str, sig: Optional[str] = None, tg_id: Optional[int] = None) -> Response:
+    clean_token = _ticket_token_from_value(token)
+    row = db.lookup_ticket(clean_token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Ticket not found.")
+
+    allowed = bool(sig and hmac.compare_digest(sig, _ticket_qr_signature(clean_token)))
+    if not allowed:
+        try:
+            user, _verified_tg_id = _request_user(request, tg_id)
+            allowed = int(row["user_id"]) == int(user.id)
+        except HTTPException:
+            try:
+                _request_admin(request, tg_id)
+                allowed = True
+            except HTTPException:
+                allowed = False
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Ticket access denied.")
+    if (row["reservation_status"] or "").strip().lower() != "approved":
+        raise HTTPException(status_code=403, detail="Ticket is not approved yet.")
+
+    image = qrcode.make(_ticket_qr_text(request, row["ticket_token"]))
+    out = BytesIO()
+    image.save(out, format="PNG")
+    return Response(
+        content=out.getvalue(),
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store, max-age=0"},
+    )
 
 
 @app.post("/api/book_with_payment")
@@ -1370,6 +1475,32 @@ def admin_reservations(
     verified_tg_id = _request_admin(request, tg_id)
     rows = db.list_active_reservations(search=search, limit=limit)
     return {"items": [_row_dict(r) for r in rows]}
+
+
+@app.get("/api/admin/checkin/lookup")
+def admin_checkin_lookup(request: Request, token: str, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    _request_admin(request, tg_id)
+    clean_token = _ticket_token_from_value(token)
+    row = db.lookup_ticket(clean_token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Ticket not found.")
+    return {"ok": True, "ticket": _ticket_payload(row)}
+
+
+@app.post("/api/admin/checkin")
+def admin_checkin(request: Request, payload: CheckInRequest) -> Dict[str, Any]:
+    admin_tg_id = _request_admin(request, payload.tg_id)
+    clean_token = _ticket_token_from_value(payload.token)
+    ok, message, row = db.check_in_ticket(clean_token, admin_tg_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=message)
+    if not ok and message == "Ticket is not approved yet.":
+        raise HTTPException(status_code=409, detail=message)
+    if not ok and message == "Ticket already checked in.":
+        return {"ok": False, "message": message, "ticket": _ticket_payload(row)}
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "ticket": _ticket_payload(row)}
 
 
 @app.get("/api/admin/events")

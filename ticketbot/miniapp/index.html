@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260817n">
+  <link rel="stylesheet" href="/static/styles.css?v=20260817p">
 </head>
 <body>
   <main class="app-shell">
@@ -298,6 +298,7 @@
       <nav class="admin-tabs" aria-label="Admin sections">
         <button type="button" class="admin-tab active" data-admin-tab="events">Events</button>
         <button type="button" class="admin-tab" data-admin-tab="guests">Guests</button>
+        <button type="button" class="admin-tab" data-admin-tab="checkin">Check-in</button>
         <button type="button" class="admin-tab" data-admin-tab="add_guest">Add Guest</button>
         <button type="button" class="admin-tab" data-admin-tab="import_export">Import/Export</button>
       </nav>
@@ -406,6 +407,36 @@
         </div>
       </section>
 
+      <section class="admin-block admin-section" data-admin-section="checkin" hidden>
+        <div class="panel-head">
+          <h3>Door check-in</h3>
+          <button id="admin-scan-stop" type="button" hidden>Stop camera</button>
+        </div>
+        <div class="scanner-layout">
+          <div class="scanner-box">
+            <video id="admin-scan-video" playsinline muted hidden></video>
+            <div id="admin-scan-placeholder" class="scanner-placeholder">
+              <p>Scan a ticket QR with this phone.</p>
+              <p class="hint">If camera scanning is not available, paste the QR text below.</p>
+            </div>
+          </div>
+          <div class="scanner-controls">
+            <button id="admin-scan-start" class="primary" type="button">Start scanner</button>
+            <label>
+              QR code or ticket link
+              <input id="admin-checkin-token" type="text" autocomplete="off" placeholder="Paste ticket QR text" />
+            </label>
+            <div class="admin-actions">
+              <button id="admin-checkin-lookup" type="button">Lookup</button>
+              <button id="admin-checkin-confirm" class="primary" type="button" disabled>Check in</button>
+            </div>
+            <div id="admin-checkin-result" class="checkin-result">
+              <p class="hint">No ticket selected.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="admin-block admin-section" data-admin-section="import_export" hidden>
         <h3>Import guests (Excel)</h3>
         <label>Event<select id="admin-import-event-select"></select></label>
@@ -450,6 +481,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260817n" defer></script>
+  <script src="/static/app.js?v=20260817p" defer></script>
 </body>
 </html>

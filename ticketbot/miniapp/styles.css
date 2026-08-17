@@ -942,6 +942,126 @@ body.account-open::after {
   line-height: 1.45;
 }
 
+.ticket-pass {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid rgba(246, 240, 230, 0.12);
+  border-radius: 16px;
+  background: rgba(6, 5, 9, 0.28);
+}
+
+.ticket-qr,
+.ticket-qr-placeholder {
+  width: 92px;
+  height: 92px;
+  border-radius: 12px;
+}
+
+.ticket-qr {
+  display: block;
+  padding: 6px;
+  background: #fff;
+}
+
+.ticket-qr-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  color: var(--muted);
+  background: rgba(246, 240, 230, 0.08);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ticket-pass-name {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.scanner-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.scanner-box {
+  position: relative;
+  overflow: hidden;
+  min-height: 260px;
+  border: 1px solid rgba(246, 240, 230, 0.13);
+  border-radius: 20px;
+  background: rgba(6, 5, 9, 0.38);
+}
+
+.scanner-box video,
+.scanner-placeholder {
+  width: 100%;
+  min-height: 260px;
+}
+
+.scanner-box video {
+  display: block;
+  object-fit: cover;
+}
+
+.scanner-placeholder {
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 22px;
+  text-align: center;
+}
+
+.scanner-placeholder p {
+  margin: 0;
+  font-weight: 900;
+}
+
+.scanner-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.checkin-result {
+  min-height: 76px;
+}
+
+.checkin-card {
+  padding: 14px;
+  border: 1px solid rgba(246, 240, 230, 0.13);
+  border-radius: 18px;
+  background: rgba(246, 240, 230, 0.07);
+}
+
+.checkin-card h3 {
+  margin: 4px 0 6px;
+}
+
+.checkin-card p {
+  margin: 0;
+}
+
+.checkin-card.ready {
+  border-color: rgba(49, 213, 131, 0.42);
+  background: rgba(49, 213, 131, 0.09);
+}
+
+.checkin-card.checked {
+  border-color: rgba(0, 163, 255, 0.42);
+  background: rgba(0, 163, 255, 0.09);
+}
+
+.checkin-card.blocked {
+  border-color: rgba(225, 75, 59, 0.5);
+  background: rgba(225, 75, 59, 0.09);
+}
+
 .admin-inline-actions,
 .admin-actions {
   display: flex;
@@ -998,6 +1118,11 @@ body.account-open::after {
 
   .contact-links {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .scanner-layout {
+    grid-template-columns: minmax(280px, 0.9fr) minmax(300px, 1fr);
+    align-items: start;
   }
 
   .payment-link-row {
@@ -1095,6 +1220,16 @@ body.account-open::after {
 
   .main-carousel-slide img {
     aspect-ratio: 4 / 3.18;
+  }
+
+  .ticket-pass {
+    grid-template-columns: 78px minmax(0, 1fr);
+  }
+
+  .ticket-qr,
+  .ticket-qr-placeholder {
+    width: 78px;
+    height: 78px;
   }
 }
 

@@ -216,4 +216,8 @@ test('admin navigation appears for admins only', async ({ page }) => {
   await expect(page.locator('#admin-open')).toBeVisible();
   await page.locator('#admin-open').click();
   await expect(page.locator('#admin-area')).toBeVisible();
+  await page.getByRole('button', { name: 'Check-in' }).click();
+  await expect(page.locator('[data-admin-section="checkin"]')).toBeVisible();
+  await expect(page.locator('#admin-checkin-token')).toBeVisible();
+  await expect(page.locator('#admin-checkin-confirm')).toBeDisabled();
 });

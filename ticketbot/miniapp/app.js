@@ -3,6 +3,7 @@ const qs = new URLSearchParams(window.location.search);
 const fallbackTgId = Number(qs.get('tg_id') || 0);
 const tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
 const tgInitData = (tg && tg.initData) || '';
+const initialCheckinToken = (qs.get('checkin') || '').trim();
 const autoOpenAdmin = ['1', 'true', 'yes'].includes(
   (qs.get('open_admin') || qs.get('admin') || '').toLowerCase(),
 );
@@ -77,6 +78,14 @@ const adminEl = {
   importFile: document.getElementById('admin-import-file'),
   importUpload: document.getElementById('admin-import-upload'),
   exportDownload: document.getElementById('admin-export-download'),
+  scanStart: document.getElementById('admin-scan-start'),
+  scanStop: document.getElementById('admin-scan-stop'),
+  scanVideo: document.getElementById('admin-scan-video'),
+  scanPlaceholder: document.getElementById('admin-scan-placeholder'),
+  checkinToken: document.getElementById('admin-checkin-token'),
+  checkinLookup: document.getElementById('admin-checkin-lookup'),
+  checkinConfirm: document.getElementById('admin-checkin-confirm'),
+  checkinResult: document.getElementById('admin-checkin-result'),
   eventsRefresh: document.getElementById('admin-events-refresh'),
   eventSelect: document.getElementById('admin-event-select'),
   eventSave: document.getElementById('admin-event-save'),
@@ -130,6 +139,10 @@ const adminState = {
   guests: [],
   events: [],
   selectedEventId: null,
+  checkinTicket: null,
+  scanStream: null,
+  scanTimer: 0,
+  scanBusy: false,
 };
 
 const MISSING_REPOST_PROOF_MESSAGE = 'Upload a repost screenshot for each guest using the discount.';
@@ -198,6 +211,9 @@ function setPageTab(tabKey) {
 
 function setAdminSection(sectionKey) {
   const key = sectionKey || 'events';
+  if (adminState.activeSection === 'checkin' && key !== 'checkin') {
+    stopScanner();
+  }
   adminState.activeSection = key;
   for (const btn of adminEl.tabs || []) {
     const tabKey = btn.dataset ? btn.dataset.adminTab : '';
@@ -910,10 +926,33 @@ function renderTickets(items) {
     const safeTierLabel = escapeHtml(item.tier_label || '');
     const safeBoys = escapeHtml(item.boys ?? 0);
     const safeGirls = escapeHtml(item.girls ?? 0);
+    const tickets = Array.isArray(item.tickets) ? item.tickets : [];
+    const ticketHtml = tickets.length
+      ? tickets.map((ticket) => {
+        const safeName = escapeHtml(ticket.full_name || '');
+        const checked = Boolean(ticket.checked_in);
+        const qr = ticket.qr_url
+          ? `<img class="ticket-qr" src="${escapeHtml(ticket.qr_url)}" alt="QR code for ${safeName}" loading="lazy" />`
+          : '<div class="ticket-qr-placeholder">QR appears after approval</div>';
+        const checkedText = checked
+          ? `Checked in${ticket.checked_in_at ? ` at ${escapeHtml(ticket.checked_in_at)}` : ''}`
+          : 'Not checked in';
+        return `
+          <div class="ticket-pass">
+            ${qr}
+            <div>
+              <p class="ticket-pass-name">${safeName}</p>
+              <p class="admin-card-meta">${escapeHtml(checkedText)}</p>
+            </div>
+          </div>
+        `;
+      }).join('')
+      : '';
     card.innerHTML = `
       <p class="admin-card-title">${safeCode} | ${safeStatus}</p>
       <p class="admin-card-meta">${safeEventTitle}</p>
       <p class="admin-card-meta">Tier: ${safeTierLabel} | Boys: ${safeBoys} | Girls: ${safeGirls} | Total: ${money(item.total_price)}</p>
+      ${ticketHtml}
     `;
     ticketsListEl.appendChild(card);
   }
@@ -1415,6 +1454,149 @@ async function refreshAdminAll() {
   await Promise.all([loadAdminGuests(), loadAdminEvents()]);
 }
 
+function renderCheckinResult(ticket, message = '', isError = false) {
+  if (!adminEl.checkinResult) return;
+  if (!ticket) {
+    adminEl.checkinResult.innerHTML = `<p class="hint${isError ? ' error' : ''}">${escapeHtml(message || 'No ticket selected.')}</p>`;
+    if (adminEl.checkinConfirm) adminEl.checkinConfirm.disabled = true;
+    return;
+  }
+  const approved = (ticket.reservation_status || '').toLowerCase() === 'approved';
+  const checked = Boolean(ticket.checked_in);
+  const statusClass = checked ? 'checked' : (approved ? 'ready' : 'blocked');
+  const statusText = checked
+    ? `Already checked in${ticket.checked_in_at ? ` at ${ticket.checked_in_at}` : ''}`
+    : (approved ? 'Ready to check in' : `Cannot check in: ${ticket.reservation_status}`);
+  adminEl.checkinResult.innerHTML = `
+    <div class="checkin-card ${statusClass}">
+      <p class="eyebrow">${escapeHtml(ticket.event_title || '')}</p>
+      <h3>${escapeHtml(ticket.full_name || '')}</h3>
+      <p>${escapeHtml(statusText)}</p>
+      <p class="admin-card-meta">${escapeHtml(ticket.reservation_code || '')} | ${escapeHtml(ticket.event_datetime || '')}</p>
+      ${message ? `<p class="hint${isError ? ' error' : ''}">${escapeHtml(message)}</p>` : ''}
+    </div>
+  `;
+  if (adminEl.checkinConfirm) {
+    adminEl.checkinConfirm.disabled = checked || !approved;
+  }
+}
+
+function normalizeScannedToken(value) {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length >= 2 && parts[parts.length - 2] === 'checkin') {
+      return decodeURIComponent(parts[parts.length - 1]);
+    }
+    return parsed.searchParams.get('token') || raw;
+  } catch (_err) {
+    return raw.startsWith('/checkin/') ? decodeURIComponent(raw.split('/checkin/', 1)[1].split('?', 1)[0]) : raw;
+  }
+}
+
+async function lookupCheckinToken(rawToken) {
+  const token = normalizeScannedToken(rawToken || (adminEl.checkinToken ? adminEl.checkinToken.value : ''));
+  if (!token) {
+    renderCheckinResult(null, 'Paste or scan a ticket first.', true);
+    return null;
+  }
+  if (adminEl.checkinToken) adminEl.checkinToken.value = token;
+  try {
+    const data = await adminGet('/api/admin/checkin/lookup', { token });
+    adminState.checkinTicket = data.ticket || null;
+    renderCheckinResult(adminState.checkinTicket);
+    return adminState.checkinTicket;
+  } catch (err) {
+    adminState.checkinTicket = null;
+    renderCheckinResult(null, apiErrorText(err, 'Ticket lookup failed.'), true);
+    return null;
+  }
+}
+
+async function confirmCheckin() {
+  const token = normalizeScannedToken(adminEl.checkinToken ? adminEl.checkinToken.value : '');
+  if (!token) {
+    renderCheckinResult(null, 'Paste or scan a ticket first.', true);
+    return;
+  }
+  if (adminEl.checkinConfirm) adminEl.checkinConfirm.disabled = true;
+  try {
+    const data = await adminPost('/api/admin/checkin', { token });
+    adminState.checkinTicket = data.ticket || null;
+    renderCheckinResult(adminState.checkinTicket, data.message || 'Checked in.');
+    await loadAdminGuests();
+  } catch (err) {
+    renderCheckinResult(adminState.checkinTicket, apiErrorText(err, 'Check-in failed.'), true);
+  }
+}
+
+function stopScanner() {
+  window.clearInterval(adminState.scanTimer);
+  adminState.scanTimer = 0;
+  adminState.scanBusy = false;
+  if (adminState.scanStream) {
+    for (const track of adminState.scanStream.getTracks()) {
+      track.stop();
+    }
+  }
+  adminState.scanStream = null;
+  if (adminEl.scanVideo) {
+    adminEl.scanVideo.pause();
+    adminEl.scanVideo.srcObject = null;
+    adminEl.scanVideo.hidden = true;
+  }
+  if (adminEl.scanPlaceholder) adminEl.scanPlaceholder.hidden = false;
+  if (adminEl.scanStop) adminEl.scanStop.hidden = true;
+  if (adminEl.scanStart) adminEl.scanStart.disabled = false;
+}
+
+async function startScanner() {
+  if (!adminEl.scanVideo) return;
+  if (!('BarcodeDetector' in window)) {
+    renderCheckinResult(null, 'This browser does not support camera QR scanning. Paste the QR text instead.', true);
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    renderCheckinResult(null, 'Camera access is not available in this browser.', true);
+    return;
+  }
+  if (adminEl.scanStart) adminEl.scanStart.disabled = true;
+  try {
+    const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false,
+    });
+    adminState.scanStream = stream;
+    adminEl.scanVideo.srcObject = stream;
+    adminEl.scanVideo.hidden = false;
+    if (adminEl.scanPlaceholder) adminEl.scanPlaceholder.hidden = true;
+    if (adminEl.scanStop) adminEl.scanStop.hidden = false;
+    await adminEl.scanVideo.play();
+    adminState.scanTimer = window.setInterval(async () => {
+      if (adminState.scanBusy || !adminEl.scanVideo || adminEl.scanVideo.readyState < 2) return;
+      adminState.scanBusy = true;
+      try {
+        const codes = await detector.detect(adminEl.scanVideo);
+        const first = codes && codes[0] && codes[0].rawValue ? codes[0].rawValue : '';
+        if (first) {
+          stopScanner();
+          await lookupCheckinToken(first);
+        }
+      } catch (_err) {
+        // Keep scanning; camera frames can fail transiently.
+      } finally {
+        adminState.scanBusy = false;
+      }
+    }, 700);
+  } catch (err) {
+    stopScanner();
+    renderCheckinResult(null, apiErrorText(err, 'Could not start camera scanner.'), true);
+  }
+}
+
 async function ensureAdmin() {
   if (adminState.ready) return true;
   setAdminOpenStatus('Checking admin access...');
@@ -1839,6 +2021,23 @@ if (adminEl.importUpload) {
 if (adminEl.exportDownload) {
   adminEl.exportDownload.addEventListener('click', exportGuestsXlsx);
 }
+if (adminEl.scanStart) {
+  adminEl.scanStart.addEventListener('click', startScanner);
+}
+if (adminEl.scanStop) {
+  adminEl.scanStop.addEventListener('click', stopScanner);
+}
+if (adminEl.checkinLookup) {
+  adminEl.checkinLookup.addEventListener('click', () => lookupCheckinToken());
+}
+if (adminEl.checkinConfirm) {
+  adminEl.checkinConfirm.addEventListener('click', confirmCheckin);
+}
+if (adminEl.checkinToken) {
+  adminEl.checkinToken.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') lookupCheckinToken();
+  });
+}
 if (adminEl.eventsRefresh) {
   adminEl.eventsRefresh.addEventListener('click', async () => {
     try {
@@ -1888,4 +2087,15 @@ if (autoOpenAdmin && adminEl.open) {
   });
 } else {
   checkAdminAvailability();
+}
+if (initialCheckinToken && adminEl.checkinToken) {
+  adminEl.checkinToken.value = initialCheckinToken;
+  openAdminMode()
+    .then(() => {
+      setAdminSection('checkin');
+      return lookupCheckinToken(initialCheckinToken);
+    })
+    .catch((err) => {
+      setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);
+    });
 }

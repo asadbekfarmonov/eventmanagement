@@ -871,9 +871,12 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("hold_applied", reservation_cols)
         self.assertIn("full_name", attendee_cols)
         self.assertIn("gender", attendee_cols)
+        self.assertIn("ticket_token", attendee_cols)
         self.assertIn("repost_discount_applied", attendee_cols)
         self.assertIn("repost_proof_file_id", attendee_cols)
         self.assertIn("repost_proof_file_type", attendee_cols)
+        self.assertIn("checked_in_at", attendee_cols)
+        self.assertIn("checked_in_by_admin_tg_id", attendee_cols)
 
         migrated_db.upsert_user(777, "Legacy", "User", "000")
         legacy_user = migrated_db.get_user(777)

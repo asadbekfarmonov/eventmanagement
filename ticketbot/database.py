@@ -135,11 +135,14 @@ class Database:
                 name TEXT NOT NULL,
                 surname TEXT NOT NULL,
                 full_name TEXT NOT NULL DEFAULT '',
+                ticket_token TEXT NOT NULL DEFAULT '',
                 repost_discount_applied INTEGER NOT NULL DEFAULT 0,
                 repost_proof_file_id TEXT NOT NULL DEFAULT '',
                 repost_proof_file_type TEXT NOT NULL DEFAULT '',
                 ticket_tier TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'reserved',
+                checked_in_at TEXT,
+                checked_in_by_admin_tg_id INTEGER,
                 FOREIGN KEY (reservation_id) REFERENCES reservations(id)
             )
             """
@@ -274,6 +277,8 @@ class Database:
             cursor.execute("ALTER TABLE attendees ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
         if "gender" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN gender TEXT NOT NULL DEFAULT 'unknown'")
+        if "ticket_token" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN ticket_token TEXT NOT NULL DEFAULT ''")
         if "repost_discount_applied" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN repost_discount_applied INTEGER NOT NULL DEFAULT 0")
         if "repost_proof_file_id" not in attendee_cols:
@@ -282,6 +287,12 @@ class Database:
             cursor.execute("ALTER TABLE attendees ADD COLUMN repost_proof_file_type TEXT NOT NULL DEFAULT ''")
         if "ticket_tier" not in attendee_cols:
             cursor.execute("ALTER TABLE attendees ADD COLUMN ticket_tier TEXT NOT NULL DEFAULT ''")
+        if "checked_in_at" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN checked_in_at TEXT")
+        if "checked_in_by_admin_tg_id" not in attendee_cols:
+            cursor.execute("ALTER TABLE attendees ADD COLUMN checked_in_by_admin_tg_id INTEGER")
+        self._backfill_attendee_ticket_tokens(cursor)
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_attendees_ticket_token ON attendees(ticket_token)")
         cursor.execute(
             """
             UPDATE attendees
@@ -346,6 +357,23 @@ class Database:
                     "UPDATE attendees SET gender = ? WHERE id = ? AND (gender IS NULL OR gender = '' OR gender = 'unknown')",
                     (gender, attendee["id"]),
                 )
+
+    def _new_ticket_token(self, cursor: sqlite3.Cursor) -> str:
+        while True:
+            token = secrets.token_urlsafe(24)
+            cursor.execute("SELECT 1 FROM attendees WHERE ticket_token = ?", (token,))
+            if not cursor.fetchone():
+                return token
+
+    def _backfill_attendee_ticket_tokens(self, cursor: sqlite3.Cursor) -> None:
+        rows = cursor.execute(
+            "SELECT id FROM attendees WHERE ticket_token IS NULL OR ticket_token = '' ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            cursor.execute(
+                "UPDATE attendees SET ticket_token = ? WHERE id = ?",
+                (self._new_ticket_token(cursor), row["id"]),
+            )
 
     def _table_columns(self, table_name: str) -> set:
         cursor = self.conn.cursor()
@@ -1189,16 +1217,17 @@ class Database:
             cursor.execute(
                 """
                 INSERT INTO attendees (
-                    reservation_id, name, surname, full_name, gender,
+                    reservation_id, name, surname, full_name, ticket_token, gender,
                     repost_discount_applied, repost_proof_file_id, repost_proof_file_type, ticket_tier
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     reservation_id,
                     first_name,
                     surname,
                     full_name,
+                    self._new_ticket_token(cursor),
                     attendee_gender,
                     repost_discount_applied,
                     repost_proof_file_id,
@@ -1282,9 +1311,9 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT id, reservation_id, name, surname, full_name, gender,
+            SELECT id, reservation_id, name, surname, full_name, ticket_token, gender,
                    repost_discount_applied, repost_proof_file_id, repost_proof_file_type,
-                   ticket_tier, status
+                   ticket_tier, status, checked_in_at, checked_in_by_admin_tg_id
             FROM attendees
             WHERE reservation_id = ?
             ORDER BY id
@@ -1456,12 +1485,22 @@ class Database:
         cursor.execute(
             """
             INSERT INTO attendees (
-                reservation_id, name, surname, full_name, gender,
+                reservation_id, name, surname, full_name, ticket_token, gender,
                 repost_discount_applied, repost_proof_file_id, repost_proof_file_type, ticket_tier
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (reservation_row["id"], *self._name_parts("", "", full_name), full_name, gender, 0, "", "", attendee_tier),
+            (
+                reservation_row["id"],
+                *self._name_parts("", "", full_name),
+                full_name,
+                self._new_ticket_token(cursor),
+                gender,
+                0,
+                "",
+                "",
+                attendee_tier,
+            ),
         )
         attendee_rows = self._reservation_attendee_rows(int(reservation_row["id"]), cursor)
         totals = self._recalculate_reservation_totals(reservation_row, attendee_rows, event)
@@ -1599,10 +1638,10 @@ class Database:
         reservation_id = int(cursor.lastrowid)
         cursor.execute(
             """
-            INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO attendees (reservation_id, name, surname, full_name, ticket_token, gender, ticket_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (reservation_id, clean_name, clean_surname, full_name, gender, active_tier["key"]),
+            (reservation_id, clean_name, clean_surname, full_name, self._new_ticket_token(cursor), gender, active_tier["key"]),
         )
         self.conn.commit()
         return True, "Guest added successfully.", self.get_reservation(reservation_id)
@@ -1680,10 +1719,10 @@ class Database:
         reservation_id = int(cursor.lastrowid)
         cursor.execute(
             """
-            INSERT INTO attendees (reservation_id, name, surname, full_name, gender, ticket_tier)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO attendees (reservation_id, name, surname, full_name, ticket_token, gender, ticket_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (reservation_id, clean_name, clean_surname, full_name, "unknown", ""),
+            (reservation_id, clean_name, clean_surname, full_name, self._new_ticket_token(cursor), "unknown", ""),
         )
         self.conn.commit()
         return True, "Guest imported successfully.", self.get_reservation(reservation_id)
@@ -1695,6 +1734,9 @@ class Database:
             SELECT
                 a.id AS attendee_id,
                 a.full_name,
+                a.ticket_token,
+                a.checked_in_at,
+                a.checked_in_by_admin_tg_id,
                 COALESCE(a.gender, 'unknown') AS gender,
                 COALESCE(a.repost_discount_applied, 0) AS repost_discount_applied,
                 COALESCE(a.ticket_tier, '') AS attendee_tier,
@@ -1813,6 +1855,9 @@ class Database:
             SELECT
                 a.id AS attendee_id,
                 a.full_name,
+                a.ticket_token,
+                a.checked_in_at,
+                a.checked_in_by_admin_tg_id,
                 COALESCE(a.gender, 'unknown') AS gender,
                 COALESCE(a.repost_discount_applied, 0) AS repost_discount_applied,
                 COALESCE(a.ticket_tier, '') AS attendee_tier,
@@ -2091,6 +2136,62 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute(query, tuple(params))
         return cursor.fetchall()
+
+    def lookup_ticket(self, ticket_token: str) -> Optional[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                a.id AS attendee_id,
+                a.full_name,
+                a.ticket_token,
+                a.checked_in_at,
+                a.checked_in_by_admin_tg_id,
+                COALESCE(a.gender, 'unknown') AS gender,
+                r.id AS reservation_id,
+                r.code AS reservation_code,
+                r.status AS reservation_status,
+                e.id AS event_id,
+                e.title AS event_title,
+                e.event_datetime,
+                u.id AS user_id,
+                u.tg_id AS buyer_tg_id,
+                u.name AS buyer_name,
+                u.surname AS buyer_surname
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            JOIN events e ON e.id = r.event_id
+            JOIN users u ON u.id = r.user_id
+            WHERE a.ticket_token = ?
+            """,
+            ((ticket_token or "").strip(),),
+        )
+        return cursor.fetchone()
+
+    def check_in_ticket(self, ticket_token: str, admin_tg_id: int) -> Tuple[bool, str, Optional[sqlite3.Row]]:
+        cursor = self.conn.cursor()
+        row = self.lookup_ticket(ticket_token)
+        if not row:
+            return False, "Ticket not found.", None
+        if (row["reservation_status"] or "").strip().lower() != STATUS_APPROVED:
+            return False, "Ticket is not approved yet.", row
+        if (row["checked_in_at"] or "").strip():
+            return False, "Ticket already checked in.", row
+
+        checked_in_at = self._utc_now()
+        cursor.execute(
+            """
+            UPDATE attendees
+            SET checked_in_at = ?, checked_in_by_admin_tg_id = ?
+            WHERE ticket_token = ? AND (checked_in_at IS NULL OR checked_in_at = '')
+            """,
+            (checked_in_at, admin_tg_id, (ticket_token or "").strip()),
+        )
+        if cursor.rowcount <= 0:
+            self.conn.rollback()
+            return False, "Ticket already checked in.", self.lookup_ticket(ticket_token)
+        self.conn.commit()
+        return True, "Checked in.", self.lookup_ticket(ticket_token)
 
     def cancel_reservation_for_user(self, user_id: int, reservation_code: str) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()

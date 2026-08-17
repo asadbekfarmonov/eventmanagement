@@ -268,8 +268,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817n", index_response.text)
-        self.assertIn("/static/app.js?v=20260817n", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817p", index_response.text)
+        self.assertIn("/static/app.js?v=20260817p", index_response.text)
         self.assertIn('/static/logo.png?v=20260817f', index_response.text)
 
         js_response = self.client.get("/static/app.js")
@@ -863,6 +863,78 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(item["status"], "pending_payment_review")
         self.assertAlmostEqual(item["total_price"], 8500.0)
         self.assertEqual(item["attendees"], ["John Doe", "Jane Doe", "Alex Doe"])
+
+    def test_approved_ticket_returns_qr_and_admin_can_check_in_once(self):
+        reservation = self._create_reservation("Door Guest", status="approved")
+        attendee = self.db.list_attendees(reservation.id)[0]
+        self.assertTrue(attendee["ticket_token"])
+
+        tickets_resp = self.client.get("/api/my_tickets", params={"tg_id": self.user_tg_id})
+        self.assertEqual(tickets_resp.status_code, 200, tickets_resp.text)
+        ticket = tickets_resp.json()["items"][0]["tickets"][0]
+        self.assertEqual(ticket["full_name"], "Door Guest")
+        self.assertFalse(ticket["checked_in"])
+        self.assertIn("/api/tickets/", ticket["qr_url"])
+
+        qr_resp = self.client.get(ticket["qr_url"], params={"tg_id": self.user_tg_id})
+        self.assertEqual(qr_resp.status_code, 200, qr_resp.text)
+        self.assertEqual(qr_resp.headers.get("content-type"), "image/png")
+        self.assertTrue(qr_resp.content.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        lookup_resp = self.client.get(
+            "/api/admin/checkin/lookup",
+            params={"tg_id": self.admin_tg_id, "token": f"https://example.invalid/checkin/{attendee['ticket_token']}"},
+        )
+        self.assertEqual(lookup_resp.status_code, 200, lookup_resp.text)
+        self.assertEqual(lookup_resp.json()["ticket"]["full_name"], "Door Guest")
+        self.assertFalse(lookup_resp.json()["ticket"]["checked_in"])
+
+        checkin_resp = self.client.post(
+            "/api/admin/checkin",
+            json={"tg_id": self.admin_tg_id, "token": attendee["ticket_token"]},
+        )
+        self.assertEqual(checkin_resp.status_code, 200, checkin_resp.text)
+        self.assertTrue(checkin_resp.json()["ok"])
+        self.assertTrue(checkin_resp.json()["ticket"]["checked_in"])
+
+        duplicate_resp = self.client.post(
+            "/api/admin/checkin",
+            json={"tg_id": self.admin_tg_id, "token": attendee["ticket_token"]},
+        )
+        self.assertEqual(duplicate_resp.status_code, 200, duplicate_resp.text)
+        self.assertFalse(duplicate_resp.json()["ok"])
+        self.assertIn("already checked in", duplicate_resp.json()["message"])
+
+    def test_pending_ticket_has_no_qr_and_cannot_check_in(self):
+        reservation = self._create_reservation("Pending Door", status="pending_payment_review")
+        attendee = self.db.list_attendees(reservation.id)[0]
+
+        tickets_resp = self.client.get("/api/my_tickets", params={"tg_id": self.user_tg_id})
+        self.assertEqual(tickets_resp.status_code, 200, tickets_resp.text)
+        ticket = tickets_resp.json()["items"][0]["tickets"][0]
+        self.assertNotIn("qr_url", ticket)
+
+        qr_resp = self.client.get(f"/api/tickets/{attendee['ticket_token']}/qr", params={"tg_id": self.user_tg_id})
+        self.assertEqual(qr_resp.status_code, 403, qr_resp.text)
+
+        checkin_resp = self.client.post(
+            "/api/admin/checkin",
+            json={"tg_id": self.admin_tg_id, "token": attendee["ticket_token"]},
+        )
+        self.assertEqual(checkin_resp.status_code, 409, checkin_resp.text)
+        self.assertIn("not approved", checkin_resp.json()["detail"])
+
+    def test_ticket_qr_requires_owner_or_admin(self):
+        reservation = self._create_reservation("Private Guest", status="approved")
+        attendee = self.db.list_attendees(reservation.id)[0]
+        other_tg_id = 700001
+        self.db.upsert_user(other_tg_id, "Other", "User", "phone")
+
+        forbidden = self.client.get(f"/api/tickets/{attendee['ticket_token']}/qr", params={"tg_id": other_tg_id})
+        self.assertEqual(forbidden.status_code, 403, forbidden.text)
+
+        admin_allowed = self.client.get(f"/api/tickets/{attendee['ticket_token']}/qr", params={"tg_id": self.admin_tg_id})
+        self.assertEqual(admin_allowed.status_code, 200, admin_allowed.text)
 
     def test_book_with_payment_rejects_non_image_non_pdf_upload(self):
         response = self._book_with_payment(
