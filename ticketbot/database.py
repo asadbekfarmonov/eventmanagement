@@ -781,6 +781,37 @@ class Database:
         cursor.execute("DELETE FROM email_login_codes WHERE email = ?", ((email or "").strip().lower(),))
         self.conn.commit()
 
+    def get_user_by_email(self, email: str) -> Optional[User]:
+        normalized_email = (email or "").strip().lower()
+        if not normalized_email:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE lower(email) = ?", (normalized_email,))
+        row = cursor.fetchone()
+        return User(**dict(row)) if row else None
+
+    def update_web_user_email(self, user_id: int, email: str) -> User:
+        normalized_email = (email or "").strip().lower()
+        if not normalized_email:
+            raise ValueError("Email is required")
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE lower(email) = ? AND id != ?", (normalized_email, int(user_id)))
+        if cursor.fetchone():
+            raise ValueError("This email is already used by another account.")
+        cursor.execute(
+            """
+            UPDATE users
+            SET email = ?
+            WHERE id = ?
+            """,
+            (normalized_email, int(user_id)),
+        )
+        self.conn.commit()
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("Could not update user email")
+        return user
+
     def update_web_user_profile(self, user_id: int, name: str, surname: str, phone: str) -> User:
         normalized_phone = " ".join((phone or "").strip().split())
         if not normalized_phone:

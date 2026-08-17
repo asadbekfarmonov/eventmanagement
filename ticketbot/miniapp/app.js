@@ -31,6 +31,10 @@ const pageSections = Array.from(document.querySelectorAll('[data-page-section]')
 const carouselTrackEl = document.querySelector('.main-carousel-track');
 const carouselDots = Array.from(document.querySelectorAll('.main-carousel-dots span'));
 const accountPanelEl = document.getElementById('account-panel');
+const accountOpenEl = document.getElementById('account-open');
+const accountCloseEl = document.getElementById('account-close');
+const accountChipInitialsEl = document.getElementById('account-chip-initials');
+const accountChipLabelEl = document.getElementById('account-chip-label');
 const accountStateEl = document.getElementById('account-state');
 const accountStatusEl = document.getElementById('account-status');
 const accountNameEl = document.getElementById('account-name');
@@ -114,9 +118,11 @@ const state = {
   quoteLoading: false,
   emailLoginEnabled: false,
   emailCodeSent: false,
+  pendingEmailUpdate: '',
   googleClientId: '',
   googleReady: false,
   editingProfile: false,
+  accountOpen: false,
 };
 
 const adminState = {
@@ -187,6 +193,9 @@ function setPageTab(tabKey) {
   if (key === 'tickets') {
     loadMeAndTickets();
   }
+  if (key === 'book' && !state.userProfile) {
+    state.accountOpen = true;
+  }
   renderAccountPanel();
 }
 
@@ -244,7 +253,25 @@ function renderAccountPanel() {
   const registered = Boolean(state.userProfile);
   const needsProfileCompletion = registered && !tgId && !(state.userProfile.phone || '').trim();
   const showEditForm = !registered || needsProfileCompletion || state.editingProfile;
-  accountPanelEl.hidden = false;
+  if (accountOpenEl) {
+    accountOpenEl.setAttribute('aria-expanded', state.accountOpen ? 'true' : 'false');
+    accountOpenEl.classList.toggle('active', Boolean(state.accountOpen));
+  }
+  if (accountChipInitialsEl) {
+    const name = registered
+      ? `${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim()
+      : 'Budapest Tunderi';
+    const initials = name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join('')
+      .toUpperCase();
+    accountChipInitialsEl.textContent = initials || 'BT';
+  }
+  if (accountChipLabelEl) accountChipLabelEl.textContent = registered ? 'Profile' : 'Sign in';
+  accountPanelEl.hidden = !state.accountOpen && !state.emailCodeSent;
   if (accountHelpEl) {
     accountHelpEl.textContent = needsProfileCompletion
       ? 'Add your phone number so we can contact you about your booking.'
@@ -967,6 +994,7 @@ async function registerWebsiteAccount() {
   const payload = {
     name: accountNameEl.value.trim(),
     surname: accountSurnameEl.value.trim(),
+    email: accountEmailEl && accountEmailEl.value ? accountEmailEl.value.trim() : '',
     phone: accountPhoneEl.value.trim(),
   };
   if (!payload.name || !payload.surname || !payload.phone) {
@@ -981,14 +1009,41 @@ async function registerWebsiteAccount() {
     const resp = await fetch(updatingProfile ? '/api/web/profile' : '/api/web/register', {
       method: updatingProfile ? 'PUT' : 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        name: payload.name,
+        surname: payload.surname,
+        phone: payload.phone,
+      }),
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
     webSessionToken = data.session_token || webSessionToken;
     if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
     state.userProfile = data.profile || null;
+
+    const currentEmail = ((data.profile && data.profile.email) || '').trim().toLowerCase();
+    const requestedEmail = payload.email.trim().toLowerCase();
+    if (updatingProfile && requestedEmail && requestedEmail !== currentEmail) {
+      const emailResp = await fetch('/api/web/email/start', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ email: requestedEmail }),
+      });
+      const emailData = await emailResp.json().catch(() => ({}));
+      if (!emailResp.ok) throw emailData;
+      state.pendingEmailUpdate = requestedEmail;
+      state.emailCodeSent = true;
+      state.editingProfile = true;
+      state.accountOpen = true;
+      if (accountCodeEl && emailData.dev_code) accountCodeEl.value = emailData.dev_code;
+      setAccountStatus(`Code sent to ${requestedEmail}. Enter it below to update your email.`);
+      renderAccountPanel();
+      return;
+    }
+
+    state.pendingEmailUpdate = '';
     state.editingProfile = false;
+    state.emailCodeSent = false;
     setAccountStatus('Saved. You can book now.');
     renderAccountPanel();
     rebuildAttendees();
@@ -1005,6 +1060,8 @@ async function finishWebsiteLogin(data, message) {
   if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
   state.userProfile = data.profile || null;
   state.emailCodeSent = false;
+  state.pendingEmailUpdate = '';
+  state.accountOpen = true;
   setAccountStatus(message || 'Signed in. You can book now.');
   renderAccountPanel();
   rebuildAttendees();
@@ -1049,7 +1106,7 @@ async function sendWebsiteLoginCode() {
 }
 
 async function verifyWebsiteLoginCode() {
-  const email = accountEmailEl && accountEmailEl.value ? accountEmailEl.value.trim() : '';
+  const email = state.pendingEmailUpdate || (accountEmailEl && accountEmailEl.value ? accountEmailEl.value.trim() : '');
   const code = accountCodeEl && accountCodeEl.value ? accountCodeEl.value.trim() : '';
   if (!email || !code) {
     setAccountStatus('Enter the code from your email.', true);
@@ -1059,14 +1116,26 @@ async function verifyWebsiteLoginCode() {
   if (accountVerifyEl) accountVerifyEl.disabled = true;
   setAccountStatus('Verifying code...');
   try {
-    const resp = await fetch('/api/web/login/verify', {
+    const endpoint = state.pendingEmailUpdate ? '/api/web/email/verify' : '/api/web/login/verify';
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ email, code }),
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
-    await finishWebsiteLogin(data, 'Verified. You can book now.');
+    if (state.pendingEmailUpdate) {
+      state.userProfile = data.profile || state.userProfile;
+      state.emailCodeSent = false;
+      state.pendingEmailUpdate = '';
+      state.editingProfile = false;
+      state.accountOpen = false;
+      setAccountStatus('Email verified.');
+      renderAccountPanel();
+      await loadMeAndTickets();
+    } else {
+      await finishWebsiteLogin(data, 'Verified. You can book now.');
+    }
   } catch (err) {
     setAccountStatus(apiErrorText(err, 'Could not verify the code.'), true);
   } finally {
@@ -1602,9 +1671,25 @@ if (termsAcceptedEl) {
 if (accountSaveEl) {
   accountSaveEl.addEventListener('click', registerWebsiteAccount);
 }
+if (accountOpenEl) {
+  accountOpenEl.addEventListener('click', () => {
+    state.accountOpen = !state.accountOpen;
+    renderAccountPanel();
+    setAccountStatus('');
+  });
+}
+if (accountCloseEl) {
+  accountCloseEl.addEventListener('click', () => {
+    state.accountOpen = false;
+    state.editingProfile = false;
+    renderAccountPanel();
+    setAccountStatus('');
+  });
+}
 if (accountEditEl) {
   accountEditEl.addEventListener('click', () => {
     state.editingProfile = true;
+    state.accountOpen = true;
     renderAccountPanel();
     setAccountStatus('');
   });

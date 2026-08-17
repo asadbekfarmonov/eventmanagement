@@ -267,8 +267,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817e", index_response.text)
-        self.assertIn("/static/app.js?v=20260817e", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817g", index_response.text)
+        self.assertIn("/static/app.js?v=20260817g", index_response.text)
         self.assertIn('/static/logo.png?v=20260817f', index_response.text)
 
         js_response = self.client.get("/static/app.js")
@@ -309,9 +309,40 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(me_resp.json()["profile"]["source"], "website")
         self.assertEqual(me_resp.json()["profile"]["email"], "web.guest@example.invalid")
 
+        update_resp = self.client.put(
+            "/api/web/profile",
+            json={"name": "Web", "surname": "Guest", "phone": "+36 20 999 8888"},
+            headers=headers,
+        )
+        self.assertEqual(update_resp.status_code, 200, update_resp.text)
+        self.assertEqual(update_resp.json()["profile"]["phone"], "+36 20 999 8888")
+
+        email_start_resp = self.client.post(
+            "/api/web/email/start",
+            json={"email": "new.web.guest@example.invalid"},
+            headers=headers,
+        )
+        self.assertEqual(email_start_resp.status_code, 200, email_start_resp.text)
+        email_code = email_start_resp.json()["dev_code"]
+
+        wrong_email_resp = self.client.post(
+            "/api/web/email/verify",
+            json={"email": "new.web.guest@example.invalid", "code": "000000"},
+            headers=headers,
+        )
+        self.assertEqual(wrong_email_resp.status_code, 400, wrong_email_resp.text)
+
+        email_verify_resp = self.client.post(
+            "/api/web/email/verify",
+            json={"email": "new.web.guest@example.invalid", "code": email_code},
+            headers=headers,
+        )
+        self.assertEqual(email_verify_resp.status_code, 200, email_verify_resp.text)
+        self.assertEqual(email_verify_resp.json()["profile"]["email"], "new.web.guest@example.invalid")
+
         cookie_me_resp = self.client.get("/api/me")
         self.assertEqual(cookie_me_resp.status_code, 200, cookie_me_resp.text)
-        self.assertEqual(cookie_me_resp.json()["profile"]["email"], "web.guest@example.invalid")
+        self.assertEqual(cookie_me_resp.json()["profile"]["email"], "new.web.guest@example.invalid")
 
         files = [("file", ("proof.png", PNG_BYTES, "image/png"))]
         booking_resp = self.client.post(

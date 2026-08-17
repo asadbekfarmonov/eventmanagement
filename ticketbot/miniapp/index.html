@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260817e">
+  <link rel="stylesheet" href="/static/styles.css?v=20260817g">
 </head>
 <body>
   <main class="app-shell">
@@ -22,14 +22,21 @@
       </div>
       <p class="sub">Мы создадим атмосферу</p>
       <p class="sub">Вы сделаете эту ночь</p>
+      <p class="community-line">Central Asian and Russian-speaking community in Budapest, open to everyone.</p>
       <p id="admin-open-status" class="admin-open-status" role="status" aria-live="polite"></p>
-      <nav class="top-nav" aria-label="Page sections">
-        <button type="button" class="top-nav-item active" data-page-tab="main">Main</button>
-        <button type="button" class="top-nav-item" data-page-tab="book">Book</button>
-        <button type="button" class="top-nav-item" data-page-tab="tickets">My tickets</button>
-        <button type="button" class="top-nav-item" data-page-tab="contact">Contact</button>
-        <button id="admin-open" type="button" class="top-nav-item admin-nav-item" data-page-tab="admin" hidden>Admin</button>
-      </nav>
+      <div class="nav-row">
+        <nav class="top-nav" aria-label="Page sections">
+          <button type="button" class="top-nav-item active" data-page-tab="main">Main</button>
+          <button type="button" class="top-nav-item" data-page-tab="book">Book</button>
+          <button type="button" class="top-nav-item" data-page-tab="tickets">My tickets</button>
+          <button type="button" class="top-nav-item" data-page-tab="contact">Contact</button>
+          <button id="admin-open" type="button" class="top-nav-item admin-nav-item" data-page-tab="admin" hidden>Admin</button>
+        </nav>
+        <button id="account-open" class="account-chip" type="button" aria-haspopup="dialog" aria-expanded="false">
+          <span id="account-chip-initials">BT</span>
+          <span id="account-chip-label">Account</span>
+        </button>
+      </div>
     </header>
 
     <section class="panel page-section main-panel" id="main-panel" data-page-section="main">
@@ -79,7 +86,8 @@
         </p>
         <p>
           Budapest Tunderi started with a simple idea: bring a little bit of Almaty's nightlife energy to Budapest
-          and create a place where Central Asians living far from home could find each other.
+          and create a place where Central Asians and Russian-speaking students living far from home could find each other.
+          Everyone is welcome when they come with respect and the right energy.
         </p>
         <p>
           What began as a small circle of students has slowly grown into something bigger. A community of familiar
@@ -96,13 +104,16 @@
       </div>
     </section>
 
-    <section class="panel page-section account-panel" id="account-panel" data-page-section="book" hidden>
+    <section class="panel account-panel" id="account-panel" role="dialog" aria-modal="false" aria-label="Account" hidden>
       <div class="panel-head">
         <div>
           <p class="eyebrow">Account</p>
           <h2>Your details</h2>
         </div>
-        <p id="account-state" class="hint"></p>
+        <div class="account-head-actions">
+          <p id="account-state" class="hint"></p>
+          <button id="account-close" class="icon-button" type="button" aria-label="Close account panel">&times;</button>
+        </div>
       </div>
       <p id="account-help" class="hint">Register once so we can keep your tickets together when you book from the website.</p>
       <div id="profile-card" class="profile-card" hidden>
@@ -439,6 +450,6 @@
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=20260817e" defer></script>
+  <script src="/static/app.js?v=20260817g" defer></script>
 </body>
 </html>

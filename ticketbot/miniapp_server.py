@@ -419,6 +419,37 @@ def _send_login_code(email: str, code: str) -> None:
         raise HTTPException(status_code=502, detail="Email service is temporarily unavailable.") from exc
 
 
+def _verified_email_code_row(email: str, code_value: str):
+    code = "".join(ch for ch in (code_value or "") if ch.isdigit())
+    if len(code) != 6:
+        raise HTTPException(status_code=400, detail="Enter the 6-digit code.")
+
+    row = db.get_email_login_code(email)
+    if not row:
+        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
+    try:
+        expires_at = datetime.fromisoformat(row["expires_at"])
+    except ValueError as exc:
+        db.delete_email_login_code(email)
+        raise HTTPException(status_code=400, detail="Code expired. Request a new one.") from exc
+    if expires_at < datetime.now(timezone.utc):
+        db.delete_email_login_code(email)
+        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
+    if int(row["attempts"] or 0) >= EMAIL_CODE_ATTEMPT_LIMIT:
+        db.delete_email_login_code(email)
+        raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
+
+    expected = str(row["code_hash"])
+    actual = _email_code_hash(email, code)
+    if not hmac.compare_digest(expected, actual):
+        attempts = db.increment_email_login_attempts(email)
+        if attempts >= EMAIL_CODE_ATTEMPT_LIMIT:
+            db.delete_email_login_code(email)
+            raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
+        raise HTTPException(status_code=400, detail="Wrong code. Check your email and try again.")
+    return row
+
+
 def _split_google_name(payload: Dict[str, Any]) -> Tuple[str, str]:
     given = str(payload.get("given_name") or "").strip()
     family = str(payload.get("family_name") or "").strip()
@@ -734,6 +765,15 @@ class WebEmailLoginVerifyRequest(BaseModel):
     code: str = Field(min_length=4, max_length=12)
 
 
+class WebEmailUpdateStartRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+
+
+class WebEmailUpdateVerifyRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    code: str = Field(min_length=4, max_length=12)
+
+
 class WebGoogleLoginRequest(BaseModel):
     credential: str = Field(min_length=20, max_length=4096)
     phone: str = Field(default="", max_length=40)
@@ -1014,33 +1054,7 @@ def web_email_login_verify(request: Request, response: Response, payload: WebEma
         raise HTTPException(status_code=503, detail="Email login is not configured yet.")
     _enforce_rate_limit(request, "web_email_verify", EMAIL_LOGIN_RATE_LIMIT)
     email = _normalize_email(payload.email)
-    code = "".join(ch for ch in (payload.code or "") if ch.isdigit())
-    if len(code) != 6:
-        raise HTTPException(status_code=400, detail="Enter the 6-digit code.")
-
-    row = db.get_email_login_code(email)
-    if not row:
-        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
-    try:
-        expires_at = datetime.fromisoformat(row["expires_at"])
-    except ValueError as exc:
-        db.delete_email_login_code(email)
-        raise HTTPException(status_code=400, detail="Code expired. Request a new one.") from exc
-    if expires_at < datetime.now(timezone.utc):
-        db.delete_email_login_code(email)
-        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
-    if int(row["attempts"] or 0) >= EMAIL_CODE_ATTEMPT_LIMIT:
-        db.delete_email_login_code(email)
-        raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
-
-    expected = str(row["code_hash"])
-    actual = _email_code_hash(email, code)
-    if not hmac.compare_digest(expected, actual):
-        attempts = db.increment_email_login_attempts(email)
-        if attempts >= EMAIL_CODE_ATTEMPT_LIMIT:
-            db.delete_email_login_code(email)
-            raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
-        raise HTTPException(status_code=400, detail="Wrong code. Check your email and try again.")
+    row = _verified_email_code_row(email, payload.code)
 
     try:
         user, token = db.create_or_update_web_user_by_email(
@@ -1055,6 +1069,57 @@ def web_email_login_verify(request: Request, response: Response, payload: WebEma
         db.delete_email_login_code(email)
     _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
     return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+
+
+@app.post("/api/web/email/start")
+def web_email_update_start(request: Request, payload: WebEmailUpdateStartRequest) -> Dict[str, Any]:
+    if not _email_login_configured():
+        raise HTTPException(status_code=503, detail="Email login is not configured yet.")
+    user, _verified_tg_id = _request_user(request, None)
+    _enforce_rate_limit(request, "web_email_update", EMAIL_LOGIN_RATE_LIMIT, tg_id=user.tg_id)
+    email = _normalize_email(payload.email)
+    existing = db.get_user_by_email(email)
+    if existing and int(existing.id) != int(user.id):
+        raise HTTPException(status_code=409, detail="This email is already used by another account.")
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=EMAIL_LOGIN_TTL_SECONDS)
+    db.save_email_login_code(
+        email=email,
+        code_hash=_email_code_hash(email, code),
+        name=user.name,
+        surname=user.surname,
+        phone=user.phone,
+        expires_at=expires_at.isoformat(),
+    )
+    _send_login_code(email, code)
+    response: Dict[str, Any] = {"ok": True, "message": "Code sent."}
+    if EMAIL_LOGIN_DEV_MODE:
+        response["dev_code"] = code
+    return response
+
+
+@app.post("/api/web/email/verify")
+def web_email_update_verify(
+    request: Request,
+    response: Response,
+    payload: WebEmailUpdateVerifyRequest,
+) -> Dict[str, Any]:
+    if not _email_login_configured():
+        raise HTTPException(status_code=503, detail="Email login is not configured yet.")
+    user, _verified_tg_id = _request_user(request, None)
+    _enforce_rate_limit(request, "web_email_update_verify", EMAIL_LOGIN_RATE_LIMIT, tg_id=user.tg_id)
+    email = _normalize_email(payload.email)
+    row = _verified_email_code_row(email, payload.code)
+    try:
+        updated = db.update_web_user_email(user.id, email)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        db.delete_email_login_code(row["email"])
+    token = _request_web_token(request)
+    if token:
+        _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
+    return {"ok": True, "profile": _profile_payload(updated)}
 
 
 @app.post("/api/web/login/google")
