@@ -164,6 +164,19 @@ class DatabaseTests(unittest.TestCase):
                 payment_file_type="photo",
             )
 
+    def test_pending_reservation_rejects_negative_gender_counts(self):
+        event_id = self._create_event(early_qty=5, t1_qty=0, t2_qty=0)
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            self.db.create_pending_reservation(
+                user_id=self.user_id,
+                event_id=event_id,
+                boys=-1,
+                girls=2,
+                attendees=["A One"],
+                payment_file_id="proof",
+                payment_file_type="photo",
+            )
+
     def test_reject_releases_hold_for_spillover_reservation(self):
         event_id = self._create_event(early_qty=2, t1_qty=2, t2_qty=0)
         reservation = self.db.create_pending_reservation(

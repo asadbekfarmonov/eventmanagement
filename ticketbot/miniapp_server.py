@@ -177,19 +177,10 @@ def _request_tg_id(request: Request, provided_tg_id: Optional[int]) -> int:
 
 
 def _request_web_token(request: Request) -> str:
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    header_token = request.headers.get("x-web-session", "").strip()
-    if header_token:
-        return header_token
     return (request.cookies.get(WEB_SESSION_COOKIE) or "").strip()
 
 
 def _request_admin_token(request: Request) -> str:
-    token = request.headers.get("x-admin-session", "").strip()
-    if token:
-        return token
     return (request.cookies.get(ADMIN_SESSION_COOKIE) or "").strip()
 
 
@@ -240,6 +231,18 @@ def _extract_upload_filename(payment_file_id: str) -> Optional[str]:
     if not filename or filename in {".", ".."}:
         return None
     return filename
+
+
+def _delete_stored_upload(upload_url: str) -> None:
+    filename = _extract_upload_filename(upload_url)
+    if not filename:
+        return
+    try:
+        _safe_upload_path(filename).unlink()
+    except HTTPException:
+        return
+    except OSError:
+        return
 
 
 def _upload_signing_secret() -> bytes:
@@ -1200,6 +1203,8 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
             girls = int(str(form.get("girls", "")).strip())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="event_id, boys, and girls must be integers.") from exc
+        if boys < 0 or girls < 0:
+            raise HTTPException(status_code=400, detail="Boys and girls must be non-negative.")
         raw_tg_id = str(form.get("tg_id", "")).strip()
         try:
             provided_tg_id = int(raw_tg_id) if raw_tg_id else None
@@ -1243,8 +1248,18 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail="Discounted attendee indexes are out of range.")
         if discounted_indexes and not bool(event.repost_discount_enabled):
             raise HTTPException(status_code=400, detail="Repost discount is not enabled for this event.")
+        try:
+            db.quote_booking(event_id, boys, girls)
+        except ValueError as exc:
+            text = str(exc)
+            if text == "Event not found":
+                raise HTTPException(status_code=404, detail=text) from exc
+            if "sold out" in text.lower() or "not enough tickets" in text.lower():
+                raise HTTPException(status_code=409, detail=text) from exc
+            raise HTTPException(status_code=400, detail=text) from exc
 
         repost_proofs_by_index: Dict[int, Tuple[str, str]] = {}
+        stored_upload_urls: List[str] = []
         for idx in discounted_indexes:
             repost_file = form.get(f"repost_file_{idx}")
             if not _is_upload_file(repost_file):
@@ -1254,12 +1269,14 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
                 label=f"repost screenshot for attendee #{idx + 1}",
                 allow_pdf=False,
             )
+            stored_upload_urls.append(repost_proofs_by_index[idx][0])
 
         proof_url, proof_type = await _store_upload_file(
             payment_file,
             label="payment proof",
             allow_pdf=True,
         )
+        stored_upload_urls.append(proof_url)
 
         try:
             reservation = db.create_pending_reservation(
@@ -1274,6 +1291,8 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
                 repost_proofs_by_index=repost_proofs_by_index,
             )
         except ValueError as exc:
+            for upload_url in stored_upload_urls:
+                _delete_stored_upload(upload_url)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         _notify_admins_pending_from_miniapp(reservation)

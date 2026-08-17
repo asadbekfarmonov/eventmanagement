@@ -3,10 +3,6 @@ const qs = new URLSearchParams(window.location.search);
 const fallbackTgId = Number(qs.get('tg_id') || 0);
 const tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
 const tgInitData = (tg && tg.initData) || '';
-const WEB_SESSION_KEY = 'bt_web_session';
-const ADMIN_SESSION_KEY = 'bt_admin_session';
-let webSessionToken = localStorage.getItem(WEB_SESSION_KEY) || '';
-let adminSessionToken = localStorage.getItem(ADMIN_SESSION_KEY) || '';
 const autoOpenAdmin = ['1', 'true', 'yes'].includes(
   (qs.get('open_admin') || qs.get('admin') || '').toLowerCase(),
 );
@@ -229,18 +225,15 @@ function apiErrorText(err, fallback) {
 function authHeaders(extra = {}) {
   const headers = { ...extra };
   if (tgInitData) headers['X-Telegram-Init-Data'] = tgInitData;
-  if (!tgInitData && webSessionToken) headers.Authorization = `Bearer ${webSessionToken}`;
   return headers;
 }
 
 function adminHeaders(extra = {}) {
-  const headers = authHeaders(extra);
-  if (adminSessionToken) headers['X-Admin-Session'] = adminSessionToken;
-  return headers;
+  return authHeaders(extra);
 }
 
 function hasUserIdentity() {
-  return Boolean(tgId || state.userProfile || webSessionToken);
+  return Boolean(tgId || state.userProfile);
 }
 
 function setAccountStatus(msg, isError = false) {
@@ -603,7 +596,6 @@ async function refreshQuote() {
     if (seq !== state.quoteSeq) return;
     if (!resp.ok) throw data;
     state.quote = data;
-    setStatus('');
   } catch (err) {
     if (seq !== state.quoteSeq) return;
     setStatus(apiErrorText(err, 'Failed to calculate quote.'), true);
@@ -885,9 +877,19 @@ async function submitDraft() {
     if (!resp.ok) {
       throw new Error(apiErrorText(data, 'Booking failed.'));
     }
-    setStatus(`Booking sent for review. Code: ${data.code || '-'}`);
+    const successMessage = `Booking sent for review. Code: ${data.code || '-'}`;
     if (paymentProofEl) paymentProofEl.value = '';
+    if (termsAcceptedEl) termsAcceptedEl.checked = false;
+    state.boys = 0;
+    state.girls = 0;
+    state.quote = null;
+    state.quoteLoading = false;
+    state.quoteSeq += 1;
+    if (boysEl) boysEl.value = 0;
+    if (girlsEl) girlsEl.value = 0;
+    rebuildAttendees();
     await Promise.all([fetchEvents(), loadMeAndTickets()]);
+    setStatus(successMessage);
   } catch (err) {
     setStatus(apiErrorText(err, 'Booking failed.'), true);
   } finally {
@@ -1036,8 +1038,6 @@ async function registerWebsiteAccount() {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
-    webSessionToken = '';
-    localStorage.removeItem(WEB_SESSION_KEY);
     state.userProfile = data.profile || null;
 
     const currentEmail = ((data.profile && data.profile.email) || '').trim().toLowerCase();
@@ -1075,8 +1075,6 @@ async function registerWebsiteAccount() {
 }
 
 async function finishWebsiteLogin(data, message) {
-  webSessionToken = '';
-  localStorage.removeItem(WEB_SESSION_KEY);
   state.userProfile = data.profile || null;
   state.emailCodeSent = false;
   state.pendingEmailUpdate = '';
@@ -1491,8 +1489,6 @@ async function loginAdmin() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw data;
-    adminSessionToken = '';
-    localStorage.removeItem(ADMIN_SESSION_KEY);
     if (adminEl.password) adminEl.password.value = '';
     if (adminEl.open) adminEl.open.hidden = false;
     adminState.ready = false;

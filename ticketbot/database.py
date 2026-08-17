@@ -453,7 +453,11 @@ class Database:
         return max(float(group_discount_amount or 0.0), float(repost_discount_amount or 0.0))
 
     def _allocate_tier_plan(self, event: Event, boys: int, girls: int) -> Dict[str, Any]:
-        quantity = int(boys) + int(girls)
+        boys = int(boys)
+        girls = int(girls)
+        if boys < 0 or girls < 0:
+            raise ValueError("Boys and girls must be non-negative")
+        quantity = boys + girls
         if quantity <= 0:
             raise ValueError("At least one attendee is required")
 
@@ -461,7 +465,7 @@ class Database:
         if quantity > total_remaining:
             raise ValueError("Not enough tickets remaining across all tiers")
 
-        genders = (["boy"] * int(boys)) + (["girl"] * int(girls))
+        genders = (["boy"] * boys) + (["girl"] * girls)
         tiers = self._tier_sequence(event)
         tier_remaining = {tier["key"]: int(tier["remaining"]) for tier in tiers}
         tier_lookup = {tier["key"]: tier for tier in tiers}

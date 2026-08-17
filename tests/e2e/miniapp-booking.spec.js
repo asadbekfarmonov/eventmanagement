@@ -72,6 +72,11 @@ test('booking submission shows pending status and appears in my tickets', async 
   await expect(page.locator('#submit-booking')).toBeEnabled();
   await page.locator('#submit-booking').click();
 
+  await expect(page.locator('#status')).toContainText('Booking sent for review. Code:');
+  await expect(page.locator('#boys')).toHaveValue('0');
+  await expect(page.locator('#girls')).toHaveValue('0');
+  await expect(page.locator('#terms-accepted')).not.toBeChecked();
+  await expect(page.locator('#submit-booking')).toBeDisabled();
   await expect(page.locator('#tickets-list')).toContainText('pending_payment_review');
   await expect(page.locator('#tickets-list')).toContainText('Tier: Early Bird');
 });

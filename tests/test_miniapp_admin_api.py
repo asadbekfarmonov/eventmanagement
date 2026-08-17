@@ -268,8 +268,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817m", index_response.text)
-        self.assertIn("/static/app.js?v=20260817m", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817n", index_response.text)
+        self.assertIn("/static/app.js?v=20260817n", index_response.text)
         self.assertIn('/static/logo.png?v=20260817f', index_response.text)
 
         js_response = self.client.get("/static/app.js")
@@ -904,6 +904,42 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertIn("Name Surname", response.json().get("detail", ""))
         reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
         self.assertEqual(reservation_count, 0)
+
+    def test_book_with_payment_rejects_negative_counts_without_storing_upload(self):
+        response = self._book_with_payment(
+            boys=-1,
+            girls=2,
+            attendees=["Jane Doe"],
+            content=PNG_BYTES,
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("non-negative", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+        self.assertEqual(len(list(Path(os.environ["UPLOAD_DIR"]).glob("*"))), 0)
+
+    def test_book_with_payment_rejects_sold_out_event_without_storing_upload(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "early_qty": 0,
+                "tier1_qty": 0,
+                "tier2_qty": 0,
+            },
+        )
+        response = self._book_with_payment(
+            boys=1,
+            girls=0,
+            attendees=["John Doe"],
+            content=PNG_BYTES,
+            mime="image/png",
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("Not enough tickets", response.json().get("detail", ""))
+        reservation_count = self.db.conn.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+        self.assertEqual(reservation_count, 0)
+        self.assertEqual(len(list(Path(os.environ["UPLOAD_DIR"]).glob("*"))), 0)
 
     def test_book_with_payment_requires_existing_user_profile(self):
         response = self._book_with_payment(
