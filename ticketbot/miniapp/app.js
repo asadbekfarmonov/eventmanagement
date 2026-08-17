@@ -32,7 +32,6 @@ const accountBackdropEl = document.getElementById('account-backdrop');
 const accountOpenEl = document.getElementById('account-open');
 const accountCloseEl = document.getElementById('account-close');
 const accountChipInitialsEl = document.getElementById('account-chip-initials');
-const accountChipLabelEl = document.getElementById('account-chip-label');
 const accountStateEl = document.getElementById('account-state');
 const accountStatusEl = document.getElementById('account-status');
 const accountNameEl = document.getElementById('account-name');
@@ -44,7 +43,6 @@ const profileCardEl = document.getElementById('profile-card');
 const profileNameEl = document.getElementById('profile-name');
 const profileEmailEl = document.getElementById('profile-email');
 const profilePhoneEl = document.getElementById('profile-phone');
-const profileSourceEl = document.getElementById('profile-source');
 const accountSaveEl = document.getElementById('account-save');
 const accountEditEl = document.getElementById('account-edit');
 const accountSendCodeEl = document.getElementById('account-send-code');
@@ -295,7 +293,6 @@ function renderAccountPanel() {
       .toUpperCase();
     accountChipInitialsEl.textContent = initials || 'BT';
   }
-  if (accountChipLabelEl) accountChipLabelEl.textContent = registered ? 'Profile' : 'Sign in';
   accountPanelEl.hidden = !state.accountOpen && !state.emailCodeSent;
   if (accountBackdropEl) accountBackdropEl.hidden = accountPanelEl.hidden;
   document.body.classList.toggle('account-open', !accountPanelEl.hidden);
@@ -316,7 +313,6 @@ function renderAccountPanel() {
   }
   if (profileEmailEl) profileEmailEl.textContent = registered ? (state.userProfile.email || '-') : '';
   if (profilePhoneEl) profilePhoneEl.textContent = registered ? (state.userProfile.phone || 'Not added yet') : '';
-  if (profileSourceEl) profileSourceEl.textContent = registered ? (state.userProfile.source || 'website') : '';
   const formEl = accountNameEl ? accountNameEl.closest('.account-form') : null;
   if (formEl) formEl.hidden = !showEditForm;
   if (accountSaveEl) {
@@ -1217,7 +1213,7 @@ async function handleGoogleCredential(response) {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
-    await finishWebsiteLogin(data, 'Signed in with Google. You can book now.');
+    await finishWebsiteLogin(data, 'Google login complete. You can book now.');
   } catch (err) {
     setAccountStatus(apiErrorText(err, 'Google sign-in failed.'), true);
   }

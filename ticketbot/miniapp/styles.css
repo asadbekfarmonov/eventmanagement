@@ -11,6 +11,8 @@
   --blue: #00a3ff;
   --blue-deep: #0066cc;
   --amber: #f1b531;
+  --gold: #d8a83f;
+  --gold-soft: rgba(216, 168, 63, 0.28);
   --red: #e14b3b;
   --green: #10b981;
   --danger: #d92d42;
@@ -32,6 +34,7 @@ html {
 }
 
 body {
+  position: relative;
   margin: 0;
   min-height: 100vh;
   font-family: "Manrope", "Inter", "Segoe UI", Arial, sans-serif;
@@ -43,7 +46,41 @@ body {
 }
 
 body::before {
-  content: none;
+  content: "";
+  position: fixed;
+  inset: 0 auto 0 max(10px, env(safe-area-inset-left));
+  z-index: 0;
+  width: 56px;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--gold) 14%, #ffe3a4 50%, var(--gold) 86%, transparent);
+  opacity: 0.22;
+  -webkit-mask-image: url("/static/noun-ornament-1565565.svg");
+  mask-image: url("/static/noun-ornament-1565565.svg");
+  -webkit-mask-size: 56px 70px;
+  mask-size: 56px 70px;
+  -webkit-mask-repeat: repeat-y;
+  mask-repeat: repeat-y;
+  -webkit-mask-position: center top;
+  mask-position: center top;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0 max(10px, env(safe-area-inset-right)) 0 auto;
+  z-index: 0;
+  width: 56px;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--gold) 14%, #ffe3a4 50%, var(--gold) 86%, transparent);
+  opacity: 0.12;
+  -webkit-mask-image: url("/static/noun-ornament-1565565.svg");
+  mask-image: url("/static/noun-ornament-1565565.svg");
+  -webkit-mask-size: 56px 70px;
+  mask-size: 56px 70px;
+  -webkit-mask-repeat: repeat-y;
+  mask-repeat: repeat-y;
+  -webkit-mask-position: center top;
+  mask-position: center top;
 }
 
 @keyframes riseIn {
@@ -58,6 +95,8 @@ body::before {
 }
 
 .app-shell {
+  position: relative;
+  z-index: 1;
   width: min(100%, 1060px);
   margin: 0 auto;
   padding:
@@ -83,16 +122,14 @@ body::before {
 
 .hero-brand {
   display: grid;
-  grid-template-columns: auto auto minmax(32px, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 14px;
+  margin-bottom: 20px;
 }
 
 .hero-brand::after {
-  content: "";
-  height: 1px;
-  background: linear-gradient(90deg, rgba(0, 163, 255, 0.95), rgba(246, 240, 230, 0.2), rgba(241, 181, 49, 0.72));
+  content: none;
 }
 
 .brand-logo-wrap {
@@ -108,8 +145,8 @@ body::before {
 }
 
 .brand-logo {
-  width: 34px;
-  height: 34px;
+  width: clamp(60px, 7.8vw, 84px);
+  height: clamp(60px, 7.8vw, 84px);
   object-fit: contain;
   display: block;
 }
@@ -117,11 +154,11 @@ body::before {
 .hero-title {
   margin: 0;
   font-family: "Unbounded", "Manrope", sans-serif;
-  font-size: clamp(19px, 4.7vw, 31px);
-  line-height: 1;
+  font-size: clamp(24px, 5.4vw, 42px);
+  line-height: 1.05;
   letter-spacing: 0;
   text-transform: uppercase;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .sub {
@@ -225,38 +262,38 @@ a:focus-visible {
 }
 
 .account-chip {
-  display: inline-flex;
-  width: 54px;
-  min-height: 48px;
+  display: inline-grid;
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  min-height: 52px;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   border-color: rgba(246, 240, 230, 0.16);
-  border-radius: 18px;
+  border-radius: 16px;
+  padding: 0;
   color: var(--ink);
   background: rgba(246, 240, 230, 0.1);
   backdrop-filter: blur(18px);
 }
 
-.account-chip #account-chip-label {
-  display: none;
-}
-
 .account-chip span:first-child {
   display: inline-grid;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   place-items: center;
-  border-radius: 50%;
-  color: #061018;
-  background: linear-gradient(135deg, #8adeff, var(--blue));
+  border: 1px solid rgba(255, 227, 164, 0.26);
+  border-radius: 12px;
+  color: #1a1205;
+  background: linear-gradient(135deg, #ffe3a4, var(--gold));
   font-size: 12px;
   font-weight: 900;
 }
 
 .account-chip.active {
-  color: #061018;
-  background: linear-gradient(135deg, #8adeff, var(--blue));
+  border-color: rgba(255, 227, 164, 0.52);
+  background: rgba(216, 168, 63, 0.16);
+  box-shadow: 0 16px 34px rgba(216, 168, 63, 0.12);
 }
 
 .panel {
@@ -265,7 +302,7 @@ a:focus-visible {
   padding: clamp(16px, 3vw, 24px);
   border: 1px solid rgba(246, 240, 230, 0.13);
   border-radius: var(--radius);
-  background: rgba(22, 17, 26, 0.88);
+  background: rgba(15, 12, 18, 0.9);
   box-shadow: var(--shadow);
   backdrop-filter: blur(20px);
   animation: riseIn 0.36s ease both;
@@ -277,8 +314,8 @@ a:focus-visible {
   inset: 0 auto 0 0;
   width: 3px;
   border-radius: var(--radius) 0 0 var(--radius);
-  background: linear-gradient(180deg, var(--blue), var(--amber));
-  opacity: 0.9;
+  background: linear-gradient(180deg, var(--gold), rgba(0, 163, 255, 0.55));
+  opacity: 0.62;
 }
 
 .panel.account-panel {
@@ -537,10 +574,6 @@ input[type="file"]::file-selector-button {
 }
 
 .account-panel::after {
-  content: none;
-}
-
-body.account-open::after {
   content: none;
 }
 
@@ -1091,15 +1124,6 @@ body.account-open::after {
     width: fit-content;
   }
 
-  .account-chip {
-    width: auto;
-    min-width: 124px;
-  }
-
-  .account-chip #account-chip-label {
-    display: inline;
-  }
-
   .grid-2,
   .admin-grid2,
   .attendee-row,
@@ -1180,8 +1204,12 @@ body.account-open::after {
       linear-gradient(180deg, #08080f 0%, #151019 27rem, #0f0c12 100%);
   }
 
-  body::before {
-    content: none;
+  body::before,
+  body::after {
+    width: 34px;
+    opacity: 0.11;
+    -webkit-mask-size: 34px 43px;
+    mask-size: 34px 43px;
   }
 
   .app-shell {
@@ -1198,12 +1226,12 @@ body.account-open::after {
   }
 
   .brand-logo {
-    width: 28px;
-    height: 28px;
+    width: 58px;
+    height: 58px;
   }
 
   .hero-title {
-    font-size: clamp(18px, 5.4vw, 24px);
+    font-size: clamp(20px, 6.7vw, 29px);
   }
 
   .panel {
