@@ -248,6 +248,21 @@ function setAccountStatus(msg, isError = false) {
   accountStatusEl.className = isError ? 'hint error' : 'hint';
 }
 
+function closeAccountPanel() {
+  state.accountOpen = false;
+  state.editingProfile = false;
+  state.emailCodeSent = false;
+  renderAccountPanel();
+  setAccountStatus('');
+}
+
+function resetAccountPanelState() {
+  state.accountOpen = false;
+  state.editingProfile = false;
+  state.emailCodeSent = false;
+  setAccountStatus('');
+}
+
 function renderAccountPanel() {
   if (!accountPanelEl) return;
   const registered = Boolean(state.userProfile);
@@ -272,6 +287,7 @@ function renderAccountPanel() {
   }
   if (accountChipLabelEl) accountChipLabelEl.textContent = registered ? 'Profile' : 'Sign in';
   accountPanelEl.hidden = !state.accountOpen && !state.emailCodeSent;
+  document.body.classList.toggle('account-open', !accountPanelEl.hidden);
   if (accountHelpEl) {
     accountHelpEl.textContent = needsProfileCompletion
       ? 'Add your phone number so we can contact you about your booking.'
@@ -814,13 +830,14 @@ async function submitDraft() {
 
   if (!hasUserIdentity()) {
     setStatus('Register your details before booking.', true);
-    if (accountPanelEl) accountPanelEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    state.accountOpen = true;
+    renderAccountPanel();
     return;
   }
   if (!tgId && state.userProfile && !(state.userProfile.phone || '').trim()) {
     setStatus('Add your phone number before booking.', true);
+    state.accountOpen = true;
     renderAccountPanel();
-    if (accountPanelEl) accountPanelEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
   const discountSelections = attendeeDiscountSelections();
@@ -1679,13 +1696,20 @@ if (accountOpenEl) {
   });
 }
 if (accountCloseEl) {
-  accountCloseEl.addEventListener('click', () => {
-    state.accountOpen = false;
-    state.editingProfile = false;
-    renderAccountPanel();
-    setAccountStatus('');
-  });
+  accountCloseEl.addEventListener('click', closeAccountPanel);
 }
+document.addEventListener('click', (event) => {
+  if (!accountPanelEl || accountPanelEl.hidden) return;
+  const target = event.target;
+  if (accountPanelEl.contains(target) || (accountOpenEl && accountOpenEl.contains(target))) return;
+  if (target && target.closest && target.closest('[data-page-tab]')) return;
+  closeAccountPanel();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && accountPanelEl && !accountPanelEl.hidden) {
+    closeAccountPanel();
+  }
+});
 if (accountEditEl) {
   accountEditEl.addEventListener('click', () => {
     state.editingProfile = true;
@@ -1758,6 +1782,7 @@ if (pageTabs.length) {
         openAdminMode();
         return;
       }
+      resetAccountPanelState();
       setPageTab(key);
     });
   }
