@@ -374,6 +374,7 @@ def _send_login_code(email: str, code: str) -> None:
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type": "application/json",
+            "User-Agent": "BudapestTunderiTicketBot/1.0",
         },
     )
     try:
