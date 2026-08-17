@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -267,8 +268,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817k", index_response.text)
-        self.assertIn("/static/app.js?v=20260817k", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817m", index_response.text)
+        self.assertIn("/static/app.js?v=20260817m", index_response.text)
         self.assertIn('/static/logo.png?v=20260817f', index_response.text)
 
         js_response = self.client.get("/static/app.js")
@@ -300,11 +301,9 @@ class MiniAppAdminApiTests(unittest.TestCase):
         )
         self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
         self.assertIn("bt_web_session=", verify_resp.headers.get("set-cookie", ""))
-        token = verify_resp.json()["session_token"]
-        self.assertTrue(token)
-        headers = {"Authorization": f"Bearer {token}"}
+        self.assertNotIn("session_token", verify_resp.json())
 
-        me_resp = self.client.get("/api/me", headers=headers)
+        me_resp = self.client.get("/api/me")
         self.assertEqual(me_resp.status_code, 200, me_resp.text)
         self.assertEqual(me_resp.json()["profile"]["source"], "website")
         self.assertEqual(me_resp.json()["profile"]["email"], "web.guest@example.invalid")
@@ -312,7 +311,6 @@ class MiniAppAdminApiTests(unittest.TestCase):
         update_resp = self.client.put(
             "/api/web/profile",
             json={"name": "Web", "surname": "Guest", "phone": "+36 20 999 8888"},
-            headers=headers,
         )
         self.assertEqual(update_resp.status_code, 200, update_resp.text)
         self.assertEqual(update_resp.json()["profile"]["phone"], "+36 20 999 8888")
@@ -320,7 +318,6 @@ class MiniAppAdminApiTests(unittest.TestCase):
         email_start_resp = self.client.post(
             "/api/web/email/start",
             json={"email": "new.web.guest@example.invalid"},
-            headers=headers,
         )
         self.assertEqual(email_start_resp.status_code, 200, email_start_resp.text)
         email_code = email_start_resp.json()["dev_code"]
@@ -328,14 +325,12 @@ class MiniAppAdminApiTests(unittest.TestCase):
         wrong_email_resp = self.client.post(
             "/api/web/email/verify",
             json={"email": "new.web.guest@example.invalid", "code": "000000"},
-            headers=headers,
         )
         self.assertEqual(wrong_email_resp.status_code, 400, wrong_email_resp.text)
 
         email_verify_resp = self.client.post(
             "/api/web/email/verify",
             json={"email": "new.web.guest@example.invalid", "code": email_code},
-            headers=headers,
         )
         self.assertEqual(email_verify_resp.status_code, 200, email_verify_resp.text)
         self.assertEqual(email_verify_resp.json()["profile"]["email"], "new.web.guest@example.invalid")
@@ -356,11 +351,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "terms_accepted": "true",
             },
             files=files,
-            headers=headers,
         )
         self.assertEqual(booking_resp.status_code, 200, booking_resp.text)
 
-        tickets_resp = self.client.get("/api/my_tickets", headers=headers)
+        tickets_resp = self.client.get("/api/my_tickets")
         self.assertEqual(tickets_resp.status_code, 200, tickets_resp.text)
         items = tickets_resp.json()["items"]
         self.assertEqual(len(items), 1)
@@ -373,15 +367,13 @@ class MiniAppAdminApiTests(unittest.TestCase):
         )
         self.assertEqual(login_resp.status_code, 200, login_resp.text)
         self.assertIn("bt_admin_session=", login_resp.headers.get("set-cookie", ""))
-        token = login_resp.json()["admin_session"]
-        self.assertTrue(token)
-        headers = {"X-Admin-Session": token}
+        self.assertNotIn("admin_session", login_resp.json())
 
-        bootstrap_resp = self.client.get("/api/admin/bootstrap", headers=headers)
+        bootstrap_resp = self.client.get("/api/admin/bootstrap")
         self.assertEqual(bootstrap_resp.status_code, 200, bootstrap_resp.text)
         self.assertEqual(bootstrap_resp.json()["source"], "website")
 
-        events_resp = self.client.get("/api/admin/events", headers=headers)
+        events_resp = self.client.get("/api/admin/events")
         self.assertEqual(events_resp.status_code, 200, events_resp.text)
         self.assertEqual(len(events_resp.json()["items"]), 1)
 
@@ -405,12 +397,45 @@ class MiniAppAdminApiTests(unittest.TestCase):
             json={"email": "not.admin@example.invalid", "code": start_resp.json()["dev_code"]},
         )
         self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
-        user_token = verify_resp.json()["session_token"]
+        self.assertNotIn("session_token", verify_resp.json())
 
-        response = self.client.get(
-            "/api/admin/events",
-            headers={"Authorization": f"Bearer {user_token}"},
+        response = self.client.get("/api/admin/events")
+        self.assertEqual(response.status_code, 401, response.text)
+
+    def test_expired_web_session_cookie_is_rejected(self):
+        start_resp = self.client.post(
+            "/api/web/login/start",
+            json={
+                "name": "Old",
+                "surname": "Session",
+                "email": "old.session@example.invalid",
+                "phone": "+36 20 777 1111",
+            },
         )
+        self.assertEqual(start_resp.status_code, 200, start_resp.text)
+        verify_resp = self.client.post(
+            "/api/web/login/verify",
+            json={"email": "old.session@example.invalid", "code": start_resp.json()["dev_code"]},
+        )
+        self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
+        expired_at = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        self.db.conn.execute("UPDATE web_sessions SET created_at = ?", (expired_at,))
+        self.db.conn.commit()
+
+        response = self.client.get("/api/me")
+        self.assertEqual(response.status_code, 401, response.text)
+
+    def test_expired_admin_session_cookie_is_rejected(self):
+        login_resp = self.client.post(
+            "/api/admin/login",
+            json={"password": "test-admin-password"},
+        )
+        self.assertEqual(login_resp.status_code, 200, login_resp.text)
+        expired_at = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        self.db.conn.execute("UPDATE admin_web_sessions SET created_at = ?", (expired_at,))
+        self.db.conn.commit()
+
+        response = self.client.get("/api/admin/events")
         self.assertEqual(response.status_code, 401, response.text)
 
     def test_google_login_is_disabled_without_client_id(self):

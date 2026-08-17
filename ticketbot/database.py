@@ -4,7 +4,7 @@ import secrets
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -355,6 +355,23 @@ class Database:
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _session_max_age_seconds(self) -> int:
+        raw = (os.getenv("SESSION_COOKIE_MAX_AGE_SECONDS", "") or "").strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 60 * 60 * 24 * 90
+        return value if value > 0 else 60 * 60 * 24 * 90
+
+    def _session_is_expired(self, created_at: str) -> bool:
+        try:
+            created = datetime.fromisoformat(created_at)
+        except (TypeError, ValueError):
+            return True
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return created + timedelta(seconds=self._session_max_age_seconds()) < datetime.now(timezone.utc)
+
     def parse_event_datetime(self, value: str) -> datetime:
         parsed = datetime.strptime(value, EVENT_DT_FORMAT)
         return parsed.replace(tzinfo=BUDAPEST_TZ)
@@ -683,14 +700,24 @@ class Database:
         now = self._utc_now()
         if existing:
             user_id = int(existing["id"])
-            cursor.execute(
-                """
-                UPDATE users
-                SET name = ?, surname = ?, email = ?, phone = ?
-                WHERE id = ?
-                """,
-                ((name or "").strip(), (surname or "").strip(), normalized_email, normalized_phone, user_id),
-            )
+            if normalized_phone:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET name = ?, surname = ?, email = ?, phone = ?
+                    WHERE id = ?
+                    """,
+                    ((name or "").strip(), (surname or "").strip(), normalized_email, normalized_phone, user_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET name = ?, surname = ?, email = ?
+                    WHERE id = ?
+                    """,
+                    ((name or "").strip(), (surname or "").strip(), normalized_email, user_id),
+                )
         else:
             tg_id = self._next_web_tg_id(cursor)
             cursor.execute(
@@ -849,7 +876,7 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT u.*
+            SELECT u.*, s.created_at AS session_created_at
             FROM web_sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = ?
@@ -859,9 +886,15 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return None
+        if self._session_is_expired(row["session_created_at"]):
+            cursor.execute("DELETE FROM web_sessions WHERE token_hash = ?", (token_hash,))
+            self.conn.commit()
+            return None
         cursor.execute("UPDATE web_sessions SET last_seen_at = ? WHERE token_hash = ?", (self._utc_now(), token_hash))
         self.conn.commit()
-        return User(**dict(row))
+        user_data = dict(row)
+        user_data.pop("session_created_at", None)
+        return User(**user_data)
 
     def create_admin_web_session(self) -> str:
         token = secrets.token_urlsafe(32)
@@ -884,8 +917,13 @@ class Database:
             return False
         token_hash = self._web_session_hash(raw)
         cursor = self.conn.cursor()
-        cursor.execute("SELECT token_hash FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT token_hash, created_at FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        if self._session_is_expired(row["created_at"]):
+            cursor.execute("DELETE FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
+            self.conn.commit()
             return False
         cursor.execute(
             "UPDATE admin_web_sessions SET last_seen_at = ? WHERE token_hash = ?",

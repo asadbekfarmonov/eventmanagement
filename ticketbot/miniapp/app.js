@@ -31,6 +31,7 @@ const pageSections = Array.from(document.querySelectorAll('[data-page-section]')
 const carouselTrackEl = document.querySelector('.main-carousel-track');
 const carouselDots = Array.from(document.querySelectorAll('.main-carousel-dots span'));
 const accountPanelEl = document.getElementById('account-panel');
+const accountBackdropEl = document.getElementById('account-backdrop');
 const accountOpenEl = document.getElementById('account-open');
 const accountCloseEl = document.getElementById('account-close');
 const accountChipInitialsEl = document.getElementById('account-chip-initials');
@@ -239,7 +240,7 @@ function adminHeaders(extra = {}) {
 }
 
 function hasUserIdentity() {
-  return Boolean(tgId || webSessionToken);
+  return Boolean(tgId || state.userProfile || webSessionToken);
 }
 
 function setAccountStatus(msg, isError = false) {
@@ -287,6 +288,7 @@ function renderAccountPanel() {
   }
   if (accountChipLabelEl) accountChipLabelEl.textContent = registered ? 'Profile' : 'Sign in';
   accountPanelEl.hidden = !state.accountOpen && !state.emailCodeSent;
+  if (accountBackdropEl) accountBackdropEl.hidden = accountPanelEl.hidden;
   document.body.classList.toggle('account-open', !accountPanelEl.hidden);
   if (accountHelpEl) {
     accountHelpEl.textContent = needsProfileCompletion
@@ -1034,8 +1036,8 @@ async function registerWebsiteAccount() {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw data;
-    webSessionToken = data.session_token || webSessionToken;
-    if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
+    webSessionToken = '';
+    localStorage.removeItem(WEB_SESSION_KEY);
     state.userProfile = data.profile || null;
 
     const currentEmail = ((data.profile && data.profile.email) || '').trim().toLowerCase();
@@ -1073,8 +1075,8 @@ async function registerWebsiteAccount() {
 }
 
 async function finishWebsiteLogin(data, message) {
-  webSessionToken = data.session_token || '';
-  if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
+  webSessionToken = '';
+  localStorage.removeItem(WEB_SESSION_KEY);
   state.userProfile = data.profile || null;
   state.emailCodeSent = false;
   state.pendingEmailUpdate = '';
@@ -1447,18 +1449,12 @@ async function ensureAdmin() {
 
 async function checkAdminAvailability() {
   if (!adminEl.open) return false;
-  if (adminSessionToken) {
-    adminEl.open.hidden = false;
-    return true;
-  }
-  if (!tgId) {
-    adminEl.open.hidden = true;
-    return false;
-  }
   try {
     const data = await adminGet('/api/admin/bootstrap');
     adminState.ready = true;
-    adminEl.ident.textContent = `Admin Telegram ID: ${data.tg_id}`;
+    adminEl.ident.textContent = data.source === 'website'
+      ? 'Admin session: website'
+      : `Admin Telegram ID: ${data.tg_id}`;
     adminEl.open.hidden = false;
     setAdminStatus('Admin mode ready.');
     return true;
@@ -1495,8 +1491,8 @@ async function loginAdmin() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw data;
-    adminSessionToken = data.admin_session || '';
-    if (adminSessionToken) localStorage.setItem(ADMIN_SESSION_KEY, adminSessionToken);
+    adminSessionToken = '';
+    localStorage.removeItem(ADMIN_SESSION_KEY);
     if (adminEl.password) adminEl.password.value = '';
     if (adminEl.open) adminEl.open.hidden = false;
     adminState.ready = false;
@@ -1697,6 +1693,9 @@ if (accountOpenEl) {
 }
 if (accountCloseEl) {
   accountCloseEl.addEventListener('click', closeAccountPanel);
+}
+if (accountBackdropEl) {
+  accountBackdropEl.addEventListener('click', closeAccountPanel);
 }
 document.addEventListener('click', (event) => {
   if (!accountPanelEl || accountPanelEl.hidden) return;

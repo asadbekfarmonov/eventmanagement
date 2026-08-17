@@ -1022,7 +1022,7 @@ def web_register(request: Request, response: Response, payload: WebRegisterReque
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
-    return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+    return {"ok": True, "profile": _profile_payload(user)}
 
 
 @app.post("/api/web/login/start")
@@ -1068,7 +1068,7 @@ def web_email_login_verify(request: Request, response: Response, payload: WebEma
     finally:
         db.delete_email_login_code(email)
     _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
-    return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+    return {"ok": True, "profile": _profile_payload(user)}
 
 
 @app.post("/api/web/email/start")
@@ -1137,7 +1137,7 @@ def web_google_login(request: Request, response: Response, payload: WebGoogleLog
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
-    return {"ok": True, "session_token": token, "profile": _profile_payload(user)}
+    return {"ok": True, "profile": _profile_payload(user)}
 
 
 @app.put("/api/web/profile")
@@ -1315,7 +1315,7 @@ def admin_login(request: Request, response: Response, payload: AdminWebLoginRequ
         raise HTTPException(status_code=403, detail="Wrong admin password.")
     token = db.create_admin_web_session()
     _set_session_cookie(request, response, ADMIN_SESSION_COOKIE, token)
-    return {"ok": True, "admin_session": token}
+    return {"ok": True}
 
 
 @app.get("/api/admin/bootstrap")

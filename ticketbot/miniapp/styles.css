@@ -281,6 +281,17 @@ a:focus-visible {
   opacity: 0.9;
 }
 
+.panel.account-panel {
+  position: fixed;
+  top: max(88px, calc(env(safe-area-inset-top) + 18px));
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 100;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - max(36px, env(safe-area-inset-top)) - max(18px, env(safe-area-inset-bottom)));
+  overflow: auto;
+  margin: 0;
+}
+
 .page-section[hidden],
 #admin-area[hidden],
 .account-panel[hidden],
@@ -509,7 +520,7 @@ input[type="file"]::file-selector-button {
   position: fixed;
   top: max(88px, calc(env(safe-area-inset-top) + 18px));
   right: max(16px, env(safe-area-inset-right));
-  z-index: 60;
+  z-index: 100;
   width: min(420px, calc(100vw - 32px));
   max-height: calc(100vh - max(36px, env(safe-area-inset-top)) - max(18px, env(safe-area-inset-bottom)));
   overflow: auto;
@@ -517,17 +528,20 @@ input[type="file"]::file-selector-button {
   background: rgba(18, 14, 22, 0.96);
 }
 
+.account-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(2, 2, 7, 0.46);
+  backdrop-filter: blur(5px);
+}
+
 .account-panel::after {
   content: none;
 }
 
 body.account-open::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  background: rgba(2, 2, 7, 0.52);
-  backdrop-filter: blur(6px);
+  content: none;
 }
 
 .account-head-actions {
@@ -1028,7 +1042,7 @@ body.account-open::after {
     padding: 38px;
   }
 
-  .account-panel {
+  .panel.account-panel {
     top: max(22px, env(safe-area-inset-top));
     right: max(24px, env(safe-area-inset-right));
   }
