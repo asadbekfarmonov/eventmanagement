@@ -141,7 +141,7 @@ test('top navigation shows one public section at a time', async ({ page }) => {
   await page.goto('/?tg_id=511308234');
 
   await expect(page.locator('#main-panel')).toBeVisible();
-  await expect(page.locator('#main-panel')).toContainText('Budapest Tunderi started');
+  await expect(page.locator('#main-panel')).toContainText('We started this because we missed');
   await expect(page.locator('.main-carousel-slide img')).toHaveCount(3);
   await expect(page.locator('.main-carousel-slide img').first()).toBeVisible();
   await expect(page.locator('#events-panel')).toBeHidden();
