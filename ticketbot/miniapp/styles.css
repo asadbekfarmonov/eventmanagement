@@ -350,6 +350,40 @@ h3 {
   margin-top: 14px;
 }
 
+.account-form[hidden] {
+  display: none;
+}
+
+.profile-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.profile-card[hidden] {
+  display: none;
+}
+
+.profile-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.profile-value {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-weight: 700;
+}
+
 .account-actions,
 .account-code-panel {
   display: grid;
@@ -893,6 +927,7 @@ input[type="file"]::file-selector-button {
 
   .grid-2,
   .grid-3,
+  .profile-card,
   .admin-grid2,
   .admin-grid3,
   .attendee-row {

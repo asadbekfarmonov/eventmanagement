@@ -38,7 +38,13 @@ const accountSurnameEl = document.getElementById('account-surname');
 const accountPhoneEl = document.getElementById('account-phone');
 const accountEmailEl = document.getElementById('account-email');
 const accountHelpEl = document.getElementById('account-help');
+const profileCardEl = document.getElementById('profile-card');
+const profileNameEl = document.getElementById('profile-name');
+const profileEmailEl = document.getElementById('profile-email');
+const profilePhoneEl = document.getElementById('profile-phone');
+const profileSourceEl = document.getElementById('profile-source');
 const accountSaveEl = document.getElementById('account-save');
+const accountEditEl = document.getElementById('account-edit');
 const accountSendCodeEl = document.getElementById('account-send-code');
 const accountCodePanelEl = document.getElementById('account-code-panel');
 const accountCodeEl = document.getElementById('account-code');
@@ -110,6 +116,7 @@ const state = {
   emailCodeSent: false,
   googleClientId: '',
   googleReady: false,
+  editingProfile: false,
 };
 
 const adminState = {
@@ -236,19 +243,34 @@ function renderAccountPanel() {
   if (!accountPanelEl) return;
   const registered = Boolean(state.userProfile);
   const needsProfileCompletion = registered && !tgId && !(state.userProfile.phone || '').trim();
-  accountPanelEl.hidden = registered && !needsProfileCompletion;
+  const showEditForm = !registered || needsProfileCompletion || state.editingProfile;
+  accountPanelEl.hidden = false;
   if (accountHelpEl) {
     accountHelpEl.textContent = needsProfileCompletion
       ? 'Add your phone number so we can contact you about your booking.'
+      : registered
+      ? 'Your booking profile is saved here.'
       : state.emailLoginEnabled
       ? 'Enter your details and verify your email. We use it to keep your tickets together.'
       : 'Register once with your phone number. We use it to keep your tickets together when you book from the website.';
   }
+  if (profileCardEl) profileCardEl.hidden = !registered;
+  if (profileNameEl) {
+    profileNameEl.textContent = registered
+      ? `${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim() || '-'
+      : '';
+  }
+  if (profileEmailEl) profileEmailEl.textContent = registered ? (state.userProfile.email || '-') : '';
+  if (profilePhoneEl) profilePhoneEl.textContent = registered ? (state.userProfile.phone || 'Not added yet') : '';
+  if (profileSourceEl) profileSourceEl.textContent = registered ? (state.userProfile.source || 'website') : '';
+  const formEl = accountNameEl ? accountNameEl.closest('.account-form') : null;
+  if (formEl) formEl.hidden = !showEditForm;
   if (accountSaveEl) {
-    accountSaveEl.hidden = state.emailLoginEnabled && !needsProfileCompletion;
+    accountSaveEl.hidden = !showEditForm || (state.emailLoginEnabled && !registered);
     accountSaveEl.textContent = needsProfileCompletion ? 'Save details' : 'Continue';
   }
-  if (accountSendCodeEl) accountSendCodeEl.hidden = !state.emailLoginEnabled || needsProfileCompletion;
+  if (accountEditEl) accountEditEl.hidden = !registered || showEditForm || Boolean(tgId);
+  if (accountSendCodeEl) accountSendCodeEl.hidden = !state.emailLoginEnabled || registered || needsProfileCompletion;
   if (accountCodePanelEl) accountCodePanelEl.hidden = !state.emailLoginEnabled || !state.emailCodeSent;
   if (googleSigninWrapEl) googleSigninWrapEl.hidden = registered || !state.googleClientId;
   if (accountStateEl) {
@@ -966,6 +988,7 @@ async function registerWebsiteAccount() {
     webSessionToken = data.session_token || webSessionToken;
     if (webSessionToken) localStorage.setItem(WEB_SESSION_KEY, webSessionToken);
     state.userProfile = data.profile || null;
+    state.editingProfile = false;
     setAccountStatus('Saved. You can book now.');
     renderAccountPanel();
     rebuildAttendees();
@@ -1578,6 +1601,13 @@ if (termsAcceptedEl) {
 }
 if (accountSaveEl) {
   accountSaveEl.addEventListener('click', registerWebsiteAccount);
+}
+if (accountEditEl) {
+  accountEditEl.addEventListener('click', () => {
+    state.editingProfile = true;
+    renderAccountPanel();
+    setAccountStatus('');
+  });
 }
 if (accountSendCodeEl) {
   accountSendCodeEl.addEventListener('click', sendWebsiteLoginCode);

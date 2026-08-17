@@ -267,8 +267,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         index_response = self.client.get("/")
         self.assertEqual(index_response.status_code, 200)
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("/static/styles.css?v=20260817d", index_response.text)
-        self.assertIn("/static/app.js?v=20260817d", index_response.text)
+        self.assertIn("/static/styles.css?v=20260817e", index_response.text)
+        self.assertIn("/static/app.js?v=20260817e", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
