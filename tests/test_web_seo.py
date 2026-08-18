@@ -78,6 +78,16 @@ class WebSeoTests(unittest.TestCase):
         self.assertIn('property="og:title"', html)
         self.assertIn('rel="canonical"', html)
 
+    def test_csp_allows_google_identity_services(self):
+        # Google Identity Services (button + FedCM credential flow) makes runtime
+        # requests to accounts.google.com; connect-src/style-src must allow it or
+        # sign-in fails for some browsers.
+        resp = self.client.get("/")
+        csp = resp.headers.get("content-security-policy", "")
+        self.assertIn("connect-src 'self' https://accounts.google.com", csp)
+        self.assertIn("script-src", csp)
+        self.assertIn("https://accounts.google.com", csp.split("style-src", 1)[1].split(";", 1)[0])
+
 
 if __name__ == "__main__":
     unittest.main()

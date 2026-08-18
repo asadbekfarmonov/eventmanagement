@@ -162,10 +162,10 @@ async def add_security_headers(request: Request, call_next):
         "Content-Security-Policy",
         "default-src 'self'; "
         "script-src 'self' https://telegram.org https://accounts.google.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
-        "connect-src 'self'; "
+        "connect-src 'self' https://accounts.google.com; "
         "frame-src https://accounts.google.com https://www.google.com https://maps.google.com; "
         "frame-ancestors https://web.telegram.org https://*.telegram.org;",
     )
