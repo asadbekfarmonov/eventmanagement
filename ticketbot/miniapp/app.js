@@ -1155,15 +1155,9 @@ async function cancelWebBooking(code) {
 }
 
 async function loadMeAndTickets() {
-  if (!hasUserIdentity()) {
-    renderAccountPanel();
-    renderTickets([]);
-    if (ticketsEmptyEl) {
-      ticketsEmptyEl.textContent = 'Register in the Book section to see your tickets here.';
-      ticketsEmptyEl.hidden = false;
-    }
-    return;
-  }
+  // Always probe /api/me so a valid web-session cookie (Google/email login) is
+  // restored after a page reload, even when we start with no client-side identity.
+  let authed = false;
   try {
     const meUrl = new URL('/api/me', window.location.origin);
     if (tgId) meUrl.searchParams.set('tg_id', String(tgId));
@@ -1171,11 +1165,25 @@ async function loadMeAndTickets() {
     if (meResp.ok) {
       const meData = await meResp.json();
       state.userProfile = meData.profile || null;
+      authed = Boolean(state.userProfile);
       renderAccountPanel();
       rebuildAttendees();
+    } else if (meResp.status === 401 || meResp.status === 403) {
+      // Not logged in (or blocked): treat as logged-out.
+      state.userProfile = null;
+      renderAccountPanel();
     }
   } catch (_err) {
-    // Optional mini app personalization; ignore failures.
+    // Ignore network errors; fall through to the logged-out empty state.
+  }
+
+  if (!authed) {
+    renderTickets([]);
+    if (ticketsEmptyEl) {
+      ticketsEmptyEl.textContent = 'Register in the Book section to see your tickets here.';
+      ticketsEmptyEl.hidden = false;
+    }
+    return;
   }
 
   try {

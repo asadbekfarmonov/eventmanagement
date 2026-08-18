@@ -689,3 +689,32 @@ test('footer Booking terms link opens the terms from another tab', async ({ page
   const termsOpen = await page.locator('.terms-box details').evaluate((el) => el.open);
   expect(termsOpen).toBe(true);
 });
+
+test('website session persists across a page reload', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#account-panel')).toBeVisible();
+
+  await page.locator('#account-name').fill('Reload');
+  await page.locator('#account-surname').fill('Persist');
+  await page.locator('#account-email').fill('reload.persist@example.invalid');
+  await page.locator('#account-phone').fill('+36 20 555 0303');
+  await page.locator('#account-send-code').click();
+  await expect(page.locator('#account-code-panel')).toBeVisible();
+  await page.locator('#account-verify').click();
+
+  await expect(page.locator('#profile-card')).toBeVisible();
+  await expect(page.locator('#profile-email')).toHaveText('reload.persist@example.invalid');
+
+  // Regression: after a reload the cookie session must be restored (the app must
+  // probe /api/me on load), not fall back to the logged-out "log in again" state.
+  await page.reload();
+  // The account chip initials reflect the restored profile ("Reload Persist" -> "RP").
+  await expect(page.locator('#account-chip-initials')).toHaveText('RP');
+
+  await page.locator('#account-open').click();
+  await expect(page.locator('#profile-card')).toBeVisible();
+  await expect(page.locator('#profile-email')).toHaveText('reload.persist@example.invalid');
+  // The registration/edit form is not shown because we are still logged in.
+  await expect(page.locator('#account-name')).toBeHidden();
+});
