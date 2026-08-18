@@ -1045,3 +1045,56 @@ test('after a successful booking and reload the form is NOT re-populated from a 
   await expect(page.locator('.attendee-row')).toHaveCount(0);
   await expect(page.locator('#attendees-list')).not.toContainText('John');
 });
+
+test('mixed group offer + repost: displayed Final total matches server-charged total', async ({ page }) => {
+  // Enable the Girls 2+1 group offer on the (already repost-enabled) Discount Event.
+  await openAdmin(page);
+  await selectAdminEventByTitle(page, 'Discount Event');
+  await page.locator('#admin-ev-girls-group-enabled').selectOption('1');
+  await page.locator('#admin-ev-repost-enabled').selectOption('1');
+  await page.locator('#admin-ev-repost-amount').fill('1000');
+  await page.locator('#admin-event-save').click();
+  await expect(page.locator('#admin-status')).toContainText('Event updated.');
+
+  // Book 1 boy (reposted) + 3 girls (2+1 frees 1 girl). Early prices 2500 each => base 10000.
+  // Group frees a NON-reposting girl (2500) AND the boy's repost (1000) applies to a
+  // DIFFERENT attendee, so BOTH add up: combined discount 3500 => final 6500.
+  await page.goto('/?tg_id=511308234');
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+  await selectEventByTitle(page, 'Discount Event');
+
+  await page.locator('#boys').fill('1');
+  await page.locator('#girls').fill('3');
+  await expect(page.locator('.attendee-row')).toHaveCount(4);
+
+  const names = [['Boy', 'One'], ['Girl', 'Two'], ['Girl', 'Three'], ['Girl', 'Four']];
+  for (let i = 0; i < names.length; i += 1) {
+    await page.locator('.attendee-row').nth(i).locator('input[data-part="first"]').fill(names[i][0]);
+    await page.locator('.attendee-row').nth(i).locator('input[data-part="surname"]').fill(names[i][1]);
+  }
+
+  // The boy (index 0) uses the repost discount.
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]').check();
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]').setInputFiles(proofFile);
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+
+  await expect(page.locator('#summary')).toContainText('Base total: 10000.00');
+  await expect(page.locator('#summary')).toContainText('Girls 2+1: 1 free = 2500.00');
+  await expect(page.locator('#summary')).toContainText('Repost discount: 1 x 1000.00 = 1000.00');
+  await expect(page.locator('#summary')).toContainText('Applied discount: 3500.00');
+  await expect(page.locator('#summary')).toContainText('Final total: 6500.00');
+
+  await page.locator('#terms-accepted').check();
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+  await page.locator('#submit-booking').click();
+
+  await expect(page.locator('#status')).toContainText('Booking sent for review. Code:');
+  const statusText = await page.locator('#status').innerText();
+  const code = statusText.split('Code:')[1].trim().split(/\s/)[0];
+  expect(code).toMatch(/^R\d+-/);
+
+  // The server-charged total shown in My Tickets must equal the displayed Final total (6500.00).
+  const card = page.locator('#tickets-list .admin-card').filter({ hasText: code });
+  await expect(card).toContainText('Boys: 1 | Girls: 3 | Total: 6500.00');
+});

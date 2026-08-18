@@ -1386,7 +1386,10 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertAlmostEqual(reservation.group_discount_amount, 2500.0)
         self.assertAlmostEqual(reservation.total_price, 7500.0)
 
-    def test_book_with_payment_uses_greater_discount_when_group_offer_and_repost_overlap(self):
+    def test_book_with_payment_combines_group_offer_and_repost_per_attendee(self):
+        # 3 girls (early 2500 each), all reposted (R=1000), girls 2+1 enabled.
+        # Freed girl takes her price 2500 (repost wasted, no double-dip); the
+        # other 2 reposting girls each take R. Total = 2500 + 2*1000 = 4500.
         self.db.set_event_fields(
             self.event_id,
             {
@@ -1418,7 +1421,8 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertAlmostEqual(reservation.group_discount_amount, 2500.0)
         self.assertEqual(reservation.discount_count, 3)
         self.assertAlmostEqual(reservation.discount_amount, 3000.0)
-        self.assertAlmostEqual(reservation.total_price, 4500.0)
+        # 2500 (freed girl) + 2*1000 (other reposters) = 4500 => 7500 - 4500
+        self.assertAlmostEqual(reservation.total_price, 3000.0)
 
     def test_book_with_payment_requires_repost_screenshot_for_discounted_attendee(self):
         self.db.set_event_fields(

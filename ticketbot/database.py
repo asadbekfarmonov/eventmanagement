@@ -547,8 +547,66 @@ class Database:
             boys_group_discount_amount,
         )
 
-    def _applied_discount_amount(self, group_discount_amount: float, repost_discount_amount: float) -> float:
-        return max(float(group_discount_amount or 0.0), float(repost_discount_amount or 0.0))
+    def _group_offer_freed_indices(
+        self,
+        event: Event,
+        attendee_allocations: List[Dict[str, Any]],
+        reposted_flags: List[bool],
+    ) -> set:
+        """Return the attendee_allocation indices freed by the group offers.
+
+        Frees the cheapest floor(count / threshold) attendees per gender
+        (threshold 3 girls, 4 boys). When several attendees share the same
+        unit price, NON-reposters are freed first so that reposters keep their
+        separate repost discount (which then adds to the total); remaining ties
+        break by attendee order.
+        """
+        freed: set = set()
+        for gender, threshold, enabled in (
+            ("girl", 3, bool(event.girls_group_offer_enabled)),
+            ("boy", 4, bool(event.boys_group_offer_enabled)),
+        ):
+            if not enabled:
+                continue
+            indices = [i for i, item in enumerate(attendee_allocations) if item["gender"] == gender]
+            free_count = len(indices) // threshold
+            if free_count <= 0:
+                continue
+            indices.sort(
+                key=lambda i: (
+                    float(attendee_allocations[i]["unit_price"]),
+                    1 if reposted_flags[i] else 0,
+                    i,
+                )
+            )
+            for i in indices[:free_count]:
+                freed.add(i)
+        return freed
+
+    def _combined_applied_discount(
+        self,
+        attendee_allocations: List[Dict[str, Any]],
+        freed_indices: set,
+        reposted_flags: List[bool],
+        repost_unit_amount: float,
+        base_total_price: float,
+    ) -> float:
+        """Per-attendee greater-of discount.
+
+        Each attendee takes the larger of its own group-free value (its full
+        unit price when freed) and its own repost value (min(R, unit_price)).
+        A single attendee never double-dips, but discounts belonging to
+        DIFFERENT attendees add up. The combined total is capped at the base
+        total so the final price is never negative.
+        """
+        repost_unit = float(repost_unit_amount or 0.0)
+        total = 0.0
+        for i, item in enumerate(attendee_allocations):
+            unit_price = float(item["unit_price"])
+            group_part = unit_price if i in freed_indices else 0.0
+            repost_part = min(repost_unit, unit_price) if reposted_flags[i] else 0.0
+            total += max(group_part, repost_part)
+        return min(total, float(base_total_price or 0.0))
 
     def _allocate_tier_plan(self, event: Event, boys: int, girls: int) -> Dict[str, Any]:
         boys = int(boys)
@@ -1291,7 +1349,17 @@ class Database:
         girls_group_discount_amount = float(plan["girls_group_discount_amount"])
         boys_group_discount_amount = float(plan["boys_group_discount_amount"])
         group_discount_amount = float(plan["group_discount_amount"])
-        applied_discount_amount = self._applied_discount_amount(group_discount_amount, discount_amount)
+        reposted_flags = [idx in discounted_indexes for idx in range(quantity)]
+        freed_indices = self._group_offer_freed_indices(
+            event, plan["attendee_allocations"], reposted_flags
+        )
+        applied_discount_amount = self._combined_applied_discount(
+            plan["attendee_allocations"],
+            freed_indices,
+            reposted_flags,
+            discount_unit_amount,
+            base_total_price,
+        )
         total_price = max(0.0, base_total_price - applied_discount_amount)
         code = f"R{event_id}-{uuid.uuid4().hex[:8].upper()}"
         repost_proofs = repost_proofs_by_index or {}
@@ -1538,6 +1606,7 @@ class Database:
         event: Event,
     ) -> Dict[str, Any]:
         attendee_allocations: List[Dict[str, Any]] = []
+        reposted_flags: List[bool] = []
         boys = 0
         girls = 0
         repost_discount_count = 0
@@ -1545,11 +1614,12 @@ class Database:
         for attendee in attendee_rows:
             gender = (attendee["gender"] or "").strip()
             ticket_tier = (attendee["ticket_tier"] or "").strip()
+            attendee_reposted = int(attendee["repost_discount_applied"] or 0) == 1
             if gender == "boy":
                 boys += 1
             elif gender == "girl":
                 girls += 1
-            if int(attendee["repost_discount_applied"] or 0) == 1:
+            if attendee_reposted:
                 repost_discount_count += 1
             if gender in {"boy", "girl"} and ticket_tier in {"early", "tier1", "tier2"}:
                 attendee_allocations.append(
@@ -1564,6 +1634,7 @@ class Database:
                         ),
                     }
                 )
+                reposted_flags.append(attendee_reposted)
 
         base_total_price = sum(float(item["unit_price"]) for item in attendee_allocations)
         (
@@ -1575,7 +1646,14 @@ class Database:
         group_discount_amount = girls_group_discount_amount + boys_group_discount_amount
         discount_unit_amount = float(reservation_row["discount_unit_amount"] or 0.0)
         repost_discount_amount = repost_discount_count * discount_unit_amount
-        applied_discount_amount = self._applied_discount_amount(group_discount_amount, repost_discount_amount)
+        freed_indices = self._group_offer_freed_indices(event, attendee_allocations, reposted_flags)
+        applied_discount_amount = self._combined_applied_discount(
+            attendee_allocations,
+            freed_indices,
+            reposted_flags,
+            discount_unit_amount,
+            base_total_price,
+        )
         total_price = max(0.0, base_total_price - applied_discount_amount)
         return {
             "quantity": len(attendee_rows),

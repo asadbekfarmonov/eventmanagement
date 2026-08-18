@@ -295,7 +295,12 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(attendees[0]["repost_proof_file_id"], "/uploads/repost-0.jpg")
         self.assertEqual(attendees[2]["repost_proof_file_id"], "/uploads/repost-2.jpg")
 
-    def test_pending_reservation_applies_greater_of_group_offer_and_repost_discount(self):
+    def test_pending_reservation_adds_group_offer_and_repost_for_different_attendees(self):
+        # 4 boys (early 2500 each). Boys 3+1 frees the cheapest boy (2500).
+        # A DIFFERENT boy reposted (R=1000). Because the discounts belong to
+        # different attendees they ADD UP: freed boy 2500 + reposter 1000 = 3500.
+        # The non-reposter-preferring tie-break frees a non-reposter, so the
+        # reposter keeps its own 1000.
         event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
         ok, message = self.db.set_event_fields(
             event_id,
@@ -326,9 +331,14 @@ class DatabaseTests(unittest.TestCase):
         self.assertAlmostEqual(reservation.group_discount_amount, 2500.0)
         self.assertEqual(reservation.discount_count, 1)
         self.assertAlmostEqual(reservation.discount_amount, 1000.0)
-        self.assertAlmostEqual(reservation.total_price, 7500.0)
+        # 2500 (freed boy) + 1000 (different boy reposted) = 3500 => 10000 - 3500
+        self.assertAlmostEqual(reservation.total_price, 6500.0)
 
-    def test_pending_reservation_uses_repost_discount_when_it_is_greater_than_group_offer(self):
+    def test_pending_reservation_same_gender_group_offer_and_repost_no_double_dip(self):
+        # 3 girls (early 2600 each), all reposted (R=1000), girls 2+1 enabled.
+        # Same-attendee overlap: the freed girl takes her price (2600) and her
+        # repost is wasted (no double-dip); the other 2 reposting girls each
+        # take R. Total = 2600 + 2*1000 = 4600.
         event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
         ok, message = self.db.set_event_fields(
             event_id,
@@ -362,7 +372,46 @@ class DatabaseTests(unittest.TestCase):
         self.assertAlmostEqual(reservation.group_discount_amount, 2600.0)
         self.assertEqual(reservation.discount_count, 3)
         self.assertAlmostEqual(reservation.discount_amount, 3000.0)
-        self.assertAlmostEqual(reservation.total_price, 4800.0)
+        # 2600 (freed girl) + 2*1000 (other reposters) = 4600 => 7800 - 4600
+        self.assertAlmostEqual(reservation.total_price, 3200.0)
+
+    def test_pending_reservation_boy_repost_plus_girls_group_offer_both_apply(self):
+        # User-reported scenario: 1 boy (reposted, R=1000) + 3 girls (2+1).
+        # Boy early 2500, girls early 2600 each => base 10300.
+        # Girls 2+1 frees one girl (2600). The boy's repost belongs to a
+        # DIFFERENT attendee, so BOTH apply: 2600 + 1000 = 3600.
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        ok, message = self.db.set_event_fields(
+            event_id,
+            {
+                "girls_group_offer_enabled": 1,
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+        self.assertTrue(ok, msg=message)
+
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=3,
+            attendees=["Boy One", "Girl Two", "Girl Three", "Girl Four"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("/uploads/repost-0.jpg", "external")},
+        )
+
+        self.assertAlmostEqual(reservation.base_total_price, 10300.0)
+        self.assertEqual(reservation.girls_group_free_count, 1)
+        self.assertEqual(reservation.boys_group_free_count, 0)
+        self.assertAlmostEqual(reservation.girls_group_discount_amount, 2600.0)
+        self.assertAlmostEqual(reservation.group_discount_amount, 2600.0)
+        self.assertEqual(reservation.discount_count, 1)
+        self.assertAlmostEqual(reservation.discount_amount, 1000.0)
+        # freed girl 2600 + boy repost 1000 = 3600 => 10300 - 3600
+        self.assertAlmostEqual(reservation.total_price, 6700.0)
 
     def test_admin_remove_discounted_guest_updates_discount_totals(self):
         event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)

@@ -704,7 +704,26 @@ function renderSummary() {
   const girlsGroupDiscountAmount = Number(quote && quote.girls_group_discount_amount ? quote.girls_group_discount_amount : 0);
   const boysGroupDiscountAmount = Number(quote && quote.boys_group_discount_amount ? quote.boys_group_discount_amount : 0);
   const groupDiscountAmount = Number(quote && quote.group_discount_amount ? quote.group_discount_amount : 0);
-  const appliedDiscountAmount = Math.max(groupDiscountAmount, discountAmount);
+  const boysCountForDiscount = Number(state.boys || 0);
+  let repostersBoys = 0;
+  let repostersGirls = 0;
+  selectedDiscounts.forEach((item) => {
+    if (Number(item.index) < boysCountForDiscount) {
+      repostersBoys += 1;
+    } else {
+      repostersGirls += 1;
+    }
+  });
+  const nonRepostersBoys = Math.max(0, boysCountForDiscount - repostersBoys);
+  const nonRepostersGirls = Math.max(0, Number(state.girls || 0) - repostersGirls);
+  const freedRepostersGirls = Math.max(0, girlsGroupFreeCount - nonRepostersGirls);
+  const freedRepostersBoys = Math.max(0, boysGroupFreeCount - nonRepostersBoys);
+  const appliedDiscountAmount = Math.min(
+    baseTotal,
+    groupDiscountAmount
+      + discountUnitAmount * (repostersGirls - freedRepostersGirls)
+      + discountUnitAmount * (repostersBoys - freedRepostersBoys),
+  );
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
@@ -1111,10 +1130,32 @@ function getPayload() {
     ? Number(state.quote.base_total_price !== undefined ? state.quote.base_total_price : (state.quote.total_price || 0))
     : 0;
   const groupDiscountAmount = quoteMatches ? Number(state.quote.group_discount_amount || 0) : 0;
+  const girlsGroupFreeCount = quoteMatches ? Number(state.quote.girls_group_free_count || 0) : 0;
+  const boysGroupFreeCount = quoteMatches ? Number(state.quote.boys_group_free_count || 0) : 0;
   const discountUnitAmount = repostDiscountEnabled(event) ? Number(event.repost_discount_amount || 0) : 0;
   const discountedAttendeeIndexes = discountSelections.filter((item) => item.checked).map((item) => item.index);
   const discountAmount = discountedAttendeeIndexes.length * discountUnitAmount;
-  const total = Math.max(0, baseTotal - Math.max(groupDiscountAmount, discountAmount));
+  const boysCountForDiscount = Number(state.boys || 0);
+  let repostersBoys = 0;
+  let repostersGirls = 0;
+  discountedAttendeeIndexes.forEach((index) => {
+    if (Number(index) < boysCountForDiscount) {
+      repostersBoys += 1;
+    } else {
+      repostersGirls += 1;
+    }
+  });
+  const nonRepostersBoys = Math.max(0, boysCountForDiscount - repostersBoys);
+  const nonRepostersGirls = Math.max(0, Number(state.girls || 0) - repostersGirls);
+  const freedRepostersGirls = Math.max(0, girlsGroupFreeCount - nonRepostersGirls);
+  const freedRepostersBoys = Math.max(0, boysGroupFreeCount - nonRepostersBoys);
+  const combinedDiscount = Math.min(
+    baseTotal,
+    groupDiscountAmount
+      + discountUnitAmount * (repostersGirls - freedRepostersGirls)
+      + discountUnitAmount * (repostersBoys - freedRepostersBoys),
+  );
+  const total = Math.max(0, baseTotal - combinedDiscount);
 
   return {
     type: 'booking_draft_v1',

@@ -896,7 +896,7 @@ def _notify_admins_pending_from_miniapp(reservation) -> None:
     buyer = "Unknown"
     if user:
         buyer = f"{user.name} {user.surname} (tg:{user.tg_id})"
-    applied_discount_amount = max(float(reservation.group_discount_amount or 0.0), float(reservation.discount_amount or 0.0))
+    applied_discount_amount = max(0.0, float(reservation.base_total_price or 0.0) - float(reservation.total_price or 0.0))
 
     caption = (
         "New payment proof pending review\n\n"
