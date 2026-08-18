@@ -807,6 +807,21 @@ def _event_payload(event) -> Dict[str, Any]:
     }
 
 
+def _payment_slot_title(event, slot: int) -> str:
+    """Return the configured title (or a default label) for a payment slot 1..3."""
+    try:
+        slot = int(slot or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not event or slot not in (1, 2, 3):
+        return ""
+    title = (getattr(event, f"payment{slot}_title", "") or "").strip()
+    url = (getattr(event, f"payment{slot}_url", "") or "").strip()
+    if not title and not url:
+        return ""
+    return title or f"Payment Option {slot}"
+
+
 def _tier_label(tier_key: str) -> str:
     labels = {
         "early": "Early Bird",
@@ -1571,6 +1586,8 @@ def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -
                 "boys": reservation.boys,
                 "girls": reservation.girls,
                 "total_price": reservation.total_price,
+                "payment_slot": int(getattr(reservation, "payment_slot", 0) or 0),
+                "payment_slot_title": _payment_slot_title(event, getattr(reservation, "payment_slot", 0)),
                 "attendees": [row["full_name"] for row in attendees],
                 "tickets": ticket_items,
             }
@@ -1658,6 +1675,20 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        configured_payment_slots = {
+            opt["slot"] for opt in _event_payload(event).get("payment_options", [])
+        }
+        raw_payment_slot = str(form.get("payment_slot", "")).strip()
+        try:
+            payment_slot = int(raw_payment_slot) if raw_payment_slot else 0
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="payment_slot must be an integer.") from exc
+        if configured_payment_slots:
+            if payment_slot not in configured_payment_slots:
+                raise HTTPException(status_code=400, detail="Select the payment option you used.")
+        else:
+            payment_slot = 0
+
         discounted_indexes_raw = str(form.get("discounted_attendee_indexes", "[]"))
         try:
             discounted_indexes_payload = json.loads(discounted_indexes_raw)
@@ -1714,6 +1745,7 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
                 payment_file_type=proof_type,
                 discounted_attendee_indexes=discounted_indexes,
                 repost_proofs_by_index=repost_proofs_by_index,
+                payment_slot=payment_slot,
             )
         except ValueError as exc:
             for upload_url in stored_upload_urls:
@@ -2260,6 +2292,10 @@ def _pending_reservation_item(row) -> Dict[str, Any]:
         "buyer_surname": data.get("buyer_surname"),
         "buyer_phone": data.get("buyer_phone"),
         "attendees": attendees,
+        "payment_slot": int(data.get("payment_slot") or 0),
+        "payment_slot_title": _payment_slot_title(
+            db.get_event(int(data.get("event_id") or 0)), int(data.get("payment_slot") or 0)
+        ),
         "payment_file_type": payment_file_type,
         "proof_url": proof_url,
         "proof_note": proof_note,
@@ -2272,6 +2308,34 @@ def admin_reservation_pending(request: Request, tg_id: Optional[int] = None) -> 
     _request_admin(request, tg_id)
     rows = db.list_pending_reservations(limit=100)
     return {"items": [_pending_reservation_item(row) for row in rows]}
+
+
+@app.get("/api/admin/payment/totals")
+def admin_payment_totals(request: Request, event_id: int, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    _request_admin(request, tg_id)
+    event = db.get_event(int(event_id))
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    totals_by_slot = {row["slot"]: row for row in db.payment_option_totals(int(event_id))}
+    items = []
+    for slot in (1, 2, 3):
+        title = (getattr(event, f"payment{slot}_title", "") or "").strip()
+        url = (getattr(event, f"payment{slot}_url", "") or "").strip()
+        if not title and not url:
+            continue
+        totals = totals_by_slot.get(slot, {})
+        items.append(
+            {
+                "slot": slot,
+                "title": title or f"Payment Option {slot}",
+                "url": url,
+                "approved_total": float(totals.get("approved_total") or 0.0),
+                "approved_count": int(totals.get("approved_count") or 0),
+                "pending_total": float(totals.get("pending_total") or 0.0),
+                "pending_count": int(totals.get("pending_count") or 0),
+            }
+        )
+    return {"event_id": int(event_id), "items": items}
 
 
 @app.post("/api/admin/reservation/approve")

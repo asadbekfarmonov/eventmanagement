@@ -62,6 +62,7 @@ class Reservation:
     reviewed_at: Optional[str]
     reviewed_by_tg_id: Optional[int]
     hold_applied: int
+    payment_slot: int = 0
 
 
 @dataclass

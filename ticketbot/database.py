@@ -167,6 +167,7 @@ class Database:
                 reviewed_at TEXT,
                 reviewed_by_tg_id INTEGER,
                 hold_applied INTEGER NOT NULL DEFAULT 1,
+                payment_slot INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id),
                 FOREIGN KEY (event_id) REFERENCES events(id)
             )
@@ -328,6 +329,8 @@ class Database:
             cursor.execute("ALTER TABLE reservations ADD COLUMN reviewed_by_tg_id INTEGER")
         if "hold_applied" not in reservation_cols:
             cursor.execute("ALTER TABLE reservations ADD COLUMN hold_applied INTEGER NOT NULL DEFAULT 1")
+        if "payment_slot" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN payment_slot INTEGER NOT NULL DEFAULT 0")
 
         cursor.execute("UPDATE reservations SET status = ? WHERE status = 'reserved'", (STATUS_APPROVED,))
 
@@ -1325,6 +1328,7 @@ class Database:
         payment_file_type: str,
         discounted_attendee_indexes: Optional[List[int]] = None,
         repost_proofs_by_index: Optional[Dict[int, Tuple[str, str]]] = None,
+        payment_slot: int = 0,
     ) -> Reservation:
         event = self.get_event(event_id)
         if not event:
@@ -1409,6 +1413,8 @@ class Database:
             insert_values["reviewed_by_tg_id"] = None
         if "hold_applied" in reservation_cols:
             insert_values["hold_applied"] = 1
+        if "payment_slot" in reservation_cols:
+            insert_values["payment_slot"] = int(payment_slot or 0)
 
         columns = list(insert_values.keys())
         placeholders = ", ".join(["?"] * len(columns))
@@ -1474,7 +1480,7 @@ class Database:
                    discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
-                   reviewed_at, reviewed_by_tg_id, hold_applied
+                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot
             FROM reservations
             WHERE id = ?
             """,
@@ -1493,7 +1499,7 @@ class Database:
                    discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
-                   reviewed_at, reviewed_by_tg_id, hold_applied
+                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot
             FROM reservations
             WHERE code = ?
             """,
@@ -1512,7 +1518,7 @@ class Database:
                    discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
-                   reviewed_at, reviewed_by_tg_id, hold_applied
+                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot
             FROM reservations
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -1854,6 +1860,8 @@ class Database:
             insert_values["reviewed_by_tg_id"] = admin_tg_id
         if "hold_applied" in reservation_cols:
             insert_values["hold_applied"] = 1
+        if "payment_slot" in reservation_cols:
+            insert_values["payment_slot"] = 0
 
         columns = list(insert_values.keys())
         placeholders = ", ".join(["?"] * len(columns))
@@ -2366,6 +2374,39 @@ class Database:
         cursor.execute(query, tuple(params))
         return cursor.fetchall()
 
+    def payment_option_totals(self, event_id: int) -> List[Dict[str, Any]]:
+        """Return per-slot money totals for an event's payment options (slots 1..3).
+
+        For each slot: approved_total/approved_count sum APPROVED reservations that
+        recorded that payment_slot; pending_total/pending_count do the same for
+        pending-review reservations.
+        """
+        cursor = self.conn.cursor()
+        results: List[Dict[str, Any]] = []
+        for slot in (1, 2, 3):
+            row = cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status = ? THEN total_price ELSE 0 END), 0) AS approved_total,
+                    COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS approved_count,
+                    COALESCE(SUM(CASE WHEN status = ? THEN total_price ELSE 0 END), 0) AS pending_total,
+                    COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS pending_count
+                FROM reservations
+                WHERE event_id = ? AND payment_slot = ?
+                """,
+                (STATUS_APPROVED, STATUS_APPROVED, STATUS_PENDING, STATUS_PENDING, int(event_id), slot),
+            ).fetchone()
+            results.append(
+                {
+                    "slot": slot,
+                    "approved_total": float(row["approved_total"] or 0.0),
+                    "approved_count": int(row["approved_count"] or 0),
+                    "pending_total": float(row["pending_total"] or 0.0),
+                    "pending_count": int(row["pending_count"] or 0),
+                }
+            )
+        return results
+
     def list_pending_reservations(self, limit: int = 100) -> List[sqlite3.Row]:
         query = """
             SELECT
@@ -2382,6 +2423,7 @@ class Database:
                 r.created_at,
                 r.payment_file_id,
                 r.payment_file_type,
+                r.payment_slot,
                 e.id AS event_id,
                 e.title AS event_title,
                 e.event_datetime,

@@ -336,6 +336,16 @@
         </div>
         <p class="hint">Pending payments awaiting approval (oldest first).</p>
         <div id="admin-reviews-list" class="admin-cards"></div>
+        <div class="panel-head">
+          <h3>Money by payment option</h3>
+          <button id="admin-pay-totals-refresh" type="button">Refresh</button>
+        </div>
+        <p class="hint">Approved money collected per payment option for the selected event.</p>
+        <label>
+          Event
+          <select id="admin-pay-totals-event"></select>
+        </label>
+        <div id="admin-pay-totals-list" class="admin-cards"></div>
       </section>
 
       <section class="admin-block admin-section" id="admin-section-events" data-admin-section="events" role="tabpanel" aria-label="Events" hidden>

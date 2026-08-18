@@ -66,6 +66,9 @@ const adminEl = {
   logout: document.getElementById('admin-logout'),
   reviewsRefresh: document.getElementById('admin-reviews-refresh'),
   reviewsList: document.getElementById('admin-reviews-list'),
+  payTotalsRefresh: document.getElementById('admin-pay-totals-refresh'),
+  payTotalsEvent: document.getElementById('admin-pay-totals-event'),
+  payTotalsList: document.getElementById('admin-pay-totals-list'),
   ident: document.getElementById('admin-ident'),
   status: document.getElementById('admin-status'),
   tabs: Array.from(document.querySelectorAll('.admin-tab')),
@@ -132,6 +135,7 @@ const state = {
   selectedEventId: null,
   boys: 0,
   girls: 0,
+  paymentSlot: null,
   userProfile: null,
   quote: null,
   quoteSeq: 0,
@@ -547,6 +551,7 @@ function buildBookingDraft() {
     eventId: event.id,
     boys: state.boys,
     girls: state.girls,
+    paymentSlot: state.paymentSlot || null,
     attendees,
     termsAccepted: termsAccepted(),
   };
@@ -599,6 +604,12 @@ function restoreBookingDraft() {
   if (girlsEl) girlsEl.value = state.girls;
   // selectEvent marks the active card, rebuilds attendee rows, and refreshes the quote.
   selectEvent(eventId);
+  // Restore the chosen payment option only if it is still a configured slot.
+  const restoredSlot = Number(draft.paymentSlot || 0);
+  const restoredEvent = state.events.find((event) => Number(event.id) === eventId);
+  const slotIsValid = restoredSlot > 0
+    && eventPaymentOptions(restoredEvent).some((opt) => Number(opt.slot || 0) === restoredSlot);
+  state.paymentSlot = slotIsValid ? restoredSlot : null;
   const rows = attendeeRows();
   const attendees = Array.isArray(draft.attendees) ? draft.attendees : [];
   rows.forEach((row, index) => {
@@ -622,28 +633,50 @@ function restoreBookingDraft() {
   return true;
 }
 
+function eventPaymentOptions(event) {
+  return Array.isArray(event && event.payment_options) ? event.payment_options : [];
+}
+
+function paymentSelectionRequired(event) {
+  return eventPaymentOptions(event).length > 0;
+}
+
+function paymentSelectionSatisfied(event) {
+  if (!paymentSelectionRequired(event)) return true;
+  const selected = Number(state.paymentSlot || 0);
+  return eventPaymentOptions(event).some((opt) => Number(opt.slot || 0) === selected);
+}
+
 function paymentOptionsHtml(event) {
-  const options = Array.isArray(event && event.payment_options) ? event.payment_options : [];
+  const options = eventPaymentOptions(event);
   if (!options.length) return '';
   const isLinkable = (value) => /^(https?:\/\/|tel:|mailto:)/i.test(String(value || '').trim());
+  const selectedSlot = Number(state.paymentSlot || 0);
   const rows = options.map((opt) => {
+    const slot = Number(opt.slot || 0);
     const rawUrl = (opt.url || '').trim();
     const title = escapeHtml(opt.title || 'Payment option');
     const url = escapeHtml(rawUrl);
-    const valueHtml = isLinkable(rawUrl)
-      ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`
-      : `<span class="payment-plain">${title}: ${url}</span>`;
+    const isSelected = slot > 0 && slot === selectedSlot;
+    const openHtml = isLinkable(rawUrl)
+      ? `<a href="${url}" target="_blank" rel="noopener noreferrer">Open</a>`
+      : `<span class="payment-plain">${url}</span>`;
     return [
-      '<div class="payment-link-row">',
-      valueHtml,
+      `<div class="payment-choice-row${isSelected ? ' selected' : ''}">`,
+      `<button type="button" class="payment-choice" data-slot="${slot}" aria-pressed="${isSelected ? 'true' : 'false'}">${title}</button>`,
+      openHtml,
       `<button type="button" class="copy-pay-link" data-url="${url}">Copy</button>`,
       '</div>',
     ].join('');
   });
+  const hint = paymentSelectionSatisfied(event)
+    ? ''
+    : '<p class="hint error payment-choice-hint">Select the payment option you used</p>';
   return [
     '<div class="payment-links">',
     '<p class="payment-links-title">Payment options</p>',
     ...rows,
+    hint,
     '</div>',
   ].join('');
 }
@@ -834,6 +867,7 @@ function renderSummary() {
     && termsAccepted()
     && missingRepostProofs.length === 0
     && hasUserIdentity()
+    && paymentSelectionSatisfied(event)
   );
 }
 
@@ -978,6 +1012,10 @@ function rebuildAttendees() {
 }
 
 function selectEvent(eventId) {
+  if (Number(state.selectedEventId) !== Number(eventId)) {
+    // Switching events clears any previously chosen payment option.
+    state.paymentSlot = null;
+  }
   state.selectedEventId = eventId;
 
   for (const card of eventsListEl.querySelectorAll('.event-card')) {
@@ -1233,6 +1271,11 @@ async function submitDraft() {
     setStatus('Accept the booking terms before booking.', true);
     return;
   }
+  const bookingEvent = selectedEvent();
+  if (!paymentSelectionSatisfied(bookingEvent)) {
+    setStatus('Select the payment option you used.', true);
+    return;
+  }
 
   const formData = new FormData();
   if (tgId) formData.set('tg_id', String(tgId));
@@ -1242,6 +1285,9 @@ async function submitDraft() {
   formData.set('attendees', JSON.stringify(payload.attendees));
   formData.set('discounted_attendee_indexes', JSON.stringify(payload.discounted_attendee_indexes || []));
   formData.set('terms_accepted', 'true');
+  if (paymentSelectionRequired(bookingEvent) && Number(state.paymentSlot || 0) > 0) {
+    formData.set('payment_slot', String(Number(state.paymentSlot)));
+  }
   formData.set('file', paymentFile);
   for (const item of discountSelections) {
     if (item.checked && item.file) {
@@ -1268,6 +1314,7 @@ async function submitDraft() {
     if (termsAcceptedEl) termsAcceptedEl.checked = false;
     state.boys = 0;
     state.girls = 0;
+    state.paymentSlot = null;
     state.quote = null;
     state.quoteLoading = false;
     state.quoteSeq += 1;
@@ -2021,6 +2068,7 @@ function renderAdminReviews() {
           });
           setAdminStatus(res.message || 'Reservation approved.');
           await Promise.all([loadAdminReviews(), loadAdminGuests(), loadAdminEvents()]);
+          await refreshAdminPaymentTotals().catch(() => {});
         } catch (err) {
           setAdminStatus(apiErrorText(err, 'Failed to approve reservation.'), true);
         }
@@ -2062,11 +2110,86 @@ async function loadAdminReviews() {
   renderAdminReviews();
 }
 
+function renderAdminPaymentTotals(data) {
+  if (!adminEl.payTotalsList) return;
+  const items = data && Array.isArray(data.items) ? data.items : [];
+  if (!items.length) {
+    adminEl.payTotalsList.innerHTML = '<p class="hint">This event has no payment options configured.</p>';
+    return;
+  }
+  adminEl.payTotalsList.innerHTML = items.map((item) => {
+    const slot = Number((item && item.slot) || 0);
+    const title = escapeHtml((item && item.title) || `Payment Option ${slot}`);
+    const approvedTotal = money(item && item.approved_total);
+    const approvedCount = Number((item && item.approved_count) || 0);
+    const pendingTotal = money(item && item.pending_total);
+    const pendingCount = Number((item && item.pending_count) || 0);
+    return `
+      <div class="admin-card admin-pay-total" data-slot="${slot}">
+        <p class="admin-card-title">${title}</p>
+        <p class="admin-card-meta">Approved: ${approvedTotal} (${approvedCount})</p>
+        <p class="admin-card-meta">Pending: ${pendingTotal} (${pendingCount})</p>
+      </div>
+    `;
+  }).join('');
+}
+
+async function refreshAdminPaymentTotals() {
+  if (!adminEl.payTotalsEvent || !adminEl.payTotalsList) return;
+  const eventId = Number(adminEl.payTotalsEvent.value || 0);
+  if (!eventId) {
+    adminEl.payTotalsList.innerHTML = '<p class="hint">Select an event to see its payment totals.</p>';
+    return;
+  }
+  try {
+    const data = await adminGet('/api/admin/payment/totals', { event_id: eventId });
+    renderAdminPaymentTotals(data);
+  } catch (err) {
+    adminEl.payTotalsList.innerHTML = `<p class="hint error">${escapeHtml(apiErrorText(err, 'Failed to load payment totals.'))}</p>`;
+  }
+}
+
+async function loadAdminPaymentTotals() {
+  if (!adminEl.payTotalsEvent) return;
+  if (!adminState.events.length) {
+    try {
+      await loadAdminEvents();
+    } catch (_err) {
+      // Ignore: the select will simply be empty.
+    }
+  }
+  populateEventSelect(adminEl.payTotalsEvent, adminState.events);
+  if (!adminState.events.length) {
+    if (adminEl.payTotalsList) {
+      adminEl.payTotalsList.innerHTML = '<p class="hint">No events available.</p>';
+    }
+    return;
+  }
+  await refreshAdminPaymentTotals();
+}
+
 function renderAdminCarousel(items) {
   if (!adminEl.carouselList) return;
   const list = Array.isArray(items) ? items : [];
   if (!list.length) {
-    adminEl.carouselList.innerHTML = '<p class="hint">No carousel photos yet. The homepage shows the default photos.</p>';
+    // No custom photos configured: show the 3 default homepage images as read-only previews.
+    const defaults = [
+      '/static/main-carousel-1.jpg?v=20260818b',
+      '/static/main-carousel-2.jpg?v=20260816a',
+      '/static/main-carousel-3.jpg?v=20260818b',
+    ];
+    const cards = defaults.map((src) => {
+      const url = escapeHtml(src);
+      return `
+      <div class="admin-carousel-default">
+        <img src="${url}" alt="Default homepage photo" loading="lazy" />
+      </div>
+    `;
+    }).join('');
+    adminEl.carouselList.innerHTML = [
+      '<p class="hint">These are the default homepage photos. Upload your own below to replace them.</p>',
+      cards,
+    ].join('');
     return;
   }
   adminEl.carouselList.innerHTML = list.map((item) => {
@@ -2824,6 +2947,17 @@ async function loadHomepageCarousel() {
 }
 if (summaryEl) {
   summaryEl.addEventListener('click', async (event) => {
+    const choice = event.target && event.target.closest ? event.target.closest('button.payment-choice') : null;
+    if (choice) {
+      event.preventDefault();
+      const slot = Number(choice.getAttribute('data-slot') || 0);
+      if (slot > 0) {
+        state.paymentSlot = slot;
+        saveBookingDraft();
+        renderSummary();
+      }
+      return;
+    }
     const target = event.target && event.target.closest ? event.target.closest('button.copy-pay-link') : null;
     if (!target) return;
     event.preventDefault();
@@ -2886,11 +3020,22 @@ if (adminEl.tabs && adminEl.tabs.length) {
       setAdminSection(key);
       if (key === 'payments') {
         loadAdminReviews().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load payments.'), true));
+        loadAdminPaymentTotals().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load payment totals.'), true));
       } else if (key === 'carousel') {
         loadAdminCarousel().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load carousel.'), true));
       }
     });
   }
+}
+if (adminEl.payTotalsEvent) {
+  adminEl.payTotalsEvent.addEventListener('change', () => {
+    refreshAdminPaymentTotals().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load payment totals.'), true));
+  });
+}
+if (adminEl.payTotalsRefresh) {
+  adminEl.payTotalsRefresh.addEventListener('click', () => {
+    loadAdminPaymentTotals().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to refresh payment totals.'), true));
+  });
 }
 if (adminEl.carouselAdd) {
   adminEl.carouselAdd.addEventListener('click', addAdminCarouselPhoto);

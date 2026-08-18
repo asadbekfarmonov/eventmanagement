@@ -1489,3 +1489,65 @@ input[type="file"]::file-selector-button {
   border-radius: 8px;
   border: 1px solid var(--line);
 }
+
+.payment-choice-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.payment-choice {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 9px 12px;
+  border: 1px solid rgba(0, 102, 204, 0.35);
+  border-radius: 12px;
+  background: rgba(0, 163, 255, 0.06);
+  color: #d7f4ff;
+  cursor: pointer;
+}
+
+.payment-choice[aria-pressed="true"] {
+  border-color: #8adeff;
+  background: rgba(0, 163, 255, 0.28);
+  color: #ffffff;
+}
+
+.payment-choice-row.selected {
+  outline: 1px solid rgba(138, 222, 255, 0.4);
+  border-radius: 12px;
+}
+
+.payment-choice-hint {
+  margin-top: 8px;
+}
+
+.admin-carousel-default {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--paper-soft);
+}
+
+.admin-carousel-default img {
+  display: block;
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.admin-pay-total {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

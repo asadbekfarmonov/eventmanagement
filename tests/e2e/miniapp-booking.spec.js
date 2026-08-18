@@ -1098,3 +1098,123 @@ test('mixed group offer + repost: displayed Final total matches server-charged t
   const card = page.locator('#tickets-list .admin-card').filter({ hasText: code });
   await expect(card).toContainText('Boys: 1 | Girls: 3 | Total: 6500.00');
 });
+
+async function createPaymentOptionEvent(page, title) {
+  const resp = await page.request.post('/api/admin/event/create_simple', {
+    data: {
+      tg_id: 7164876915,
+      title,
+      caption: 'Payment options E2E',
+      early_boy: 2500,
+      early_girl: 2500,
+      early_qty: 20,
+      tier1_boy: 3500,
+      tier1_girl: 3500,
+      tier1_qty: 0,
+      tier2_boy: 4000,
+      tier2_girl: 4000,
+      tier2_qty: 0,
+      payment1_title: 'Card Transfer',
+      payment1_url: 'https://pay.example/card',
+      payment2_title: 'Revolut',
+      payment2_url: 'https://pay.example/revolut',
+    },
+  });
+  expect(resp.ok()).toBeTruthy();
+  const body = await resp.json();
+  return body.event.id;
+}
+
+test('payment option is required, persists across reload, and admin money report sums approved bookings', async ({ page }) => {
+  const title = 'Payment Options E2E';
+  await createPaymentOptionEvent(page, title);
+
+  // Book as a normal buyer on the event that has payment options.
+  await page.goto('/?tg_id=511308234');
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await selectEventByTitle(page, title);
+
+  await page.locator('#boys').fill('1');
+  await expect(page.locator('.attendee-row')).toHaveCount(1);
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('Pay');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Buyer');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await page.locator('#terms-accepted').check();
+
+  // Submit stays blocked until a payment option is chosen.
+  await expect(page.locator('.payment-choice-hint')).toBeVisible();
+  await expect(page.locator('#submit-booking')).toBeDisabled();
+
+  const firstChoice = page.locator('#summary .payment-choice').first();
+  await firstChoice.click();
+  await expect(firstChoice).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.payment-choice-hint')).toHaveCount(0);
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+
+  // The chosen option survives a full reload (restored from the session draft).
+  await page.reload();
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#summary .payment-choice').first()).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#terms-accepted')).toBeChecked();
+
+  // The proof file cannot be restored after a reload; re-attach then submit.
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+  await page.locator('#submit-booking').click();
+  await expect(page.locator('#status')).toContainText('Booking sent for review. Code:');
+
+  // Resolve the booking code and confirm the stored slot, then approve via API.
+  const statusText = await page.locator('#status').innerText();
+  const code = statusText.split('Code:')[1].trim().split(/\s+/)[0];
+  const pending = await page.request.get('/api/admin/reservation/pending?tg_id=7164876915');
+  expect(pending.ok()).toBeTruthy();
+  const pendingBody = await pending.json();
+  const match = pendingBody.items.find((item) => item.code === code);
+  expect(match).toBeTruthy();
+  expect(match.payment_slot).toBe(1);
+  expect(match.payment_slot_title).toBe('Card Transfer');
+  const approve = await page.request.post('/api/admin/reservation/approve', {
+    data: { tg_id: 7164876915, reservation_id: match.reservation_id },
+  });
+  expect(approve.ok()).toBeTruthy();
+
+  // The admin 'Money by payment option' panel shows the approved total for that option.
+  await page.goto('/?tg_id=7164876915&open_admin=1');
+  await expect(page.locator('#admin-area')).toBeVisible();
+  await page.getByRole('tab', { name: 'Payments' }).click();
+  const totalsValue = await page.locator('#admin-pay-totals-event').evaluate((select, targetTitle) => {
+    const option = Array.from(select.options).find((item) => item.textContent && item.textContent.includes(targetTitle));
+    return option ? option.value : '';
+  }, title);
+  expect(totalsValue).not.toBe('');
+  await page.locator('#admin-pay-totals-event').selectOption(totalsValue);
+  await page.locator('#admin-pay-totals-refresh').click();
+  const totalCard = page.locator('#admin-pay-totals-list .admin-pay-total').filter({ hasText: 'Card Transfer' });
+  await expect(totalCard).toContainText('Approved: 2500.00 (1)');
+});
+
+test('admin Homepage shows 3 read-only default images when no custom photos, and add/delete still works', async ({ page }) => {
+  await openAdmin(page);
+  await page.getByRole('tab', { name: 'Homepage' }).click();
+  await expect(page.locator('#admin-section-carousel')).toBeVisible();
+
+  // With no custom rows, the panel shows the 3 default previews (read-only) and no editable items.
+  await expect(page.locator('#admin-carousel-list .admin-carousel-default')).toHaveCount(3);
+  await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(0);
+  await expect(page.locator('#admin-carousel-list .admin-carousel-default img')).toHaveCount(3);
+
+  // Adding a custom photo replaces the defaults with a single editable item.
+  await page.setInputFiles('#admin-carousel-file', {
+    name: 'carousel.png',
+    mimeType: 'image/png',
+    buffer: proofFile.buffer,
+  });
+  await page.locator('#admin-carousel-add').click();
+  await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(1);
+  await expect(page.locator('#admin-carousel-list .admin-carousel-default')).toHaveCount(0);
+
+  // Deleting the custom photo reverts to the 3 default previews.
+  await page.locator('#admin-carousel-list .admin-carousel-item button.admin-carousel-delete').first().click();
+  await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(0);
+  await expect(page.locator('#admin-carousel-list .admin-carousel-default')).toHaveCount(3);
+});
