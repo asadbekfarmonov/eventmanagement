@@ -718,3 +718,97 @@ test('website session persists across a page reload', async ({ page }) => {
   // The registration/edit form is not shown because we are still logged in.
   await expect(page.locator('#account-name')).toBeHidden();
 });
+
+const bannerPng = {
+  name: 'banner.png',
+  mimeType: 'image/png',
+  buffer: Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sW7xwAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+};
+
+test('admin uploads an event banner + maps link; users see the banner, embedded map and Open-in-Maps link', async ({ page }) => {
+  const mapsUrl = 'https://maps.google.com/?q=Budapest';
+
+  // Admin: attach a banner and a Google Maps link to the seeded Playwright Event.
+  await openAdmin(page);
+  await selectAdminEventByTitle(page, 'Playwright Event');
+  await page.locator('#admin-ev-maps').fill(mapsUrl);
+  await page.locator('#admin-ev-photo').setInputFiles(bannerPng);
+  await page.locator('#admin-event-save').click();
+  await expect(page.locator('#admin-status')).toContainText(/banner uploaded/i, { timeout: 15000 });
+
+  // User booking view: banner image, embedded Google Map iframe and the text link.
+  await openBooking(page);
+  await selectEventByTitle(page, 'Playwright Event');
+
+  const summaryBanner = page.locator('#summary .summary-banner');
+  await expect(summaryBanner).toHaveCount(1);
+  await expect(summaryBanner).toBeVisible();
+  await expect(summaryBanner).toHaveAttribute('src', /\/event-media\//);
+
+  const mapFrame = page.locator('#summary .event-map iframe');
+  await expect(mapFrame).toHaveCount(1);
+  const src = await mapFrame.getAttribute('src');
+  expect(src).toContain('google.com/maps');
+  expect(src).toContain('output=embed');
+
+  const mapLink = page.locator('#summary .event-map-link');
+  await expect(mapLink).toHaveText('Open in Google Maps');
+  await expect(mapLink).toHaveAttribute('href', mapsUrl);
+  await expect(mapLink).toHaveAttribute('target', '_blank');
+
+  // The event with a banner now renders exactly one image on its upcoming card,
+  // while seeded no-photo events keep rendering zero images (existing e2e stays green).
+  await page.goto('/?tg_id=511308234');
+  await expect(page.locator('#main-panel')).toBeVisible();
+  const upcomingCards = page.locator('#upcoming-events-list .upcoming-card');
+  await expect(upcomingCards).toHaveCount(2);
+
+  const playwrightCard = upcomingCards.filter({ hasText: 'Playwright Event' }).first();
+  await expect(playwrightCard.locator('img.upcoming-banner')).toHaveCount(1);
+
+  const discountCard = upcomingCards.filter({ hasText: 'Discount Event' }).first();
+  await expect(discountCard.locator('img')).toHaveCount(0);
+});
+
+test('event map is not rendered for a non-https maps_url (no dangerous href)', async ({ page }) => {
+  await page.route('**/api/events', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 5551,
+            title: 'Bad Map Event',
+            event_datetime: '2026-05-05 20:00',
+            location: 'Budapest',
+            caption: 'x',
+            photo_file_id: '',
+            photo_url: '',
+            maps_url: 'javascript:alert(1)',
+            repost_discount_enabled: 0,
+            repost_discount_amount: 0,
+            girls_group_offer_enabled: 0,
+            boys_group_offer_enabled: 0,
+            tier: { key: 'early', name: 'Early Bird', boy_price: 2500, girl_price: 3000 },
+            payment_options: [],
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.goto('/?tg_id=511308234');
+  await page.getByRole('tab', { name: 'Book' }).click();
+  const card = page.locator('#events-list .event-card').filter({ hasText: 'Bad Map Event' }).first();
+  await expect(card).toBeVisible();
+  await card.click();
+
+  // A non-https maps_url must produce neither an embedded map nor an Open-in-Maps link.
+  await expect(page.locator('#summary .event-map iframe')).toHaveCount(0);
+  await expect(page.locator('#summary .event-map-link')).toHaveCount(0);
+  await expect(page.locator('#summary a[href^="javascript:"]')).toHaveCount(0);
+});

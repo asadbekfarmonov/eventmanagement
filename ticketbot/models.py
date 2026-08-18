@@ -30,6 +30,8 @@ class Event:
     payment2_url: str = ""
     payment3_title: str = ""
     payment3_url: str = ""
+    photo_url: str = ""
+    maps_url: str = ""
 
 
 @dataclass

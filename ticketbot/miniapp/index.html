@@ -360,6 +360,12 @@
             placeholder="Write full event info and details here..."
           ></textarea>
         </label>
+        <label>
+          Event banner (JPG or PNG)
+          <input id="admin-ev-photo" type="file" accept="image/png,image/jpeg" />
+        </label>
+        <img id="admin-ev-photo-current" class="admin-banner-preview" alt="Current event banner" hidden />
+        <label>Google Maps link<input id="admin-ev-maps" type="url" placeholder="https://maps.google.com/..." /></label>
         <div class="admin-grid2">
           <label>Pay 1 Title<input id="admin-ev-pay1-title" type="text" placeholder="Revolut" /></label>
           <label>Pay 1 Link<input id="admin-ev-pay1-url" type="url" placeholder="https://..." /></label>

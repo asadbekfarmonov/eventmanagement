@@ -46,6 +46,12 @@ ADMIN_WEB_PASSWORD = os.getenv("ADMIN_WEB_PASSWORD", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
+# Event banners are PUBLIC + PERMANENT (unlike signed/expiring payment proofs), so
+# they live in a dedicated directory on the Railway /data volume and are served
+# unsigned via GET /event-media/{filename}.
+DEFAULT_EVENT_MEDIA_DIR = str(Path(DATABASE_PATH).resolve().parent / "event_media")
+EVENT_MEDIA_DIR = os.getenv("EVENT_MEDIA_DIR", DEFAULT_EVENT_MEDIA_DIR)
+os.makedirs(EVENT_MEDIA_DIR, exist_ok=True)
 ALLOW_TG_ID_FALLBACK = os.getenv("MINIAPP_ALLOW_TG_ID_FALLBACK", "0").strip().lower() in {
     "1",
     "true",
@@ -160,7 +166,7 @@ async def add_security_headers(request: Request, call_next):
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
         "connect-src 'self'; "
-        "frame-src https://accounts.google.com; "
+        "frame-src https://accounts.google.com https://www.google.com https://maps.google.com; "
         "frame-ancestors https://web.telegram.org https://*.telegram.org;",
     )
     path = request.url.path
@@ -625,6 +631,58 @@ def _safe_upload_path(filename: str) -> Path:
     return file_path
 
 
+def _safe_event_media_path(filename: str) -> Path:
+    """Path-traversal-safe resolution for public event banners in EVENT_MEDIA_DIR."""
+    clean_name = Path(unquote(filename or "")).name
+    if not clean_name or clean_name != filename or clean_name in {".", ".."}:
+        raise HTTPException(status_code=404, detail="Event media not found.")
+    file_path = (Path(EVENT_MEDIA_DIR) / clean_name).resolve()
+    media_root = Path(EVENT_MEDIA_DIR).resolve()
+    if media_root not in file_path.parents:
+        raise HTTPException(status_code=404, detail="Event media not found.")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Event media not found.")
+    return file_path
+
+
+def _event_media_filename(photo_url: str) -> Optional[str]:
+    """Extract the stored filename from a '/event-media/<name>' banner URL."""
+    raw = (photo_url or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    path = parsed.path if parsed.scheme else raw
+    if not path.startswith("/event-media/"):
+        return None
+    filename = unquote(Path(path).name)
+    if not filename or filename in {".", ".."}:
+        return None
+    return filename
+
+
+def _delete_event_media(photo_url: str) -> None:
+    """Best-effort removal of a stored public banner file."""
+    filename = _event_media_filename(photo_url)
+    if not filename:
+        return
+    try:
+        _safe_event_media_path(filename).unlink()
+    except HTTPException:
+        return
+    except OSError:
+        return
+
+
+def _absolute_media_url(url: str) -> str:
+    """Return an absolute URL for a stored '/event-media/...' path when possible."""
+    value = (url or "").strip()
+    if not value:
+        return ""
+    if value.startswith("/") and WEB_APP_URL:
+        return f"{WEB_APP_URL}{value}"
+    return value
+
+
 def _pending_status(status: str) -> bool:
     normalized = (status or "").strip().lower()
     return normalized in {
@@ -730,6 +788,8 @@ def _event_payload(event) -> Dict[str, Any]:
         "location": event.location,
         "caption": event.caption,
         "photo_file_id": event.photo_file_id,
+        "photo_url": _absolute_media_url(getattr(event, "photo_url", "") or ""),
+        "maps_url": (getattr(event, "maps_url", "") or "").strip(),
         "repost_discount_enabled": event.repost_discount_enabled,
         "repost_discount_amount": event.repost_discount_amount,
         "girls_group_offer_enabled": event.girls_group_offer_enabled,
@@ -1005,6 +1065,7 @@ class AdminEventCreateSimpleRequest(BaseModel):
     payment2_url: str = ""
     payment3_title: str = ""
     payment3_url: str = ""
+    maps_url: str = ""
     location: Optional[str] = None
     event_datetime: Optional[str] = None
 
@@ -1219,6 +1280,26 @@ def signed_upload(filename: str, expires: int, token: str) -> FileResponse:
         media_type=media_type,
         headers={
             "Cache-Control": "private, max-age=300",
+            "Content-Disposition": f'inline; filename="{file_path.name}"',
+        },
+    )
+
+
+@app.get("/event-media/{filename}")
+def event_media(filename: str) -> FileResponse:
+    # Public + permanent event banners. Unsigned by design (unlike payment proofs).
+    file_path = _safe_event_media_path(filename)
+    suffix = file_path.suffix.lower()
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+    }.get(suffix, "application/octet-stream")
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
             "Content-Disposition": f'inline; filename="{file_path.name}"',
         },
     )
@@ -1917,9 +1998,14 @@ def admin_event_update(request: Request, payload: AdminEventUpdateRequest) -> Di
 @app.post("/api/admin/event/delete")
 def admin_event_delete(request: Request, payload: AdminEventDeleteRequest) -> Dict[str, Any]:
     verified_tg_id = _request_admin(request, payload.tg_id)
+    existing = db.get_event(payload.event_id)
+    photo_url = getattr(existing, "photo_url", "") if existing else ""
     ok, message, deleted = db.delete_event(event_id=payload.event_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
+    # Best-effort removal of the public banner file for the deleted event.
+    if photo_url:
+        _delete_event_media(photo_url)
     return {"ok": True, "message": message, "deleted": deleted}
 
 
@@ -1939,6 +2025,10 @@ def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleR
         cleaned = (field_value or "").strip()
         if cleaned and not cleaned.lower().startswith("https://"):
             raise HTTPException(status_code=400, detail=f"{field_name} must start with https://")
+
+    maps_url = (payload.maps_url or "").strip()
+    if maps_url and not maps_url.lower().startswith("https://"):
+        raise HTTPException(status_code=400, detail="maps_url must start with https://")
 
     total_qty = int(payload.early_qty) + int(payload.tier1_qty) + int(payload.tier2_qty)
     if total_qty <= 0:
@@ -1984,6 +2074,7 @@ def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleR
         payment2_url=(payload.payment2_url or "").strip(),
         payment3_title=(payload.payment3_title or "").strip(),
         payment3_url=(payload.payment3_url or "").strip(),
+        maps_url=maps_url,
     )
     event = db.get_event(event_id)
     return {
@@ -1991,6 +2082,62 @@ def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleR
         "message": "Event created.",
         "event": event.__dict__ if event else None,
     }
+
+
+@app.post("/api/admin/event/photo")
+async def admin_event_photo(
+    request: Request,
+    tg_id: Optional[int] = Form(None),
+    event_id: int = Form(...),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    _request_admin(request, tg_id)
+
+    event = db.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found.")
+
+    mime = (file.content_type or "").lower()
+    if mime not in {"image/jpeg", "image/png"}:
+        raise HTTPException(status_code=400, detail="Only JPG or PNG is accepted for the event banner.")
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded banner is empty.")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large. Max allowed size is {UPLOAD_MAX_MB:.1f} MB.",
+            )
+    finally:
+        await file.close()
+
+    actual_mime = _detect_upload_mime(content)
+    if actual_mime not in {"image/jpeg", "image/png"}:
+        raise HTTPException(status_code=400, detail="Uploaded banner is not a valid JPG or PNG.")
+    if actual_mime != mime:
+        raise HTTPException(status_code=400, detail="Uploaded banner type does not match the file content.")
+
+    suffix = {"image/png": ".png", "image/jpeg": ".jpg"}[actual_mime]
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    stored_path = Path(EVENT_MEDIA_DIR) / stored_name
+    try:
+        stored_path.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail=f"Banner storage error: {exc}") from exc
+
+    # Remove the previous banner (if any) once the new one is safely stored.
+    old_photo_url = getattr(event, "photo_url", "") or ""
+    new_photo_url = f"/event-media/{stored_name}"
+    ok, message = db.set_event_photo(event_id, new_photo_url)
+    if not ok:
+        _delete_event_media(new_photo_url)
+        raise HTTPException(status_code=400, detail=message)
+    if old_photo_url and old_photo_url != new_photo_url:
+        _delete_event_media(old_photo_url)
+
+    updated = db.get_event(event_id)
+    return {"ok": True, "message": "Event banner updated.", "event": updated.__dict__ if updated else None}
 
 
 def _pending_reservation_item(row) -> Dict[str, Any]:

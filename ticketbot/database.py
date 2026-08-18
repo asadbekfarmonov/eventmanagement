@@ -113,7 +113,9 @@ class Database:
                 payment2_title TEXT NOT NULL DEFAULT '',
                 payment2_url TEXT NOT NULL DEFAULT '',
                 payment3_title TEXT NOT NULL DEFAULT '',
-                payment3_url TEXT NOT NULL DEFAULT ''
+                payment3_url TEXT NOT NULL DEFAULT '',
+                photo_url TEXT NOT NULL DEFAULT '',
+                maps_url TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -260,6 +262,10 @@ class Database:
             cursor.execute("ALTER TABLE events ADD COLUMN payment3_title TEXT NOT NULL DEFAULT ''")
         if "payment3_url" not in event_cols:
             cursor.execute("ALTER TABLE events ADD COLUMN payment3_url TEXT NOT NULL DEFAULT ''")
+        if "photo_url" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN photo_url TEXT NOT NULL DEFAULT ''")
+        if "maps_url" not in event_cols:
+            cursor.execute("ALTER TABLE events ADD COLUMN maps_url TEXT NOT NULL DEFAULT ''")
 
         reservation_cols = self._table_columns("reservations")
         if "payment_file_id" not in reservation_cols:
@@ -1037,7 +1043,8 @@ class Database:
                    girls_group_offer_enabled, boys_group_offer_enabled,
                    payment1_title, payment1_url,
                    payment2_title, payment2_url,
-                   payment3_title, payment3_url
+                   payment3_title, payment3_url,
+                   photo_url, maps_url
             FROM events
             WHERE status = 'open'
             ORDER BY event_datetime
@@ -1057,7 +1064,8 @@ class Database:
                    girls_group_offer_enabled, boys_group_offer_enabled,
                    payment1_title, payment1_url,
                    payment2_title, payment2_url,
-                   payment3_title, payment3_url
+                   payment3_title, payment3_url,
+                   photo_url, maps_url
             FROM events
             WHERE id = ?
             """,
@@ -1093,6 +1101,8 @@ class Database:
         payment2_url: str = "",
         payment3_title: str = "",
         payment3_url: str = "",
+        photo_url: str = "",
+        maps_url: str = "",
     ) -> int:
         event_cols = self._table_columns("events")
         insert_values = {
@@ -1121,6 +1131,8 @@ class Database:
             "payment2_url": (payment2_url or "").strip(),
             "payment3_title": (payment3_title or "").strip(),
             "payment3_url": (payment3_url or "").strip(),
+            "photo_url": (photo_url or "").strip(),
+            "maps_url": (maps_url or "").strip(),
         }
 
         # Backward compatibility for legacy schema variants.
@@ -2403,6 +2415,7 @@ class Database:
             "payment2_url": "payment2_url",
             "payment3_title": "payment3_title",
             "payment3_url": "payment3_url",
+            "maps_url": "maps_url",
         }
         if not updates:
             return False, "No fields provided."
@@ -2470,6 +2483,10 @@ class Database:
                 value = str(value or "").strip()
                 if value and not value.lower().startswith("https://"):
                     return False, f"{key} must start with https://"
+            if key == "maps_url":
+                value = str(value or "").strip()
+                if value and not value.lower().startswith("https://"):
+                    return False, "maps_url must start with https://"
 
             assignments.append(f"{column} = ?")
             params.append(value)
@@ -2481,6 +2498,25 @@ class Database:
         if cursor.rowcount <= 0:
             return False, "Event not found."
         return True, "Event updated."
+
+    @_rollback_on_error
+    def set_event_photo(self, event_id: int, photo_url: str) -> Tuple[bool, str]:
+        """Persist the public banner URL for an event.
+
+        This is intentionally separate from ``set_event_fields`` so ``photo_url`` is
+        never writable through the generic admin update field map; banners are managed
+        exclusively via the dedicated upload endpoint.
+        """
+        cleaned = (photo_url or "").strip()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE events SET photo_url = ? WHERE id = ?",
+            (cleaned, event_id),
+        )
+        self.conn.commit()
+        if cursor.rowcount <= 0:
+            return False, "Event not found."
+        return True, "Event banner updated."
 
     @_rollback_on_error
     def delete_event(self, event_id: int) -> Tuple[bool, str, Dict[str, int]]:

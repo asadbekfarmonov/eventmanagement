@@ -99,6 +99,9 @@ const adminEl = {
   when: document.getElementById('admin-ev-when'),
   location: document.getElementById('admin-ev-location'),
   caption: document.getElementById('admin-ev-caption'),
+  photo: document.getElementById('admin-ev-photo'),
+  photoCurrent: document.getElementById('admin-ev-photo-current'),
+  maps: document.getElementById('admin-ev-maps'),
   pay1Title: document.getElementById('admin-ev-pay1-title'),
   pay1Url: document.getElementById('admin-ev-pay1-url'),
   pay2Title: document.getElementById('admin-ev-pay2-title'),
@@ -173,6 +176,33 @@ function multilineHtml(value) {
     .replaceAll('\r\n', '\n')
     .replaceAll('\r', '\n')
     .replaceAll('\n', '<br>');
+}
+
+function isHttpsUrl(value) {
+  return /^https:\/\//i.test(String(value || '').trim());
+}
+
+function eventBannerHtml(event, className) {
+  const url = event && event.photo_url ? String(event.photo_url) : '';
+  if (!url) return '';
+  const alt = escapeHtml((event && event.title) || 'Event banner');
+  return `<img class="${className}" loading="lazy" src="${escapeHtml(url)}" alt="${alt}">`;
+}
+
+function eventMapHtml(event) {
+  const mapsUrl = event && event.maps_url ? String(event.maps_url).trim() : '';
+  if (!mapsUrl) return '';
+  // Only render a map/link for https:// URLs (guards against javascript:/data: schemes).
+  if (!isHttpsUrl(mapsUrl)) {
+    return '';
+  }
+  const link = `<a class="event-map-link" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noopener">Open in Google Maps</a>`;
+  const query = mapsUrl || (event && event.location) || '';
+  const src = `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed`;
+  const iframe = `<div class="event-map"><iframe src="${escapeHtml(src)}" loading="lazy" `
+    + 'referrerpolicy="no-referrer-when-downgrade" title="Event location map" '
+    + 'allowfullscreen></iframe></div>';
+  return `${iframe}<div class="event-map-links">${link}</div>`;
 }
 
 function setStatus(msg, isError = false) {
@@ -531,6 +561,8 @@ function renderSummary() {
   const qty = totalCount();
   const safeTitle = escapeHtml(event.title || '');
   const safeCaption = multilineHtml(event.caption || '');
+  const summaryBanner = eventBannerHtml(event, 'summary-banner');
+  const summaryMap = eventMapHtml(event);
 
   const rows = attendeeEntries();
   const repostSelections = attendeeDiscountSelections();
@@ -556,6 +588,7 @@ function renderSummary() {
       ? `<div class="hint">Instagram repost discount: ${money(discountUnitAmount)} per guest.</div>`
       : '';
     summaryEl.innerHTML = [
+      summaryBanner,
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
@@ -565,6 +598,7 @@ function renderSummary() {
       '<div class="hint">Guests required: 0</div>',
       repostHint,
       paymentSection,
+      summaryMap,
     ].join('');
     submitBtn.disabled = true;
     return;
@@ -573,11 +607,13 @@ function renderSummary() {
   if (state.quoteLoading) {
     const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
+      summaryBanner,
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
       '<div>Calculating your price...</div>',
       paymentSection,
+      summaryMap,
     ].join('');
     submitBtn.disabled = true;
     return;
@@ -590,11 +626,13 @@ function renderSummary() {
   if (!quoteMatches) {
     const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
+      summaryBanner,
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
       '<div class="hint">Price is not available yet. Refresh or adjust the group size.</div>',
       paymentSection,
+      summaryMap,
     ].join('');
     submitBtn.disabled = true;
     return;
@@ -635,6 +673,7 @@ function renderSummary() {
 
   const paymentSection = paymentOptionsHtml(event);
   summaryEl.innerHTML = [
+    summaryBanner,
     `<strong>${safeTitle}</strong>`,
     `<div>${safeCaption}</div>`,
     '<hr>',
@@ -643,6 +682,7 @@ function renderSummary() {
     `<div class="hint">Guests required: ${qty}</div>`,
     repostMissingHint,
     paymentSection,
+    summaryMap,
   ].join('');
   submitBtn.disabled = !(
     qty > 0
@@ -879,7 +919,12 @@ function renderUpcomingEvents() {
     card.className = 'event-card upcoming-card';
     card.dataset.id = String(event.id);
 
-    const parts = [`<p class="event-title">${escapeHtml(event.title || '')}</p>`];
+    const parts = [];
+    const bannerHtml = eventBannerHtml(event, 'upcoming-banner');
+    if (bannerHtml) {
+      parts.push(bannerHtml);
+    }
+    parts.push(`<p class="event-title">${escapeHtml(event.title || '')}</p>`);
     const when = formatEventDateTime(event.event_datetime);
     if (when) {
       parts.push(`<p class="upcoming-when">${escapeHtml(when)}</p>`);
@@ -1500,6 +1545,18 @@ function fillAdminEventForm(event) {
   adminEl.pay2Url.value = pay.payment2_url || '';
   adminEl.pay3Title.value = pay.payment3_title || '';
   adminEl.pay3Url.value = pay.payment3_url || '';
+  if (adminEl.maps) adminEl.maps.value = event.maps_url || '';
+  if (adminEl.photo) adminEl.photo.value = '';
+  if (adminEl.photoCurrent) {
+    const bannerUrl = event.photo_url || '';
+    if (bannerUrl) {
+      adminEl.photoCurrent.src = bannerUrl;
+      adminEl.photoCurrent.hidden = false;
+    } else {
+      adminEl.photoCurrent.removeAttribute('src');
+      adminEl.photoCurrent.hidden = true;
+    }
+  }
   const p = event.prices || {};
   adminEl.ebBoy.value = p.early_boy ?? 0;
   adminEl.ebGirl.value = p.early_girl ?? 0;
@@ -1527,6 +1584,12 @@ function clearAdminEventForm() {
   adminEl.pay2Url.value = '';
   adminEl.pay3Title.value = '';
   adminEl.pay3Url.value = '';
+  if (adminEl.maps) adminEl.maps.value = '';
+  if (adminEl.photo) adminEl.photo.value = '';
+  if (adminEl.photoCurrent) {
+    adminEl.photoCurrent.removeAttribute('src');
+    adminEl.photoCurrent.hidden = true;
+  }
   adminEl.ebBoy.value = 0;
   adminEl.ebGirl.value = 0;
   adminEl.ebQty.value = 0;
@@ -2252,9 +2315,11 @@ async function saveAdminEvent() {
   const caption = adminEl.caption.value.trim();
   const whenVal = adminEl.when ? adminEl.when.value.trim() : '';
   const locVal = adminEl.location ? adminEl.location.value.trim() : '';
+  const mapsVal = adminEl.maps ? adminEl.maps.value.trim() : '';
   const payload = {
     title,
     caption,
+    maps_url: mapsVal,
     payment1_title: adminEl.pay1Title.value.trim(),
     payment1_url: adminEl.pay1Url.value.trim(),
     payment2_title: adminEl.pay2Title.value.trim(),
@@ -2284,6 +2349,10 @@ async function saveAdminEvent() {
     setAdminStatus('Date & time must be in YYYY-MM-DD HH:MM format.', true);
     return;
   }
+  if (mapsVal && !/^https:\/\//i.test(mapsVal)) {
+    setAdminStatus('Google Maps link must start with https://.', true);
+    return;
+  }
 
   try {
     let res;
@@ -2303,8 +2372,22 @@ async function saveAdminEvent() {
       res = await adminPost('/api/admin/event/create_simple', createBody);
       setAdminStatus(res.message || 'Event created.');
     }
-    if (res && res.event && res.event.id) {
-      adminState.selectedEventId = Number(res.event.id);
+    const savedId = res && res.event && res.event.id ? Number(res.event.id) : 0;
+    if (savedId) {
+      adminState.selectedEventId = savedId;
+    }
+    const bannerFile = adminEl.photo && adminEl.photo.files && adminEl.photo.files[0];
+    if (savedId && bannerFile) {
+      const formData = new FormData();
+      formData.set('event_id', String(savedId));
+      formData.set('file', bannerFile);
+      try {
+        await adminUpload('/api/admin/event/photo', formData);
+        setAdminStatus('Event saved and banner uploaded.');
+        if (adminEl.photo) adminEl.photo.value = '';
+      } catch (uploadErr) {
+        setAdminStatus(apiErrorText(uploadErr, 'Event saved but banner upload failed.'), true);
+      }
     }
     await loadAdminEvents();
   } catch (err) {
