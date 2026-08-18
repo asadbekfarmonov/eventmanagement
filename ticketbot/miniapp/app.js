@@ -211,7 +211,10 @@ function eventMapHtml(event) {
     return '';
   }
   const link = `<a class="event-map-link" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noopener">Open in Google Maps</a>`;
-  const query = mapsUrl || (event && event.location) || '';
+  // Google's ?output=embed needs an address/place query, NOT a share link
+  // (short maps.app.goo.gl links don't render). Embed by the event location text
+  // and keep the admin's link as the "Open in Google Maps" button.
+  const query = (event && event.location ? String(event.location).trim() : '') || mapsUrl;
   const src = `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed`;
   const iframe = `<div class="event-map"><iframe src="${escapeHtml(src)}" loading="lazy" `
     + 'referrerpolicy="no-referrer-when-downgrade" title="Event location map" '
@@ -520,12 +523,17 @@ function syncRepostValidationStatus() {
 function paymentOptionsHtml(event) {
   const options = Array.isArray(event && event.payment_options) ? event.payment_options : [];
   if (!options.length) return '';
+  const isLinkable = (value) => /^(https?:\/\/|tel:|mailto:)/i.test(String(value || '').trim());
   const rows = options.map((opt) => {
-    const title = escapeHtml(opt.title || 'Payment link');
-    const url = escapeHtml(opt.url || '');
+    const rawUrl = (opt.url || '').trim();
+    const title = escapeHtml(opt.title || 'Payment option');
+    const url = escapeHtml(rawUrl);
+    const valueHtml = isLinkable(rawUrl)
+      ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`
+      : `<span class="payment-plain">${title}: ${url}</span>`;
     return [
       '<div class="payment-link-row">',
-      `<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`,
+      valueHtml,
       `<button type="button" class="copy-pay-link" data-url="${url}">Copy</button>`,
       '</div>',
     ].join('');

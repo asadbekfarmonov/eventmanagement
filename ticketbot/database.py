@@ -2480,9 +2480,10 @@ class Database:
             if key in {"payment1_title", "payment2_title", "payment3_title"}:
                 value = str(value or "").strip()
             if key in {"payment1_url", "payment2_url", "payment3_url"}:
+                # Payment fields may be a URL OR free text (e.g. a phone number for
+                # Revolut/bank transfer), so no scheme requirement here. Rendering
+                # only turns real URLs into links (see the frontend).
                 value = str(value or "").strip()
-                if value and not value.lower().startswith("https://"):
-                    return False, f"{key} must start with https://"
             if key == "maps_url":
                 value = str(value or "").strip()
                 if value and not value.lower().startswith("https://"):

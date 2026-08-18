@@ -2016,16 +2016,8 @@ def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleR
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
 
-    payment_fields = {
-        "payment1_url": payload.payment1_url,
-        "payment2_url": payload.payment2_url,
-        "payment3_url": payload.payment3_url,
-    }
-    for field_name, field_value in payment_fields.items():
-        cleaned = (field_value or "").strip()
-        if cleaned and not cleaned.lower().startswith("https://"):
-            raise HTTPException(status_code=400, detail=f"{field_name} must start with https://")
-
+    # Payment fields accept a URL OR free text (e.g. a phone number for
+    # Revolut/bank transfer), so there is no scheme requirement here.
     maps_url = (payload.maps_url or "").strip()
     if maps_url and not maps_url.lower().startswith("https://"):
         raise HTTPException(status_code=400, detail="maps_url must start with https://")

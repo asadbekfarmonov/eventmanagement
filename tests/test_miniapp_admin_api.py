@@ -1554,13 +1554,15 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(event_payload["prices"]["girls_group_offer_enabled"], 1)
         self.assertEqual(event_payload["prices"]["boys_group_offer_enabled"], 0)
 
-    def test_event_payment_url_requires_https(self):
-        bad_create = self.client.post(
+    def test_event_payment_field_accepts_phone_or_text(self):
+        # Payment fields may be a URL OR free text (e.g. a phone number for a
+        # Revolut/bank transfer), so a non-URL value must be accepted.
+        ok_create = self.client.post(
             "/api/admin/event/create_simple",
             json={
                 "tg_id": self.admin_tg_id,
-                "title": "Bad Payment",
-                "caption": "Bad URL",
+                "title": "Phone Payment",
+                "caption": "Pay by phone",
                 "early_boy": 1000,
                 "early_girl": 1000,
                 "early_qty": 5,
@@ -1570,23 +1572,24 @@ class MiniAppAdminApiTests(unittest.TestCase):
                 "tier2_boy": 3000,
                 "tier2_girl": 3000,
                 "tier2_qty": 0,
-                "payment1_title": "Bad",
-                "payment1_url": "http://not-secure.example",
+                "payment1_title": "Revolut phone",
+                "payment1_url": "+36 20 123 4567",
             },
         )
-        self.assertEqual(bad_create.status_code, 400, bad_create.text)
-        self.assertIn("https://", bad_create.json().get("detail", ""))
+        self.assertEqual(ok_create.status_code, 200, ok_create.text)
+        created_id = ok_create.json()["event"]["id"]
+        self.assertEqual(self.db.get_event(created_id).payment1_url, "+36 20 123 4567")
 
-        bad_update = self.client.post(
+        ok_update = self.client.post(
             "/api/admin/event/update",
             json={
                 "tg_id": self.admin_tg_id,
                 "event_id": self.event_id,
-                "updates": {"payment1_url": "http://not-secure.example"},
+                "updates": {"payment1_url": "+36 20 999 0000"},
             },
         )
-        self.assertEqual(bad_update.status_code, 400, bad_update.text)
-        self.assertIn("https://", bad_update.json().get("detail", ""))
+        self.assertEqual(ok_update.status_code, 200, ok_update.text)
+        self.assertEqual(self.db.get_event(self.event_id).payment1_url, "+36 20 999 0000")
 
     def test_cleanup_upload_storage_removes_orphan_and_old_reviewed_keeps_pending(self):
         upload_dir = os.environ["UPLOAD_DIR"]
