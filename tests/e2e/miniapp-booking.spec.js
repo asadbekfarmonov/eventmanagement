@@ -140,7 +140,9 @@ test('admin can enable repost discount on existing event and guest sees it', asy
 test('admin navigation is hidden for non-admins', async ({ page }) => {
   await page.goto('/?tg_id=511308234');
 
-  await expect(page.locator('#admin-open')).toBeHidden();
+  // The Admin nav button has been removed entirely; admins reach the dashboard
+  // only via /admin + password or the /?open_admin=1 redirect.
+  await expect(page.locator('#admin-open')).toHaveCount(0);
   await expect(page.locator('#admin-area')).toBeHidden();
 });
 
@@ -236,16 +238,81 @@ test('website admin logs in from admin page', async ({ page }) => {
   await expect(page.locator('#admin-event-select')).toContainText('Playwright Event');
 });
 
-test('admin navigation appears for admins only', async ({ page }) => {
-  await page.goto('/?tg_id=7164876915');
+test('admin dashboard opens for admins via the open_admin flow', async ({ page }) => {
+  await page.goto('/?tg_id=7164876915&open_admin=1');
 
-  await expect(page.locator('#admin-open')).toBeVisible();
-  await page.locator('#admin-open').click();
+  // No Admin nav button anymore: the dashboard opens via the open_admin flow.
+  await expect(page.locator('#admin-open')).toHaveCount(0);
   await expect(page.locator('#admin-area')).toBeVisible();
   await page.getByRole('tab', { name: 'Check-in' }).click();
   await expect(page.locator('[data-admin-section="checkin"]')).toBeVisible();
   await expect(page.locator('#admin-checkin-token')).toBeVisible();
   await expect(page.locator('#admin-checkin-confirm')).toBeDisabled();
+});
+
+test('admin can add and delete a homepage carousel photo', async ({ page }) => {
+  // 1x1 PNG bytes for the upload.
+  const pngB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+  await page.goto('/?tg_id=7164876915&open_admin=1');
+  await expect(page.locator('#admin-area')).toBeVisible();
+  await page.getByRole('tab', { name: 'Homepage' }).click();
+  await expect(page.locator('#admin-section-carousel')).toBeVisible();
+
+  await page.setInputFiles('#admin-carousel-file', {
+    name: 'carousel.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(pngB64, 'base64'),
+  });
+  await page.locator('#admin-carousel-add').click();
+
+  const item = page.locator('#admin-carousel-list .admin-carousel-item');
+  await expect(item).toHaveCount(1);
+
+  await item.locator('button.admin-carousel-delete').click();
+  await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(0);
+});
+
+test('homepage carousel rebuilds to match seeded rows and reverts to 3 defaults after delete', async ({ page }) => {
+  const pngB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+  // Baseline: with no seeded rows the homepage shows exactly the 3 static defaults.
+  await page.goto('/?tg_id=511308234');
+  await expect(page.locator('.main-carousel-slide img')).toHaveCount(3);
+  await expect(page.locator('.main-carousel-dots span')).toHaveCount(3);
+
+  // Seed one carousel row via the admin Homepage tab.
+  await page.goto('/?tg_id=7164876915&open_admin=1');
+  await expect(page.locator('#admin-area')).toBeVisible();
+  await page.getByRole('tab', { name: 'Homepage' }).click();
+  await expect(page.locator('#admin-section-carousel')).toBeVisible();
+  await page.setInputFiles('#admin-carousel-file', {
+    name: 'carousel.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(pngB64, 'base64'),
+  });
+  await page.locator('#admin-carousel-add').click();
+  await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(1);
+
+  // Homepage now rebuilds the track + dots to match the single seeded row.
+  await page.goto('/?tg_id=511308234');
+  await expect(page.locator('.main-carousel-slide img')).toHaveCount(1);
+  await expect(page.locator('.main-carousel-dots span')).toHaveCount(1);
+  await expect(page.locator('.main-carousel-slide img').first()).toHaveAttribute('src', /\/event-media\//);
+
+  // Clean up: delete the seeded row so later tests keep the 3 defaults.
+  await page.goto('/?tg_id=7164876915&open_admin=1');
+  await expect(page.locator('#admin-area')).toBeVisible();
+  await page.getByRole('tab', { name: 'Homepage' }).click();
+  await page.locator('#admin-carousel-list .admin-carousel-item button.admin-carousel-delete').first().click();
+  await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(0);
+
+  // Homepage reverts to the 3 static defaults.
+  await page.goto('/?tg_id=511308234');
+  await expect(page.locator('.main-carousel-slide img')).toHaveCount(3);
+  await expect(page.locator('.main-carousel-dots span')).toHaveCount(3);
 });
 
 test('check-in scanner degrades gracefully and the manual paste flow stays wired', async ({ page }) => {

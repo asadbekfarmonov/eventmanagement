@@ -967,6 +967,11 @@ class CheckInRequest(BaseModel):
     token: str
 
 
+class CarouselDeleteRequest(BaseModel):
+    tg_id: Optional[int] = None
+    id: int
+
+
 class WebRegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     surname: str = Field(min_length=1, max_length=80)
@@ -2133,6 +2138,77 @@ async def admin_event_photo(
 
     updated = db.get_event(event_id)
     return {"ok": True, "message": "Event banner updated.", "event": updated.__dict__ if updated else None}
+
+
+def _carousel_item_payload(row) -> Dict[str, Any]:
+    data = _row_dict(row)
+    return {
+        "id": int(data.get("id")),
+        "url": _absolute_media_url(data.get("image_url") or ""),
+    }
+
+
+@app.get("/api/carousel")
+def list_carousel() -> Dict[str, Any]:
+    # Public homepage carousel images. Returns [] when none are configured so the
+    # frontend keeps its static default slides.
+    items = [_carousel_item_payload(row) for row in db.list_carousel_images()]
+    return {"items": items}
+
+
+@app.post("/api/admin/carousel")
+async def admin_carousel_add(
+    request: Request,
+    tg_id: Optional[int] = Form(None),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    _request_admin(request, tg_id)
+
+    mime = (file.content_type or "").lower()
+    if mime not in {"image/jpeg", "image/png"}:
+        raise HTTPException(status_code=400, detail="Only JPG or PNG is accepted for the carousel image.")
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded image is empty.")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large. Max allowed size is {UPLOAD_MAX_MB:.1f} MB.",
+            )
+    finally:
+        await file.close()
+
+    actual_mime = _detect_upload_mime(content)
+    if actual_mime not in {"image/jpeg", "image/png"}:
+        raise HTTPException(status_code=400, detail="Uploaded image is not a valid JPG or PNG.")
+    if actual_mime != mime:
+        raise HTTPException(status_code=400, detail="Uploaded image type does not match the file content.")
+
+    suffix = {"image/png": ".png", "image/jpeg": ".jpg"}[actual_mime]
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    stored_path = Path(EVENT_MEDIA_DIR) / stored_name
+    try:
+        stored_path.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail=f"Image storage error: {exc}") from exc
+
+    image_url = f"/event-media/{stored_name}"
+    try:
+        row = db.add_carousel_image(image_url)
+    except Exception:
+        _delete_event_media(image_url)
+        raise
+    return {"ok": True, "item": _carousel_item_payload(row)}
+
+
+@app.post("/api/admin/carousel/delete")
+def admin_carousel_delete(request: Request, payload: CarouselDeleteRequest) -> Dict[str, Any]:
+    _request_admin(request, payload.tg_id)
+    removed_url = db.delete_carousel_image(payload.id)
+    if removed_url:
+        _delete_event_media(removed_url)
+    return {"ok": True}
 
 
 def _pending_reservation_item(row) -> Dict[str, Any]:

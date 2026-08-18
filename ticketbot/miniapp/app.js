@@ -28,8 +28,8 @@ const upcomingEmptyEl = document.getElementById('upcoming-events-empty');
 const heroGetTicketsEl = document.getElementById('hero-get-tickets');
 const pageTabs = Array.from(document.querySelectorAll('[data-page-tab]'));
 const pageSections = Array.from(document.querySelectorAll('[data-page-section]'));
-const carouselTrackEl = document.querySelector('.main-carousel-track');
-const carouselDots = Array.from(document.querySelectorAll('.main-carousel-dots span'));
+let carouselTrackEl = document.querySelector('.main-carousel-track');
+let carouselDots = Array.from(document.querySelectorAll('.main-carousel-dots span'));
 const accountPanelEl = document.getElementById('account-panel');
 const accountBackdropEl = document.getElementById('account-backdrop');
 const accountOpenEl = document.getElementById('account-open');
@@ -121,6 +121,10 @@ const adminEl = {
   repostAmount: document.getElementById('admin-ev-repost-amount'),
   girlsGroupOfferEnabled: document.getElementById('admin-ev-girls-group-enabled'),
   boysGroupOfferEnabled: document.getElementById('admin-ev-boys-group-enabled'),
+  carouselRefresh: document.getElementById('admin-carousel-refresh'),
+  carouselFile: document.getElementById('admin-carousel-file'),
+  carouselAdd: document.getElementById('admin-carousel-add'),
+  carouselList: document.getElementById('admin-carousel-list'),
 };
 
 const state = {
@@ -1914,8 +1918,75 @@ async function loadAdminReviews() {
   renderAdminReviews();
 }
 
+function renderAdminCarousel(items) {
+  if (!adminEl.carouselList) return;
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    adminEl.carouselList.innerHTML = '<p class="hint">No carousel photos yet. The homepage shows the default photos.</p>';
+    return;
+  }
+  adminEl.carouselList.innerHTML = list.map((item) => {
+    const url = escapeHtml((item && item.url) || '');
+    const id = Number((item && item.id) || 0);
+    return `
+      <div class="admin-carousel-item">
+        <img src="${url}" alt="Carousel photo" loading="lazy" />
+        <button type="button" class="admin-carousel-delete" data-carousel-id="${id}">Delete</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function loadAdminCarousel() {
+  if (!adminEl.carouselList) return;
+  try {
+    const data = await adminGet('/api/carousel');
+    renderAdminCarousel(data && data.items);
+  } catch (err) {
+    adminEl.carouselList.innerHTML = `<p class="hint error">${escapeHtml(apiErrorText(err, 'Failed to load carousel.'))}</p>`;
+  }
+}
+
+async function addAdminCarouselPhoto() {
+  if (!adminEl.carouselFile) return;
+  const file = adminEl.carouselFile.files && adminEl.carouselFile.files[0];
+  if (!file) {
+    setAdminStatus('Choose a JPG or PNG image first.', true);
+    return;
+  }
+  if (adminEl.carouselAdd) adminEl.carouselAdd.disabled = true;
+  setAdminStatus('Uploading photo...');
+  try {
+    const formData = new FormData();
+    formData.set('file', file);
+    await adminUpload('/api/admin/carousel', formData);
+    if (adminEl.carouselFile) adminEl.carouselFile.value = '';
+    await loadAdminCarousel();
+    loadHomepageCarousel();
+    setAdminStatus('Carousel photo added.');
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Failed to add carousel photo.'), true);
+  } finally {
+    if (adminEl.carouselAdd) adminEl.carouselAdd.disabled = false;
+  }
+}
+
+async function deleteAdminCarouselPhoto(id) {
+  const imageId = Number(id || 0);
+  if (!imageId) return;
+  setAdminStatus('Deleting photo...');
+  try {
+    await adminPost('/api/admin/carousel/delete', { id: imageId });
+    await loadAdminCarousel();
+    loadHomepageCarousel();
+    setAdminStatus('Carousel photo deleted.');
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Failed to delete carousel photo.'), true);
+  }
+}
+
 async function refreshAdminAll() {
-  await Promise.all([loadAdminReviews(), loadAdminGuests(), loadAdminEvents()]);
+  await Promise.all([loadAdminReviews(), loadAdminGuests(), loadAdminEvents(), loadAdminCarousel()]);
 }
 
 function renderCheckinResult(ticket, message = '', isError = false) {
@@ -2207,7 +2278,7 @@ async function openAdminMode() {
   if (!ok) return;
   setAdminLocked(false);
   setPageTab('admin');
-  adminEl.open.classList.add('active');
+  if (adminEl.open) adminEl.open.classList.add('active');
   setAdminOpenStatus('');
   setAdminSection(adminState.activeSection || 'payments');
   await refreshAdminAll();
@@ -2546,12 +2617,20 @@ if (heroGetTicketsEl) {
     }
   });
 }
-if (carouselTrackEl && carouselDots.length) {
-  let carouselFrame = 0;
-  carouselTrackEl.addEventListener('scroll', () => {
-    window.cancelAnimationFrame(carouselFrame);
-    carouselFrame = window.requestAnimationFrame(updateCarouselDots);
-  }, { passive: true });
+let carouselScrollWired = false;
+function wireCarousel() {
+  carouselTrackEl = document.querySelector('.main-carousel-track');
+  carouselDots = Array.from(document.querySelectorAll('.main-carousel-dots span'));
+  if (!carouselTrackEl || !carouselDots.length) return;
+  if (!carouselScrollWired) {
+    let carouselFrame = 0;
+    carouselTrackEl.addEventListener('scroll', () => {
+      window.cancelAnimationFrame(carouselFrame);
+      carouselFrame = window.requestAnimationFrame(updateCarouselDots);
+    }, { passive: true });
+    window.addEventListener('resize', updateCarouselDots);
+    carouselScrollWired = true;
+  }
   carouselDots.forEach((dot, index) => {
     dot.addEventListener('click', () => {
       carouselTrackEl.scrollTo({
@@ -2560,7 +2639,42 @@ if (carouselTrackEl && carouselDots.length) {
       });
     });
   });
-  window.addEventListener('resize', updateCarouselDots);
+  updateCarouselDots();
+}
+wireCarousel();
+
+async function loadHomepageCarousel() {
+  if (!carouselTrackEl) return;
+  let items = [];
+  try {
+    const res = await fetch('/api/carousel', { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data && Array.isArray(data.items)) items = data.items;
+  } catch (_err) {
+    return;
+  }
+  // No configured images -> keep the default static slides/dots as-is.
+  if (!items.length) return;
+  const dotsEl = document.querySelector('.main-carousel-dots');
+  if (!dotsEl) return;
+  const track = carouselTrackEl;
+  track.innerHTML = '';
+  dotsEl.innerHTML = '';
+  items.forEach((item, index) => {
+    const slide = document.createElement('div');
+    slide.className = 'main-carousel-slide';
+    const img = document.createElement('img');
+    img.setAttribute('loading', 'lazy');
+    img.setAttribute('decoding', 'async');
+    img.setAttribute('alt', 'Budapest Tunderi photo');
+    img.setAttribute('src', String((item && item.url) || ''));
+    slide.appendChild(img);
+    track.appendChild(slide);
+    const dot = document.createElement('span');
+    if (index === 0) dot.className = 'active';
+    dotsEl.appendChild(dot);
+  });
+  wireCarousel();
 }
 if (summaryEl) {
   summaryEl.addEventListener('click', async (event) => {
@@ -2626,9 +2740,27 @@ if (adminEl.tabs && adminEl.tabs.length) {
       setAdminSection(key);
       if (key === 'payments') {
         loadAdminReviews().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load payments.'), true));
+      } else if (key === 'carousel') {
+        loadAdminCarousel().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load carousel.'), true));
       }
     });
   }
+}
+if (adminEl.carouselAdd) {
+  adminEl.carouselAdd.addEventListener('click', addAdminCarouselPhoto);
+}
+if (adminEl.carouselRefresh) {
+  adminEl.carouselRefresh.addEventListener('click', () => {
+    loadAdminCarousel().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to refresh carousel.'), true));
+  });
+}
+if (adminEl.carouselList) {
+  adminEl.carouselList.addEventListener('click', (event) => {
+    const target = event.target && event.target.closest ? event.target.closest('button.admin-carousel-delete') : null;
+    if (!target) return;
+    event.preventDefault();
+    deleteAdminCarouselPhoto(target.getAttribute('data-carousel-id'));
+  });
 }
 if (adminEl.refreshAll) {
   adminEl.refreshAll.addEventListener('click', async () => {
@@ -2745,11 +2877,12 @@ setAdminSection('payments');
 setAdminLocked(true);
 renderAccountPanel();
 updateCarouselDots();
+loadHomepageCarousel();
 rebuildAttendees();
 loadAuthConfig();
 fetchEvents();
 loadMeAndTickets();
-if (autoOpenAdmin && adminEl.open) {
+if (autoOpenAdmin) {
   openAdminMode().catch((err) => {
     setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);
   });

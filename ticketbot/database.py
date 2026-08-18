@@ -214,6 +214,16 @@ class Database:
         )
         cursor.execute(
             """
+            CREATE TABLE IF NOT EXISTS carousel_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_url TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS email_login_codes (
                 email TEXT PRIMARY KEY,
                 code_hash TEXT NOT NULL,
@@ -373,6 +383,17 @@ class Database:
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS carousel_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_url TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -1031,6 +1052,55 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
         self.conn.commit()
+
+    def list_carousel_images(self) -> List[sqlite3.Row]:
+        """Return homepage carousel images ordered by position, then id."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, image_url, position, created_at
+            FROM carousel_images
+            ORDER BY position, id
+            """
+        )
+        return cursor.fetchall()
+
+    def add_carousel_image(self, image_url: str) -> sqlite3.Row:
+        """Insert a new carousel image at the end and return the stored row."""
+        cleaned = (image_url or "").strip()
+        if not cleaned:
+            raise ValueError("image_url is required")
+        now = self._utc_now()
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COALESCE(MAX(position), 0) AS max_pos FROM carousel_images")
+        row = cursor.fetchone()
+        next_position = int((row["max_pos"] if row is not None else 0) or 0) + 1
+        cursor.execute(
+            """
+            INSERT INTO carousel_images (image_url, position, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (cleaned, next_position, now),
+        )
+        self.conn.commit()
+        new_id = cursor.lastrowid
+        cursor.execute(
+            "SELECT id, image_url, position, created_at FROM carousel_images WHERE id = ?",
+            (new_id,),
+        )
+        return cursor.fetchone()
+
+    def delete_carousel_image(self, image_id: int) -> Optional[str]:
+        """Delete a carousel image and return its stored image_url (or None)."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT image_url FROM carousel_images WHERE id = ?", (image_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        image_url = row["image_url"]
+        cursor.execute("DELETE FROM carousel_images WHERE id = ?", (image_id,))
+        self.conn.commit()
+        return image_url
 
     def get_user(self, tg_id: int) -> Optional[User]:
         cursor = self.conn.cursor()

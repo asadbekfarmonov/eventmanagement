@@ -42,7 +42,6 @@
           <button type="button" class="top-nav-item" data-page-tab="book" role="tab" aria-selected="false" aria-controls="events-panel group-panel attendees-panel summary-panel">Book</button>
           <button type="button" class="top-nav-item" data-page-tab="tickets" role="tab" aria-selected="false" aria-controls="tickets-panel">My tickets</button>
           <button type="button" class="top-nav-item" data-page-tab="contact" role="tab" aria-selected="false" aria-controls="contact-panel">Contact</button>
-          <button id="admin-open" type="button" class="top-nav-item admin-nav-item" data-page-tab="admin" role="tab" aria-selected="false" aria-controls="admin-area" hidden>Admin</button>
         </nav>
         <button id="account-open" class="account-chip" type="button" aria-haspopup="dialog" aria-expanded="false">
           <span id="account-chip-initials">BT</span>
@@ -327,6 +326,7 @@
         <button type="button" class="admin-tab" data-admin-tab="checkin" role="tab" aria-selected="false" aria-controls="admin-section-checkin">Check-in</button>
         <button type="button" class="admin-tab" data-admin-tab="add_guest" role="tab" aria-selected="false" aria-controls="admin-section-add_guest">Add Guest</button>
         <button type="button" class="admin-tab" data-admin-tab="import_export" role="tab" aria-selected="false" aria-controls="admin-section-import_export">Import/Export</button>
+        <button type="button" class="admin-tab" data-admin-tab="carousel" role="tab" aria-selected="false" aria-controls="admin-section-carousel">Homepage</button>
       </nav>
 
       <section class="admin-block admin-section" id="admin-section-payments" data-admin-section="payments" role="tabpanel" aria-label="Payments">
@@ -521,6 +521,22 @@
           </label>
         </div>
         <div id="admin-guests-list" class="admin-cards"></div>
+      </section>
+
+      <section class="admin-block admin-section" id="admin-section-carousel" data-admin-section="carousel" role="tabpanel" aria-label="Homepage" hidden>
+        <div class="panel-head">
+          <h3>Homepage carousel</h3>
+          <button id="admin-carousel-refresh" type="button">Refresh</button>
+        </div>
+        <p class="hint">Manage the photos shown in the homepage carousel. When none are configured, the default photos are shown.</p>
+        <label>
+          Add photo (JPG or PNG)
+          <input id="admin-carousel-file" type="file" accept="image/png,image/jpeg" />
+        </label>
+        <div class="admin-actions">
+          <button id="admin-carousel-add" type="button">Add photo</button>
+        </div>
+        <div id="admin-carousel-list" class="admin-carousel-grid"></div>
       </section>
     </section>
     <footer class="site-footer">
