@@ -271,7 +271,6 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertIn("/static/styles.css?v=20260818a", index_response.text)
         self.assertIn("/static/app.js?v=20260818a", index_response.text)
         self.assertIn('/static/logo.png?v=20260818b', index_response.text)
-        self.assertIn('/static/noun-ornament-1565565.svg', self.client.get('/static/styles.css').text)
         self.assertNotIn("Signed in with", index_response.text)
 
         js_response = self.client.get("/static/app.js")
