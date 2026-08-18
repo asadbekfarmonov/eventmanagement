@@ -1149,6 +1149,8 @@ test('payment option is required, persists across reload, and admin money report
   await firstChoice.click();
   await expect(firstChoice).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.payment-choice-hint')).toHaveCount(0);
+  // Selecting an option reveals that option's payment details.
+  await expect(page.locator('#summary .payment-detail')).toBeVisible();
   await expect(page.locator('#submit-booking')).toBeEnabled();
 
   // The chosen option survives a full reload (restored from the session draft).

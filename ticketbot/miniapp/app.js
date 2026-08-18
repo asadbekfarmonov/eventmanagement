@@ -652,31 +652,37 @@ function paymentOptionsHtml(event) {
   if (!options.length) return '';
   const isLinkable = (value) => /^(https?:\/\/|tel:|mailto:)/i.test(String(value || '').trim());
   const selectedSlot = Number(state.paymentSlot || 0);
-  const rows = options.map((opt) => {
+  const buttons = options.map((opt) => {
     const slot = Number(opt.slot || 0);
-    const rawUrl = (opt.url || '').trim();
     const title = escapeHtml(opt.title || 'Payment option');
-    const url = escapeHtml(rawUrl);
     const isSelected = slot > 0 && slot === selectedSlot;
-    const openHtml = isLinkable(rawUrl)
-      ? `<a href="${url}" target="_blank" rel="noopener noreferrer">Open</a>`
-      : `<span class="payment-plain">${url}</span>`;
-    return [
-      `<div class="payment-choice-row${isSelected ? ' selected' : ''}">`,
-      `<button type="button" class="payment-choice" data-slot="${slot}" aria-pressed="${isSelected ? 'true' : 'false'}">${title}</button>`,
-      openHtml,
+    return `<button type="button" class="payment-choice" data-slot="${slot}" aria-pressed="${isSelected ? 'true' : 'false'}">${title}</button>`;
+  }).join('');
+  const selected = options.find((opt) => Number(opt.slot || 0) === selectedSlot && selectedSlot > 0) || null;
+  let detail;
+  if (selected) {
+    const rawUrl = (selected.url || '').trim();
+    const url = escapeHtml(rawUrl);
+    const title = escapeHtml(selected.title || 'Payment option');
+    const valueHtml = isLinkable(rawUrl)
+      ? `<a class="payment-detail-value" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+      : `<span class="payment-detail-value payment-plain">${url}</span>`;
+    detail = [
+      '<div class="payment-detail">',
+      `<p class="payment-detail-title">${title}</p>`,
+      valueHtml,
       `<button type="button" class="copy-pay-link" data-url="${url}">Copy</button>`,
       '</div>',
     ].join('');
-  });
-  const hint = paymentSelectionSatisfied(event)
-    ? ''
-    : '<p class="hint error payment-choice-hint">Select the payment option you used</p>';
+  } else {
+    detail = '<p class="hint error payment-choice-hint">Select the payment option you used to see its details</p>';
+  }
   return [
     '<div class="payment-links">',
     '<p class="payment-links-title">Payment options</p>',
-    ...rows,
-    hint,
+    '<p class="hint">Tap the option you paid with to see its details.</p>',
+    `<div class="payment-choices">${buttons}</div>`,
+    detail,
     '</div>',
   ].join('');
 }
