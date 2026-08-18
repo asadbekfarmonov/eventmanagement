@@ -890,3 +890,158 @@ test('event map is not rendered for a non-https maps_url (no dangerous href)', a
   await expect(page.locator('#summary .event-map-link')).toHaveCount(0);
   await expect(page.locator('#summary a[href^="javascript:"]')).toHaveCount(0);
 });
+
+test('booking draft is restored after a page reload (sessionStorage persistence)', async ({ page }) => {
+  await openBooking(page);
+  await selectEventByTitle(page, 'Playwright Event');
+
+  await page.locator('#boys').fill('1');
+  await expect(page.locator('.attendee-row')).toHaveCount(1);
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await page.locator('#terms-accepted').check();
+  await expect(page.locator('#terms-accepted')).toBeChecked();
+
+  // Simulate the in-app webview navigating away and returning (page reloads).
+  await page.reload();
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+
+  // The selected event, counts, typed names, and terms must all survive the reload.
+  const activeCard = page.locator('#events-list .event-card.active');
+  await expect(activeCard).toHaveCount(1);
+  await expect(activeCard).toContainText('Playwright Event');
+  await expect(page.locator('#boys')).toHaveValue('1');
+  await expect(page.locator('.attendee-row')).toHaveCount(1);
+  await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="first"]')).toHaveValue('John');
+  await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]')).toHaveValue('Doe');
+  await expect(page.locator('#terms-accepted')).toBeChecked();
+});
+
+test('switching events before a reload updates the persisted draft', async ({ page }) => {
+  await openBooking(page);
+  await selectEventByTitle(page, 'Playwright Event');
+  await page.locator('#boys').fill('1');
+  // Switch to the other event; selectEvent must re-save the draft with the new id.
+  await selectEventByTitle(page, 'Discount Event');
+  await expect(page.locator('#events-list .event-card.active')).toContainText('Discount Event');
+
+  await page.reload();
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+
+  const activeCard = page.locator('#events-list .event-card.active');
+  await expect(activeCard).toHaveCount(1);
+  await expect(activeCard).toContainText('Discount Event');
+});
+
+test('a booking draft for a now-deleted event is ignored and falls back to the first event (no crash)', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message));
+
+  await openBooking(page);
+  // Plant a stale draft that references an event id that does not exist.
+  await page.evaluate(() => {
+    sessionStorage.setItem('bt_booking_draft', JSON.stringify({
+      eventId: 999999,
+      boys: 2,
+      girls: 0,
+      attendees: [{ first: 'Ghost', surname: 'One', repostChecked: false },
+                  { first: 'Ghost', surname: 'Two', repostChecked: false }],
+      termsAccepted: true,
+    }));
+  });
+
+  await page.reload();
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+
+  // Falls back to selecting the first event; the stale counts/names are NOT restored.
+  const activeCard = page.locator('#events-list .event-card.active');
+  await expect(activeCard).toHaveCount(1);
+  const firstCard = page.locator('#events-list .event-card').first();
+  await expect(activeCard).toContainText(await firstCard.innerText());
+  await expect(page.locator('#boys')).toHaveValue('0');
+  await expect(page.locator('.attendee-row')).toHaveCount(0);
+  await expect(page.locator('#events-list')).not.toContainText('Ghost');
+  expect(pageErrors).toEqual([]);
+});
+
+test('sessionStorage failures are swallowed and booking still works (no uncaught error)', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message));
+
+  // Make every Storage operation throw, before any app script runs.
+  await page.addInitScript(() => {
+    const boom = () => { throw new Error('storage disabled'); };
+    Storage.prototype.setItem = boom;
+    Storage.prototype.getItem = boom;
+    Storage.prototype.removeItem = boom;
+  });
+
+  await openBooking(page);
+  await selectEventByTitle(page, 'Playwright Event');
+  await page.locator('#boys').fill('1');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await page.locator('#terms-accepted').check();
+
+  // The flow is fully usable even though storage throws on every access.
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+  expect(pageErrors).toEqual([]);
+});
+
+test('a stale draft is not restored via innerHTML — restored names are inert text (no XSS)', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message));
+
+  await openBooking(page);
+  const eventId = await page.locator('#events-list .event-card').first().getAttribute('data-id');
+  const payload = '<img src=x onerror="window.__xssFired = true">';
+  await page.evaluate(({ id, name }) => {
+    sessionStorage.setItem('bt_booking_draft', JSON.stringify({
+      eventId: Number(id),
+      boys: 1,
+      girls: 0,
+      attendees: [{ first: name, surname: 'Doe', repostChecked: false }],
+      termsAccepted: false,
+    }));
+  }, { id: eventId, name: payload });
+
+  await page.reload();
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+
+  const firstInput = page.locator('.attendee-row').nth(0).locator('input[data-part="first"]');
+  // The payload survives verbatim as the input's value (set via .value, not innerHTML).
+  await expect(firstInput).toHaveValue(payload);
+  // No element was injected and the onerror handler never fired.
+  await expect(page.locator('#attendees-list img')).toHaveCount(0);
+  const xssFired = await page.evaluate(() => window.__xssFired === true);
+  expect(xssFired).toBe(false);
+  expect(pageErrors).toEqual([]);
+});
+
+test('after a successful booking and reload the form is NOT re-populated from a stale draft', async ({ page }) => {
+  await openBooking(page);
+  await selectEventByTitle(page, 'Playwright Event');
+  await page.locator('#boys').fill('1');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await page.locator('#terms-accepted').check();
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+  await page.locator('#submit-booking').click();
+  await expect(page.locator('#status')).toContainText('Booking sent for review. Code:');
+
+  // Reload: the draft was cleared on success, so nothing should be restored.
+  await page.reload();
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+
+  await expect(page.locator('#boys')).toHaveValue('0');
+  await expect(page.locator('#terms-accepted')).not.toBeChecked();
+  await expect(page.locator('.attendee-row')).toHaveCount(0);
+  await expect(page.locator('#attendees-list')).not.toContainText('John');
+});

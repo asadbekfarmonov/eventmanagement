@@ -162,6 +162,9 @@ const adminState = {
 
 const MISSING_REPOST_PROOF_MESSAGE = 'Upload a repost screenshot for each guest using the discount.';
 
+// Key for persisting the in-progress booking draft (survives same-tab navigation/reload).
+const BOOKING_DRAFT_KEY = 'bt_booking_draft';
+
 function money(value) {
   return Number(value || 0).toFixed(2);
 }
@@ -527,6 +530,98 @@ function syncRepostValidationStatus() {
   }
 }
 
+function onBookingFieldChange() {
+  renderSummary();
+  saveBookingDraft();
+}
+
+function buildBookingDraft() {
+  const event = selectedEvent();
+  if (!event) return null;
+  const attendees = attendeeRows().map((row) => ({
+    first: (row.querySelector('input[data-part="first"]')?.value || '').trim(),
+    surname: (row.querySelector('input[data-part="surname"]')?.value || '').trim(),
+    repostChecked: Boolean(row.querySelector('input[data-part="repost-check"]')?.checked),
+  }));
+  return {
+    eventId: event.id,
+    boys: state.boys,
+    girls: state.girls,
+    attendees,
+    termsAccepted: termsAccepted(),
+  };
+}
+
+function saveBookingDraft() {
+  // Only persist once an event is selected; guard storage for private mode.
+  try {
+    const draft = buildBookingDraft();
+    if (!draft) return;
+    sessionStorage.setItem(BOOKING_DRAFT_KEY, JSON.stringify(draft));
+  } catch (_err) {
+    // Ignore storage failures (private mode / disabled storage).
+  }
+}
+
+function loadBookingDraft() {
+  try {
+    const raw = sessionStorage.getItem(BOOKING_DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function clearBookingDraft() {
+  try {
+    sessionStorage.removeItem(BOOKING_DRAFT_KEY);
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function restoreBookingDraft() {
+  const draft = loadBookingDraft();
+  if (!draft) return false;
+  const eventId = Number(draft.eventId);
+  const exists = state.events.some((event) => Number(event.id) === eventId);
+  if (!exists) {
+    // The saved event is gone; drop the stale draft.
+    clearBookingDraft();
+    return false;
+  }
+  state.boys = Math.max(0, Number(draft.boys || 0));
+  state.girls = Math.max(0, Number(draft.girls || 0));
+  if (boysEl) boysEl.value = state.boys;
+  if (girlsEl) girlsEl.value = state.girls;
+  // selectEvent marks the active card, rebuilds attendee rows, and refreshes the quote.
+  selectEvent(eventId);
+  const rows = attendeeRows();
+  const attendees = Array.isArray(draft.attendees) ? draft.attendees : [];
+  rows.forEach((row, index) => {
+    const info = attendees[index];
+    if (!info) return;
+    const firstInput = row.querySelector('input[data-part="first"]');
+    const surnameInput = row.querySelector('input[data-part="surname"]');
+    if (firstInput) firstInput.value = info.first || '';
+    if (surnameInput) surnameInput.value = info.surname || '';
+    const repostCheck = row.querySelector('input[data-part="repost-check"]');
+    if (repostCheck && info.repostChecked) {
+      repostCheck.checked = true;
+      // Re-run the checkbox handler so the screenshot field is revealed/enabled.
+      repostCheck.dispatchEvent(new Event('change'));
+    }
+  });
+  if (termsAcceptedEl) termsAcceptedEl.checked = Boolean(draft.termsAccepted);
+  refreshQuote();
+  renderSummary();
+  saveBookingDraft();
+  return true;
+}
+
 function paymentOptionsHtml(event) {
   const options = Array.isArray(event && event.payment_options) ? event.payment_options : [];
   if (!options.length) return '';
@@ -802,8 +897,8 @@ function rebuildAttendees() {
       surnameInput.value = state.userProfile.surname || '';
     }
 
-    firstInput.addEventListener('input', renderSummary);
-    surnameInput.addEventListener('input', renderSummary);
+    firstInput.addEventListener('input', onBookingFieldChange);
+    surnameInput.addEventListener('input', onBookingFieldChange);
 
     firstWrap.appendChild(firstInput);
     surnameWrap.appendChild(surnameInput);
@@ -841,6 +936,7 @@ function rebuildAttendees() {
         }
         syncRepostValidationStatus();
         renderSummary();
+        saveBookingDraft();
       });
       repostFile.addEventListener('change', () => {
         syncRepostValidationStatus();
@@ -871,6 +967,7 @@ function selectEvent(eventId) {
   setStatus('');
   rebuildAttendees();
   refreshQuote();
+  saveBookingDraft();
 }
 
 function renderEvents() {
@@ -989,7 +1086,11 @@ async function fetchEvents() {
     renderEvents();
     renderUpcomingEvents();
     if (state.events.length > 0) {
-      selectEvent(state.events[0].id);
+      // Restore an in-progress booking draft if its event still exists;
+      // otherwise default to the first event.
+      if (!restoreBookingDraft()) {
+        selectEvent(state.events[0].id);
+      }
     }
     setStatus('');
   } catch (err) {
@@ -1120,6 +1221,8 @@ async function submitDraft() {
       throw new Error(apiErrorText(data, 'Booking failed.'));
     }
     const successMessage = `Booking sent for review. Code: ${data.code || '-'}`;
+    // Booking succeeded: drop the saved draft so a later reload starts fresh.
+    clearBookingDraft();
     if (paymentProofEl) paymentProofEl.value = '';
     if (termsAcceptedEl) termsAcceptedEl.checked = false;
     state.boys = 0;
@@ -2518,12 +2621,14 @@ boysEl.addEventListener('input', () => {
   state.boys = Math.max(0, Number(boysEl.value || 0));
   rebuildAttendees();
   refreshQuote();
+  saveBookingDraft();
 });
 
 girlsEl.addEventListener('input', () => {
   state.girls = Math.max(0, Number(girlsEl.value || 0));
   rebuildAttendees();
   refreshQuote();
+  saveBookingDraft();
 });
 
 submitBtn.addEventListener('click', submitDraft);
@@ -2532,7 +2637,7 @@ if (paymentProofEl) {
   paymentProofEl.addEventListener('change', renderSummary);
 }
 if (termsAcceptedEl) {
-  termsAcceptedEl.addEventListener('change', renderSummary);
+  termsAcceptedEl.addEventListener('change', onBookingFieldChange);
 }
 if (accountSaveEl) {
   accountSaveEl.addEventListener('click', registerWebsiteAccount);
