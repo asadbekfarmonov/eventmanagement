@@ -1218,3 +1218,53 @@ test('admin Homepage shows 3 read-only default images when no custom photos, and
   await expect(page.locator('#admin-carousel-list .admin-carousel-item')).toHaveCount(0);
   await expect(page.locator('#admin-carousel-list .admin-carousel-default')).toHaveCount(3);
 });
+
+test('approved ticket can be downloaded as a PNG from My tickets', async ({ page }) => {
+  await page.goto('/?tg_id=511308234');
+  await page.getByRole('tab', { name: 'Book' }).click();
+  await expect(page.locator('#events-list .event-card').first()).toBeVisible();
+  await selectEventByTitle(page, 'Playwright Event');
+  await page.locator('#boys').fill('1');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('Download');
+  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Me');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await page.locator('#terms-accepted').check();
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+  await page.locator('#submit-booking').click();
+  await expect(page.locator('#status')).toContainText('Booking sent for review. Code:');
+  const statusText = (await page.locator('#status').textContent()) || '';
+  const code = (statusText.match(/Code:\s*([A-Za-z0-9-]+)/) || [])[1];
+  expect(code).toBeTruthy();
+
+  await openAdmin(page);
+  const reviewCard = page.locator('#admin-reviews-list .admin-card').filter({ hasText: code });
+  await expect(reviewCard).toBeVisible();
+  await reviewCard.locator('button[data-action="approve"]').click();
+  await expect(page.locator('#admin-status')).toContainText('approved');
+
+  // As the buyer: open My tickets and download the approved ticket.
+  await page.goto('/?tg_id=511308234');
+  await page.getByRole('tab', { name: 'My tickets' }).click();
+  await expect(page.locator('#tickets-panel')).toBeVisible();
+  const ticketCard = page.locator('#tickets-list .admin-card').filter({ hasText: code });
+  await expect(ticketCard).toBeVisible();
+  await expect(ticketCard.locator('img.ticket-qr').first()).toBeVisible();
+  const saveBtn = ticketCard.locator('.ticket-save-btn').first();
+  await expect(saveBtn).toBeVisible();
+
+  // Ensure the QR image has fully decoded so the canvas compose is synchronous.
+  await ticketCard.locator('img.ticket-qr').first().evaluate(
+    (node) => (node.complete && node.naturalWidth > 0)
+      ? true
+      : new Promise((resolve) => {
+          node.addEventListener('load', () => resolve(true), { once: true });
+          node.addEventListener('error', () => resolve(true), { once: true });
+        }),
+  );
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    saveBtn.click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^budapest-tunderi-.*\.png$/);
+});

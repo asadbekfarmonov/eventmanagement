@@ -1330,6 +1330,89 @@ async function submitDraft() {
   }
 }
 
+function loadTicketImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  let line = '';
+  let curY = y;
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      ctx.fillText(line, x, curY);
+      line = word;
+      curY += lineHeight;
+    } else {
+      line = test;
+    }
+  }
+  if (line) {
+    ctx.fillText(line, x, curY);
+    curY += lineHeight;
+  }
+  return curY;
+}
+
+async function downloadTicketImage(pass, meta) {
+  // Compose a printable ticket (event + guest + code + QR) on a same-origin canvas
+  // (the QR is served from our own API, so the canvas is not tainted) and download it.
+  try {
+    const imgEl = pass ? pass.querySelector('img.ticket-qr') : null;
+    const src = imgEl ? imgEl.getAttribute('src') : '';
+    if (!src) return;
+    const qrImg = imgEl && imgEl.complete && imgEl.naturalWidth ? imgEl : await loadTicketImage(src);
+    const W = 640;
+    const H = 900;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#0b0b0f';
+    ctx.font = '700 30px Manrope, Arial, sans-serif';
+    ctx.fillText('BUDAPEST TUNDERI', W / 2, 72);
+    ctx.font = '600 24px Manrope, Arial, sans-serif';
+    const afterTitleY = wrapCanvasText(ctx, meta.event || '', W / 2, 120, W - 80, 32);
+    const qrSize = 380;
+    const qrX = (W - qrSize) / 2;
+    const qrY = Math.max(afterTitleY + 24, 180);
+    ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
+    let ty = qrY + qrSize + 52;
+    ctx.fillStyle = '#0b0b0f';
+    ctx.font = '700 26px Manrope, Arial, sans-serif';
+    ctx.fillText(meta.name || '', W / 2, ty);
+    ty += 40;
+    ctx.font = '500 20px Manrope, Arial, sans-serif';
+    ctx.fillStyle = '#555555';
+    ctx.fillText(`Booking ${meta.code || ''}`.trim(), W / 2, ty);
+    ty += 40;
+    ctx.fillText('Show this QR at the entrance', W / 2, ty);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) return;
+    const objectUrl = URL.createObjectURL(blob);
+    const safeCode = (meta.code || 'ticket').replace(/[^A-Za-z0-9_-]+/g, '') || 'ticket';
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = `budapest-tunderi-${safeCode}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+  } catch (_err) {
+    // Best-effort: the QR remains visible for manual long-press save.
+  }
+}
+
 function renderTickets(items) {
   ticketsListEl.innerHTML = '';
   ticketsEmptyEl.hidden = items.length > 0;
@@ -1364,12 +1447,16 @@ function renderTickets(items) {
         const checkedText = checked
           ? `Checked in${ticket.checked_in_at ? ` at ${escapeHtml(ticket.checked_in_at)}` : ''}`
           : 'Not checked in';
+        const saveBtn = ticket.qr_url
+          ? `<button type="button" class="ticket-save-btn" data-code="${safeCode}" data-name="${safeName}" data-event="${safeEventTitle}">Save ticket</button>`
+          : '';
         return `
           <div class="ticket-pass">
             ${qr}
             <div>
               <p class="ticket-pass-name">${safeName}</p>
               <p class="admin-card-meta">${escapeHtml(checkedText)}</p>
+              ${saveBtn}
             </div>
           </div>
         `;
@@ -1386,6 +1473,12 @@ function renderTickets(items) {
     const cancelBtn = card.querySelector('.ticket-cancel-btn');
     if (cancelBtn) {
       cancelBtn.addEventListener('click', () => cancelWebBooking(cancelBtn.dataset.cancelCode));
+    }
+    for (const saveBtn of card.querySelectorAll('.ticket-save-btn')) {
+      saveBtn.addEventListener('click', () => downloadTicketImage(
+        saveBtn.closest('.ticket-pass'),
+        { code: saveBtn.dataset.code || '', name: saveBtn.dataset.name || '', event: saveBtn.dataset.event || '' },
+      ));
     }
     ticketsListEl.appendChild(card);
   }
