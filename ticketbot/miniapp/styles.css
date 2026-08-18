@@ -411,7 +411,8 @@ textarea {
   font: inherit;
 }
 
-select {
+select,
+input[type="datetime-local"] {
   color-scheme: dark;
 }
 

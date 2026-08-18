@@ -182,6 +182,20 @@ function isHttpsUrl(value) {
   return /^https:\/\//i.test(String(value || '').trim());
 }
 
+// Backend stores 'YYYY-MM-DD HH:MM' (space); the <input type="datetime-local">
+// value uses 'YYYY-MM-DDTHH:MM'. Convert both ways (minute precision).
+function datetimeToInput(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw.replace(' ', 'T').slice(0, 16);
+}
+
+function datetimeFromInput(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw.replace('T', ' ').slice(0, 16);
+}
+
 function eventBannerHtml(event, className) {
   const url = event && event.photo_url ? String(event.photo_url) : '';
   if (!url) return '';
@@ -1535,7 +1549,7 @@ async function adminUpload(path, formData) {
 function fillAdminEventForm(event) {
   if (!event) return;
   adminEl.title.value = event.title || '';
-  if (adminEl.when) adminEl.when.value = event.event_datetime || '';
+  if (adminEl.when) adminEl.when.value = datetimeToInput(event.event_datetime || '');
   if (adminEl.location) adminEl.location.value = event.location || '';
   adminEl.caption.value = event.caption || '';
   const pay = event.payment || {};
@@ -2313,7 +2327,7 @@ async function saveAdminEvent() {
   const eventId = Number(adminEl.eventSelect.value || 0);
   const title = adminEl.title.value.trim();
   const caption = adminEl.caption.value.trim();
-  const whenVal = adminEl.when ? adminEl.when.value.trim() : '';
+  const whenVal = adminEl.when ? datetimeFromInput(adminEl.when.value) : '';
   const locVal = adminEl.location ? adminEl.location.value.trim() : '';
   const mapsVal = adminEl.maps ? adminEl.maps.value.trim() : '';
   const payload = {

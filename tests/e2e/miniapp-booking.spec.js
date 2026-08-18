@@ -516,23 +516,34 @@ test('admin can set event date-time and location from the web form', async ({ pa
   await openAdmin(page);
   await selectAdminEventByTitle(page, 'Discount Event');
 
-  await page.locator('#admin-ev-when').fill('2026-09-15 20:30');
+  await page.locator('#admin-ev-when').fill('2026-09-15T20:30');
   await page.locator('#admin-ev-location').fill('Akvarium Klub');
   await page.locator('#admin-event-save').click();
 
   await expect(page.locator('#admin-status')).toContainText('Event updated.');
-  await expect(page.locator('#admin-ev-when')).toHaveValue('2026-09-15 20:30');
+  await expect(page.locator('#admin-ev-when')).toHaveValue('2026-09-15T20:30');
   await expect(page.locator('#admin-ev-location')).toHaveValue('Akvarium Klub');
 });
 
-test('admin rejects an invalid date-time before saving', async ({ page }) => {
+test('event date-time uses a native picker and empty save preserves the stored value', async ({ page }) => {
   await openAdmin(page);
   await selectAdminEventByTitle(page, 'Discount Event');
 
-  await page.locator('#admin-ev-when').fill('15/09/2026 20:30');
-  await page.locator('#admin-event-save').click();
+  // Native calendar+time picker.
+  await expect(page.locator('#admin-ev-when')).toHaveAttribute('type', 'datetime-local');
 
-  await expect(page.locator('#admin-status')).toContainText('YYYY-MM-DD HH:MM');
+  await page.locator('#admin-ev-when').fill('2026-10-10T21:00');
+  await page.locator('#admin-event-save').click();
+  await expect(page.locator('#admin-status')).toContainText('Event updated.');
+  await expect(page.locator('#admin-ev-when')).toHaveValue('2026-10-10T21:00');
+
+  // Clearing the picker and saving must NOT wipe the stored datetime (update omits empty).
+  await page.locator('#admin-ev-when').fill('');
+  await page.locator('#admin-ev-location').fill('Preserved Venue');
+  await page.locator('#admin-event-save').click();
+  await expect(page.locator('#admin-status')).toContainText('Event updated.');
+  await expect(page.locator('#admin-ev-location')).toHaveValue('Preserved Venue');
+  await expect(page.locator('#admin-ev-when')).toHaveValue('2026-10-10T21:00');
 });
 
 test('admin can review and approve a pending payment', async ({ page }) => {
