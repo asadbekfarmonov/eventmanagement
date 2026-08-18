@@ -1,8 +1,8 @@
-const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+let tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 const qs = new URLSearchParams(window.location.search);
 const fallbackTgId = Number(qs.get('tg_id') || 0);
-const tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
-const tgInitData = (tg && tg.initData) || '';
+let tgId = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
+let tgInitData = (tg && tg.initData) || '';
 const initialCheckinToken = (qs.get('checkin') || '').trim();
 const autoOpenAdmin = ['1', 'true', 'yes'].includes(
   (qs.get('open_admin') || qs.get('admin') || '').toLowerCase(),
@@ -23,6 +23,9 @@ const ticketsListEl = document.getElementById('tickets-list');
 const ticketsEmptyEl = document.getElementById('tickets-empty');
 const ticketsRefreshEl = document.getElementById('tickets-refresh');
 const adminOpenStatusEl = document.getElementById('admin-open-status');
+const upcomingListEl = document.getElementById('upcoming-events-list');
+const upcomingEmptyEl = document.getElementById('upcoming-events-empty');
+const heroGetTicketsEl = document.getElementById('hero-get-tickets');
 const pageTabs = Array.from(document.querySelectorAll('[data-page-tab]'));
 const pageSections = Array.from(document.querySelectorAll('[data-page-section]'));
 const carouselTrackEl = document.querySelector('.main-carousel-track');
@@ -46,6 +49,7 @@ const profilePhoneEl = document.getElementById('profile-phone');
 const accountSaveEl = document.getElementById('account-save');
 const accountEditEl = document.getElementById('account-edit');
 const accountSendCodeEl = document.getElementById('account-send-code');
+const accountLogoutEl = document.getElementById('account-logout');
 const accountCodePanelEl = document.getElementById('account-code-panel');
 const accountCodeEl = document.getElementById('account-code');
 const accountVerifyEl = document.getElementById('account-verify');
@@ -59,6 +63,9 @@ const adminEl = {
   login: document.getElementById('admin-login'),
   password: document.getElementById('admin-password'),
   refreshAll: document.getElementById('admin-refresh-all'),
+  logout: document.getElementById('admin-logout'),
+  reviewsRefresh: document.getElementById('admin-reviews-refresh'),
+  reviewsList: document.getElementById('admin-reviews-list'),
   ident: document.getElementById('admin-ident'),
   status: document.getElementById('admin-status'),
   tabs: Array.from(document.querySelectorAll('.admin-tab')),
@@ -89,6 +96,8 @@ const adminEl = {
   eventSave: document.getElementById('admin-event-save'),
   eventDelete: document.getElementById('admin-event-delete'),
   title: document.getElementById('admin-ev-title'),
+  when: document.getElementById('admin-ev-when'),
+  location: document.getElementById('admin-ev-location'),
   caption: document.getElementById('admin-ev-caption'),
   pay1Title: document.getElementById('admin-ev-pay1-title'),
   pay1Url: document.getElementById('admin-ev-pay1-url'),
@@ -131,11 +140,12 @@ const state = {
 
 const adminState = {
   ready: false,
-  activeSection: 'events',
+  activeSection: 'payments',
   guestsSort: 'newest',
   guestsSearch: '',
   guests: [],
   events: [],
+  reviews: [],
   selectedEventId: null,
   checkinTicket: null,
   scanStream: null,
@@ -215,7 +225,9 @@ function setAdminSection(sectionKey) {
   adminState.activeSection = key;
   for (const btn of adminEl.tabs || []) {
     const tabKey = btn.dataset ? btn.dataset.adminTab : '';
-    btn.classList.toggle('active', tabKey === key);
+    const active = tabKey === key;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
   }
   for (const section of adminEl.sections || []) {
     const sectionName = section.dataset ? section.dataset.adminSection : '';
@@ -271,6 +283,54 @@ function resetAccountPanelState() {
   setAccountStatus('');
 }
 
+async function logoutWebsiteAccount() {
+  try {
+    await fetch('/api/web/logout', { method: 'POST', headers: authHeaders() });
+  } catch (_err) {
+    // Best-effort: proceed to clear local state even if the network call fails.
+  }
+  state.userProfile = null;
+  resetAccountPanelState();
+  renderAccountPanel();
+  closeAccountPanel();
+  renderTickets([]);
+  if (ticketsEmptyEl) {
+    ticketsEmptyEl.textContent = 'Register in the Book section to see your tickets here.';
+    ticketsEmptyEl.hidden = false;
+  }
+  setStatus('You have been logged out.');
+}
+
+let accountPanelWasOpen = false;
+let accountOpenerEl = null;
+
+const ACCOUNT_FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function getAccountFocusable() {
+  if (!accountPanelEl) return [];
+  return Array.from(accountPanelEl.querySelectorAll(ACCOUNT_FOCUSABLE_SELECTOR)).filter(
+    (el) => !el.hidden && !el.closest('[hidden]') && el.offsetParent !== null,
+  );
+}
+
+function focusFirstAccountControl() {
+  const focusables = getAccountFocusable();
+  const target = focusables[0] || accountCloseEl;
+  if (target && typeof target.focus === 'function') {
+    target.focus();
+  }
+}
+
+function restoreAccountOpener() {
+  const target = accountOpenerEl || accountOpenEl;
+  if (target && typeof target.focus === 'function') {
+    target.focus();
+  }
+  accountOpenerEl = null;
+}
+
 function renderAccountPanel() {
   if (!accountPanelEl) return;
   const registered = Boolean(state.userProfile);
@@ -321,6 +381,7 @@ function renderAccountPanel() {
   }
   if (accountEditEl) accountEditEl.hidden = !registered || showEditForm || Boolean(tgId);
   if (accountSendCodeEl) accountSendCodeEl.hidden = !state.emailLoginEnabled || registered || needsProfileCompletion;
+  if (accountLogoutEl) accountLogoutEl.hidden = !registered || Boolean(tgId);
   if (accountCodePanelEl) accountCodePanelEl.hidden = !state.emailLoginEnabled || !state.emailCodeSent;
   if (googleSigninWrapEl) googleSigninWrapEl.hidden = registered || !state.googleClientId;
   if (accountStateEl) {
@@ -338,6 +399,19 @@ function renderAccountPanel() {
     if (accountPhoneEl) accountPhoneEl.value = state.userProfile.phone || '';
     if (accountEmailEl) accountEmailEl.value = state.userProfile.email || '';
   }
+  const isOpen = !accountPanelEl.hidden;
+  accountPanelEl.setAttribute('aria-modal', isOpen ? 'true' : 'false');
+  if (isOpen && !accountPanelWasOpen) {
+    const active = document.activeElement;
+    accountOpenerEl =
+      active && active !== document.body && !accountPanelEl.contains(active)
+        ? active
+        : accountOpenEl;
+    focusFirstAccountControl();
+  } else if (!isOpen && accountPanelWasOpen) {
+    restoreAccountOpener();
+  }
+  accountPanelWasOpen = isOpen;
 }
 
 function updateCarouselDots() {
@@ -751,6 +825,86 @@ function renderEvents() {
   }
 }
 
+function formatEventDateTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const parsed = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) return raw;
+  try {
+    return parsed.toLocaleString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch (err) {
+    return raw;
+  }
+}
+
+function eventCaptionExcerpt(caption, maxLength = 140) {
+  const text = String(caption || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trim()}\u2026`;
+}
+
+function eventFromPrice(event) {
+  const tier = (event && event.tier) || {};
+  const prices = [Number(tier.boy_price), Number(tier.girl_price)].filter(
+    (value) => Number.isFinite(value) && value > 0,
+  );
+  return prices.length ? Math.min(...prices) : 0;
+}
+
+function goToBookingForEvent(eventId) {
+  setPageTab('book');
+  selectEvent(eventId);
+  const target = document.getElementById('events-panel');
+  if (target && target.scrollIntoView) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function renderUpcomingEvents() {
+  if (!upcomingListEl) return;
+  upcomingListEl.innerHTML = '';
+  const events = Array.isArray(state.events) ? state.events : [];
+  if (upcomingEmptyEl) {
+    upcomingEmptyEl.hidden = events.length > 0;
+  }
+
+  for (const event of events) {
+    const card = document.createElement('article');
+    card.className = 'event-card upcoming-card';
+    card.dataset.id = String(event.id);
+
+    const parts = [`<p class="event-title">${escapeHtml(event.title || '')}</p>`];
+    const when = formatEventDateTime(event.event_datetime);
+    if (when) {
+      parts.push(`<p class="upcoming-when">${escapeHtml(when)}</p>`);
+    }
+    if (event.location) {
+      parts.push(`<p class="upcoming-where">${escapeHtml(event.location)}</p>`);
+    }
+    parts.push(`<p class="event-price">From ${money(eventFromPrice(event))} Ft</p>`);
+    const excerpt = eventCaptionExcerpt(event.caption);
+    if (excerpt) {
+      parts.push(`<p class="event-meta">${escapeHtml(excerpt)}</p>`);
+    }
+    card.innerHTML = parts.join('');
+
+    const cta = document.createElement('button');
+    cta.type = 'button';
+    cta.className = 'primary upcoming-cta';
+    cta.textContent = 'Get tickets';
+    cta.addEventListener('click', () => goToBookingForEvent(event.id));
+    card.appendChild(cta);
+
+    upcomingListEl.appendChild(card);
+  }
+}
+
 async function fetchEvents() {
   setStatus('Loading events...');
   try {
@@ -759,12 +913,14 @@ async function fetchEvents() {
     const data = await resp.json();
     state.events = Array.isArray(data.items) ? data.items : [];
     renderEvents();
+    renderUpcomingEvents();
     if (state.events.length > 0) {
       selectEvent(state.events[0].id);
     }
     setStatus('');
   } catch (err) {
     setStatus(err.message || 'Could not load events.', true);
+    renderUpcomingEvents();
   }
 }
 
@@ -922,6 +1078,16 @@ function renderTickets(items) {
     const safeTierLabel = escapeHtml(item.tier_label || '');
     const safeBoys = escapeHtml(item.boys ?? 0);
     const safeGirls = escapeHtml(item.girls ?? 0);
+    const statusKey = (item.status || '').trim().toLowerCase();
+    const isPending = statusKey === 'pending_payment_review';
+    const adminNote = (item.admin_note || '').trim();
+    const noteLabel = statusKey === 'rejected' ? 'Rejection reason' : 'Note from organizers';
+    const noteHtml = adminNote
+      ? `<p class="admin-card-meta ticket-admin-note"><strong>${escapeHtml(noteLabel)}:</strong> ${multilineHtml(adminNote)}</p>`
+      : '';
+    const cancelHtml = isPending
+      ? `<button type="button" class="ticket-cancel-btn" data-cancel-code="${escapeHtml(item.code || '')}">Cancel booking</button>`
+      : '';
     const tickets = Array.isArray(item.tickets) ? item.tickets : [];
     const ticketHtml = tickets.length
       ? tickets.map((ticket) => {
@@ -948,9 +1114,43 @@ function renderTickets(items) {
       <p class="admin-card-title">${safeCode} | ${safeStatus}</p>
       <p class="admin-card-meta">${safeEventTitle}</p>
       <p class="admin-card-meta">Tier: ${safeTierLabel} | Boys: ${safeBoys} | Girls: ${safeGirls} | Total: ${money(item.total_price)}</p>
+      ${noteHtml}
       ${ticketHtml}
+      ${cancelHtml}
     `;
+    const cancelBtn = card.querySelector('.ticket-cancel-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', () => cancelWebBooking(cancelBtn.dataset.cancelCode));
+    }
     ticketsListEl.appendChild(card);
+  }
+}
+
+async function cancelWebBooking(code) {
+  const bookingCode = (code || '').trim();
+  if (!bookingCode) return;
+  const confirmed = window.confirm(
+    'Cancel this booking? This releases your reserved tickets and cannot be undone.'
+  );
+  if (!confirmed) return;
+  try {
+    const cancelUrl = new URL('/api/web/cancel', window.location.origin);
+    if (tgId) cancelUrl.searchParams.set('tg_id', String(tgId));
+    const resp = await fetch(cancelUrl.toString(), {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ code: bookingCode }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      setStatus(data.detail || 'Could not cancel this booking.', true);
+      return;
+    }
+    setStatus(data.message || 'Booking cancelled.');
+    await loadMeAndTickets();
+    await fetchEvents();
+  } catch (_err) {
+    setStatus('Could not cancel this booking.', true);
   }
 }
 
@@ -1225,6 +1425,21 @@ function initTelegram() {
   tg.expand();
 }
 
+// The Telegram SDK is injected asynchronously by tg-init.js only inside a
+// Telegram context, so it may become available after this script runs.
+// Re-read window.Telegram and refresh identity-dependent views when it does.
+function applyTelegramContext() {
+  const webApp = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (!webApp || webApp === tg) return;
+  tg = webApp;
+  tgId = (tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || fallbackTgId || null;
+  tgInitData = tg.initData || '';
+  initTelegram();
+  fetchEvents();
+  loadMeAndTickets();
+  checkAdminAvailability();
+}
+
 async function adminGet(path, params = {}) {
   const url = new URL(path, window.location.origin);
   if (tgId) url.searchParams.set('tg_id', String(tgId));
@@ -1267,6 +1482,8 @@ async function adminUpload(path, formData) {
 function fillAdminEventForm(event) {
   if (!event) return;
   adminEl.title.value = event.title || '';
+  if (adminEl.when) adminEl.when.value = event.event_datetime || '';
+  if (adminEl.location) adminEl.location.value = event.location || '';
   adminEl.caption.value = event.caption || '';
   const pay = event.payment || {};
   adminEl.pay1Title.value = pay.payment1_title || '';
@@ -1293,6 +1510,8 @@ function fillAdminEventForm(event) {
 
 function clearAdminEventForm() {
   adminEl.title.value = '';
+  if (adminEl.when) adminEl.when.value = '';
+  if (adminEl.location) adminEl.location.value = '';
   adminEl.caption.value = '';
   adminEl.pay1Title.value = '';
   adminEl.pay1Url.value = '';
@@ -1338,6 +1557,7 @@ function renderAdminGuests() {
       <div class="admin-card-head">
         <p class="admin-card-title">#${guest.attendee_id} ${safeFullName}${genderBadge}</p>
         <div class="admin-inline-actions">
+            <button type="button" data-action="rename">Rename</button>
             <button type="button" data-action="remove">Remove</button>
         </div>
       </div>
@@ -1364,6 +1584,30 @@ function renderAdminGuests() {
         setAdminStatus(apiErrorText(err, 'Failed to remove guest.'), true);
       }
     });
+
+    const renameBtn = card.querySelector('button[data-action="rename"]');
+    if (renameBtn) {
+      renameBtn.addEventListener('click', async () => {
+        const current = guest.full_name || '';
+        const input = window.prompt('Enter new name (Name Surname):', current);
+        if (input === null) return;
+        const nextName = input.trim().replace(/\s+/g, ' ');
+        if (nextName.split(' ').filter(Boolean).length < 2) {
+          setAdminStatus('Please enter a full name: Name Surname.', true);
+          return;
+        }
+        try {
+          const res = await adminPost('/api/admin/guest/rename', {
+            attendee_id: guest.attendee_id,
+            full_name: nextName,
+          });
+          setAdminStatus(res.message || 'Guest renamed.');
+          await loadAdminGuests();
+        } catch (err) {
+          setAdminStatus(apiErrorText(err, 'Failed to rename guest.'), true);
+        }
+      });
+    }
 
     adminEl.guestsList.appendChild(card);
   }
@@ -1446,8 +1690,136 @@ async function loadAdminEvents() {
   renderAdminEvents();
 }
 
+function reviewProofHtml(item) {
+  const url = item.proof_url;
+  if (!url) {
+    return `<p class="hint">${escapeHtml(item.proof_note || 'No payment proof available.')}</p>`;
+  }
+  const safeUrl = escapeHtml(url);
+  const lower = String(url).toLowerCase().split('?')[0];
+  const isImage = /\.(jpg|jpeg|png)$/.test(lower);
+  if (isImage) {
+    return `<a href="${safeUrl}" target="_blank" rel="noopener"><img src="${safeUrl}" loading="lazy" alt="Payment proof" class="admin-proof-thumb" /></a>`;
+  }
+  return `<a href="${safeUrl}" target="_blank" rel="noopener">View payment proof</a>`;
+}
+
+function reviewRepostProofsHtml(item) {
+  const proofs = Array.isArray(item.repost_proofs) ? item.repost_proofs : [];
+  const rows = proofs
+    .filter((proof) => proof && proof.url)
+    .map((proof) => {
+      const safeName = escapeHtml(proof.full_name || '');
+      const safeUrl = escapeHtml(proof.url);
+      const lower = String(proof.url).toLowerCase().split('?')[0];
+      const isImage = /\.(jpg|jpeg|png)$/.test(lower);
+      const media = isImage
+        ? `<a href="${safeUrl}" target="_blank" rel="noopener"><img src="${safeUrl}" loading="lazy" alt="Repost proof for ${safeName}" class="admin-proof-thumb" /></a>`
+        : `<a href="${safeUrl}" target="_blank" rel="noopener">View repost proof</a>`;
+      return `<div class="admin-repost-proof"><p class="admin-card-meta">Repost: ${safeName}</p>${media}</div>`;
+    })
+    .join('');
+  if (!rows) return '';
+  return `<div class="admin-repost-proofs">${rows}</div>`;
+}
+
+function renderAdminReviews() {
+  if (!adminEl.reviewsList) return;
+  adminEl.reviewsList.innerHTML = '';
+  if (!adminState.reviews.length) {
+    adminEl.reviewsList.innerHTML = '<p class="hint">No pending payments.</p>';
+    return;
+  }
+  for (const item of adminState.reviews) {
+    const attendees = Array.isArray(item.attendees) ? item.attendees : [];
+    const attendeeHtml = attendees.length ? attendees.map((n) => escapeHtml(n)).join(', ') : '-';
+    const base = Number(item.base_total_price || 0);
+    const group = Number(item.group_discount_amount || 0);
+    const disc = Number(item.discount_amount || 0);
+    const applied = Math.max(group, disc);
+    const total = Number(item.total_price || 0);
+    const card = document.createElement('div');
+    card.className = 'admin-card';
+    card.innerHTML = `
+      <div class="admin-card-head">
+        <p class="admin-card-title">${escapeHtml(item.code || '')}</p>
+        <div class="admin-inline-actions">
+          <button type="button" data-action="approve">Approve</button>
+          <button type="button" data-action="reject-toggle">Reject</button>
+        </div>
+      </div>
+      <div>
+        <p class="admin-card-meta">${escapeHtml(item.event_title || '')} (${escapeHtml(item.event_datetime || '')})</p>
+        <p class="admin-card-meta">${escapeHtml(item.buyer_name || '')} ${escapeHtml(item.buyer_surname || '')} | ${escapeHtml(item.buyer_phone || '')}</p>
+        <p class="admin-card-meta">Boys: ${escapeHtml(String(item.boys ?? 0))} | Girls: ${escapeHtml(String(item.girls ?? 0))}</p>
+        <p class="admin-card-meta">Base: ${escapeHtml(base.toFixed(2))} | Discount: ${escapeHtml(applied.toFixed(2))} | Total: ${escapeHtml(total.toFixed(2))}</p>
+        <p class="admin-card-meta">Guests: ${attendeeHtml}</p>
+        <div class="admin-proof">${reviewProofHtml(item)}</div>
+        ${reviewRepostProofsHtml(item)}
+        <div class="admin-reject-box" hidden>
+          <label>Rejection note<input type="text" data-role="reject-note" placeholder="Reason for rejection" /></label>
+          <button type="button" data-action="reject-confirm">Confirm reject</button>
+        </div>
+      </div>
+    `;
+
+    const approveBtn = card.querySelector('button[data-action="approve"]');
+    const rejectToggle = card.querySelector('button[data-action="reject-toggle"]');
+    const rejectBox = card.querySelector('.admin-reject-box');
+    const noteInput = card.querySelector('input[data-role="reject-note"]');
+    const rejectConfirm = card.querySelector('button[data-action="reject-confirm"]');
+
+    if (approveBtn) {
+      approveBtn.addEventListener('click', async () => {
+        try {
+          const res = await adminPost('/api/admin/reservation/approve', {
+            reservation_id: item.reservation_id,
+          });
+          setAdminStatus(res.message || 'Reservation approved.');
+          await Promise.all([loadAdminReviews(), loadAdminGuests(), loadAdminEvents()]);
+        } catch (err) {
+          setAdminStatus(apiErrorText(err, 'Failed to approve reservation.'), true);
+        }
+      });
+    }
+    if (rejectToggle && rejectBox) {
+      rejectToggle.addEventListener('click', () => {
+        rejectBox.hidden = !rejectBox.hidden;
+        if (!rejectBox.hidden && noteInput) noteInput.focus();
+      });
+    }
+    if (rejectConfirm) {
+      rejectConfirm.addEventListener('click', async () => {
+        const note = noteInput ? noteInput.value.trim() : '';
+        if (!note) {
+          setAdminStatus('Rejection note is required.', true);
+          return;
+        }
+        try {
+          const res = await adminPost('/api/admin/reservation/reject', {
+            reservation_id: item.reservation_id,
+            note,
+          });
+          setAdminStatus(res.message || 'Reservation rejected.');
+          await Promise.all([loadAdminReviews(), loadAdminGuests(), loadAdminEvents()]);
+        } catch (err) {
+          setAdminStatus(apiErrorText(err, 'Failed to reject reservation.'), true);
+        }
+      });
+    }
+
+    adminEl.reviewsList.appendChild(card);
+  }
+}
+
+async function loadAdminReviews() {
+  const data = await adminGet('/api/admin/reservation/pending');
+  adminState.reviews = Array.isArray(data.items) ? data.items : [];
+  renderAdminReviews();
+}
+
 async function refreshAdminAll() {
-  await Promise.all([loadAdminGuests(), loadAdminEvents()]);
+  await Promise.all([loadAdminReviews(), loadAdminGuests(), loadAdminEvents()]);
 }
 
 function renderCheckinResult(ticket, message = '', isError = false) {
@@ -1548,23 +1920,118 @@ function stopScanner() {
   if (adminEl.scanStart) adminEl.scanStart.disabled = false;
 }
 
+// Lazily inject the self-hosted jsQR decoder (CSP-safe, same-origin, load once).
+let jsqrLoadPromise = null;
+function loadJsQr() {
+  if (window.jsQR) return Promise.resolve(window.jsQR);
+  if (jsqrLoadPromise) return jsqrLoadPromise;
+  jsqrLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = '/static/jsqr.js';
+    script.async = true;
+    script.addEventListener('load', () => {
+      if (window.jsQR) {
+        resolve(window.jsQR);
+      } else {
+        jsqrLoadPromise = null;
+        reject(new Error('QR decoder failed to initialise.'));
+      }
+    });
+    script.addEventListener('error', () => {
+      jsqrLoadPromise = null;
+      reject(new Error('Could not load the QR decoder.'));
+    });
+    document.head.appendChild(script);
+  });
+  return jsqrLoadPromise;
+}
+
+// getUserMedia requires a secure context (https) except on localhost.
+function isSecureScanContext() {
+  if (window.isSecureContext) return true;
+  const host = window.location.hostname;
+  return window.location.protocol === 'https:' || host === 'localhost' || host === '127.0.0.1';
+}
+
+function scannerErrorMessage(err) {
+  const name = err && err.name ? err.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return 'Camera permission was denied. Allow camera access or paste the ticket code.';
+  }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError' || name === 'DevicesNotFoundError') {
+    return 'No camera found on this device. Paste the ticket code instead.';
+  }
+  return apiErrorText(err, 'Could not start camera scanner.');
+}
+
 async function startScanner() {
   if (!adminEl.scanVideo) return;
-  if (!('BarcodeDetector' in window)) {
-    renderCheckinResult(null, 'This browser does not support camera QR scanning. Paste the QR text instead.', true);
+  // A secure context is required for camera access on every modern browser.
+  if (!isSecureScanContext() || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    renderCheckinResult(null, 'Camera needs a secure (https) connection. Use the ticket code box.', true);
     return;
   }
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    renderCheckinResult(null, 'Camera access is not available in this browser.', true);
-    return;
-  }
+  const hasBarcodeDetector = 'BarcodeDetector' in window;
   if (adminEl.scanStart) adminEl.scanStart.disabled = true;
+
+  // Acquire the rear camera first so permission errors get precise messaging.
+  let stream;
   try {
-    const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
-    const stream = await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } },
       audio: false,
     });
+  } catch (err) {
+    stopScanner();
+    renderCheckinResult(null, scannerErrorMessage(err), true);
+    return;
+  }
+
+  // Pick a per-frame decoder: native BarcodeDetector when available (Chrome/
+  // Android), otherwise the self-hosted jsQR fallback (iOS Safari, Firefox).
+  let detectFrame;
+  try {
+    if (hasBarcodeDetector) {
+      const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+      detectFrame = async () => {
+        const codes = await detector.detect(adminEl.scanVideo);
+        return codes && codes[0] && codes[0].rawValue ? codes[0].rawValue : '';
+      };
+    } else {
+      let jsQR;
+      try {
+        jsQR = await loadJsQr();
+      } catch (_loadErr) {
+        stopScanner();
+        renderCheckinResult(
+          null,
+          'Camera QR scanning is not available here. Scan the QR with your phone camera app, or paste the ticket code.',
+          true,
+        );
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      detectFrame = async () => {
+        const video = adminEl.scanVideo;
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        if (!width || !height) return '';
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(video, 0, 0, width, height);
+        const frame = ctx.getImageData(0, 0, width, height);
+        const result = jsQR(frame.data, width, height, { inversionAttempts: 'dontInvert' });
+        return result && result.data ? result.data : '';
+      };
+    }
+  } catch (err) {
+    stopScanner();
+    renderCheckinResult(null, scannerErrorMessage(err), true);
+    return;
+  }
+
+  try {
     adminState.scanStream = stream;
     adminEl.scanVideo.srcObject = stream;
     adminEl.scanVideo.hidden = false;
@@ -1575,21 +2042,20 @@ async function startScanner() {
       if (adminState.scanBusy || !adminEl.scanVideo || adminEl.scanVideo.readyState < 2) return;
       adminState.scanBusy = true;
       try {
-        const codes = await detector.detect(adminEl.scanVideo);
-        const first = codes && codes[0] && codes[0].rawValue ? codes[0].rawValue : '';
-        if (first) {
+        const value = await detectFrame();
+        if (value) {
           stopScanner();
-          await lookupCheckinToken(first);
+          await lookupCheckinToken(value);
         }
       } catch (_err) {
         // Keep scanning; camera frames can fail transiently.
       } finally {
         adminState.scanBusy = false;
       }
-    }, 700);
+    }, 400);
   } catch (err) {
     stopScanner();
-    renderCheckinResult(null, apiErrorText(err, 'Could not start camera scanner.'), true);
+    renderCheckinResult(null, scannerErrorMessage(err), true);
   }
 }
 
@@ -1647,7 +2113,7 @@ async function openAdminMode() {
   setPageTab('admin');
   adminEl.open.classList.add('active');
   setAdminOpenStatus('');
-  setAdminSection(adminState.activeSection || 'events');
+  setAdminSection(adminState.activeSection || 'payments');
   await refreshAdminAll();
 }
 
@@ -1676,6 +2142,20 @@ async function loginAdmin() {
   } finally {
     if (adminEl.login) adminEl.login.disabled = false;
   }
+}
+
+async function logoutAdmin() {
+  try {
+    await fetch('/api/admin/logout', { method: 'POST', headers: adminHeaders() });
+  } catch (_err) {
+    /* best-effort: clear local state regardless */
+  }
+  adminState.ready = false;
+  setAdminLocked(true);
+  if (adminEl.loginPanel) adminEl.loginPanel.hidden = false;
+  if (adminEl.open) adminEl.open.classList.remove('active');
+  setAdminStatus('Logged out.');
+  setPageTab('main');
 }
 
 async function addAdminGuest() {
@@ -1762,6 +2242,8 @@ async function saveAdminEvent() {
   const eventId = Number(adminEl.eventSelect.value || 0);
   const title = adminEl.title.value.trim();
   const caption = adminEl.caption.value.trim();
+  const whenVal = adminEl.when ? adminEl.when.value.trim() : '';
+  const locVal = adminEl.location ? adminEl.location.value.trim() : '';
   const payload = {
     title,
     caption,
@@ -1790,17 +2272,27 @@ async function saveAdminEvent() {
     setAdminStatus('Title is required.', true);
     return;
   }
+  if (whenVal && !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(whenVal)) {
+    setAdminStatus('Date & time must be in YYYY-MM-DD HH:MM format.', true);
+    return;
+  }
 
   try {
     let res;
     if (eventId) {
+      const updates = { ...payload };
+      if (whenVal) updates.datetime = whenVal;
+      if (locVal) updates.location = locVal;
       res = await adminPost('/api/admin/event/update', {
         event_id: eventId,
-        updates: payload,
+        updates,
       });
       setAdminStatus(res.message || 'Event updated.');
     } else {
-      res = await adminPost('/api/admin/event/create_simple', payload);
+      const createBody = { ...payload };
+      if (whenVal) createBody.event_datetime = whenVal;
+      if (locVal) createBody.location = locVal;
+      res = await adminPost('/api/admin/event/create_simple', createBody);
       setAdminStatus(res.message || 'Event created.');
     }
     if (res && res.event && res.event.id) {
@@ -1871,6 +2363,28 @@ if (accountCloseEl) {
 if (accountBackdropEl) {
   accountBackdropEl.addEventListener('click', closeAccountPanel);
 }
+if (accountPanelEl) {
+  accountPanelEl.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || accountPanelEl.hidden) return;
+    const focusables = getAccountFocusable();
+    if (!focusables.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !accountPanelEl.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || !accountPanelEl.contains(active)) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
 document.addEventListener('click', (event) => {
   if (!accountPanelEl || accountPanelEl.hidden) return;
   const target = event.target;
@@ -1894,6 +2408,9 @@ if (accountEditEl) {
 if (accountSendCodeEl) {
   accountSendCodeEl.addEventListener('click', sendWebsiteLoginCode);
 }
+if (accountLogoutEl) {
+  accountLogoutEl.addEventListener('click', logoutWebsiteAccount);
+}
 if (accountVerifyEl) {
   accountVerifyEl.addEventListener('click', verifyWebsiteLoginCode);
 }
@@ -1901,6 +2418,15 @@ if (accountCodeEl) {
   accountCodeEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       verifyWebsiteLoginCode();
+    }
+  });
+}
+if (heroGetTicketsEl) {
+  heroGetTicketsEl.addEventListener('click', () => {
+    setPageTab('main');
+    const target = document.getElementById('upcoming-events');
+    if (target && target.scrollIntoView) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   });
 }
@@ -1942,6 +2468,9 @@ if (adminEl.open) {
 if (adminEl.login) {
   adminEl.login.addEventListener('click', loginAdmin);
 }
+if (adminEl.logout) {
+  adminEl.logout.addEventListener('click', logoutAdmin);
+}
 if (adminEl.password) {
   adminEl.password.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') loginAdmin();
@@ -1960,11 +2489,28 @@ if (pageTabs.length) {
     });
   }
 }
+const footerTermsLink = document.getElementById('footer-terms-link');
+if (footerTermsLink) {
+  footerTermsLink.addEventListener('click', (event) => {
+    event.preventDefault();
+    resetAccountPanelState();
+    setPageTab('book');
+    const termsDetails = document.querySelector('.terms-box details');
+    if (termsDetails) {
+      termsDetails.open = true;
+      termsDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+}
 if (adminEl.tabs && adminEl.tabs.length) {
   for (const tabBtn of adminEl.tabs) {
     tabBtn.addEventListener('click', () => {
       const tabKey = tabBtn.dataset ? tabBtn.dataset.adminTab : '';
-      setAdminSection(tabKey || 'events');
+      const key = tabKey || 'payments';
+      setAdminSection(key);
+      if (key === 'payments') {
+        loadAdminReviews().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load payments.'), true));
+      }
     });
   }
 }
@@ -1975,6 +2521,16 @@ if (adminEl.refreshAll) {
       setAdminStatus('Admin data refreshed.');
     } catch (err) {
       setAdminStatus(apiErrorText(err, 'Failed to refresh admin data.'), true);
+    }
+  });
+}
+if (adminEl.reviewsRefresh) {
+  adminEl.reviewsRefresh.addEventListener('click', async () => {
+    try {
+      await loadAdminReviews();
+      setAdminStatus('Payments refreshed.');
+    } catch (err) {
+      setAdminStatus(apiErrorText(err, 'Failed to refresh payments.'), true);
     }
   });
 }
@@ -2069,7 +2625,7 @@ if (ticketsRefreshEl) {
 
 initTelegram();
 setPageTab('main');
-setAdminSection('events');
+setAdminSection('payments');
 setAdminLocked(true);
 renderAccountPanel();
 updateCarouselDots();
@@ -2083,6 +2639,11 @@ if (autoOpenAdmin && adminEl.open) {
   });
 } else {
   checkAdminAvailability();
+}
+if (window.Telegram && window.Telegram.WebApp) {
+  applyTelegramContext();
+} else {
+  window.addEventListener('tg-sdk-ready', applyTelegramContext, { once: true });
 }
 if (initialCheckinToken && adminEl.checkinToken) {
   adminEl.checkinToken.value = initialCheckinToken;

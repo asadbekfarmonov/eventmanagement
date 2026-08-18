@@ -425,8 +425,8 @@ h3 {
 }
 
 .danger-btn {
-  border-color: rgba(217, 45, 66, 0.28);
-  color: #8d1829;
+  border-color: rgba(255, 156, 156, 0.55);
+  color: #ff9c9c;
   background: rgba(217, 45, 66, 0.08);
 }
 
@@ -1114,8 +1114,20 @@ input[type="file"]::file-selector-button {
 
 .admin-locked .admin-tabs,
 .admin-locked .admin-section,
-.admin-locked #admin-refresh-all {
+.admin-locked #admin-refresh-all,
+.admin-locked #admin-logout {
   display: none;
+}
+
+.admin-proof {
+  margin: 8px 0;
+}
+
+.admin-proof-thumb {
+  max-width: 160px;
+  max-height: 160px;
+  border-radius: 8px;
+  display: block;
 }
 
 @media (min-width: 680px) {
@@ -1137,6 +1149,10 @@ input[type="file"]::file-selector-button {
   }
 
   .event-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .upcoming-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1162,10 +1178,57 @@ input[type="file"]::file-selector-button {
 
 @media (min-width: 920px) {
   .hero {
-    min-height: 260px;
+    min-height: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: start;
+    column-gap: 24px;
+    padding: 20px 0 24px;
   }
 
-  .main-panel:not([hidden]) {
+  .hero-brand {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+    margin-bottom: 0;
+  }
+
+  .nav-row {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 0;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .hero-brand {
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sub {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .admin-open-status,
+  .hero-cta-row {
+    grid-column: 1 / -1;
+  }
+
+  .hero-cta-row {
+    margin-top: 18px;
+  }
+
+  .upcoming-grid {
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  }
+
+  .main-story {
     display: grid;
     grid-template-columns: minmax(0, 1.06fr) minmax(360px, 0.94fr);
   }
@@ -1269,4 +1332,133 @@ input[type="file"]::file-selector-button {
     scroll-behavior: auto !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+.site-footer {
+  position: relative;
+  z-index: 1;
+  margin: 32px auto 0;
+  padding: 22px 18px calc(24px + env(safe-area-inset-bottom));
+  max-width: 640px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.site-footer .footer-brand {
+  margin: 0 0 10px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.site-footer .footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 18px;
+}
+
+.site-footer .footer-links a {
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.site-footer .footer-links a:hover,
+.site-footer .footer-links a:focus-visible {
+  color: var(--gold);
+}
+
+.hero-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-top: 18px;
+}
+
+.hero-cta {
+  width: auto;
+  min-width: 180px;
+  margin-top: 0;
+  font-size: 15px;
+}
+
+.hero-cta-note {
+  margin: 0;
+  color: rgba(246, 240, 230, 0.72);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.upcoming-events {
+  padding: clamp(20px, 4vw, 34px);
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(0, 163, 255, 0.06), transparent 60%),
+    #100d12;
+}
+
+.upcoming-head {
+  margin-bottom: 16px;
+}
+
+.upcoming-head .eyebrow {
+  color: #8adeff;
+}
+
+.upcoming-head h2 {
+  margin: 4px 0 0;
+  color: var(--ink);
+}
+
+.upcoming-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.upcoming-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.upcoming-when {
+  margin: 10px 0 0;
+  color: #ffe3a4;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.upcoming-where {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.upcoming-card .event-price {
+  align-self: flex-start;
+}
+
+.upcoming-card .event-meta {
+  flex: 1 1 auto;
+}
+
+.upcoming-cta {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.ticket-cancel-btn {
+  margin-top: 10px;
+  border-color: rgba(255, 156, 156, 0.55);
+  color: #ff9c9c;
+  background: rgba(217, 45, 66, 0.08);
+}
+
+.ticket-admin-note {
+  color: #ffb4b4;
 }

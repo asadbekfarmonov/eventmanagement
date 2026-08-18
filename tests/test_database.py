@@ -16,6 +16,36 @@ from ticketbot.database import (
 BUDAPEST_TZ = ZoneInfo("Europe/Budapest")
 
 
+class _FailingCursor:
+    """Wraps a real cursor and raises when SQL containing the trigger runs."""
+
+    def __init__(self, real, trigger):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_trigger", trigger)
+
+    def execute(self, sql, *args, **kwargs):
+        if self._trigger in sql:
+            raise sqlite3.OperationalError("injected mid-write failure")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+class _ConnProxy:
+    """Delegates to a real connection but hands out failing cursors."""
+
+    def __init__(self, real, trigger):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_trigger", trigger)
+
+    def cursor(self):
+        return _FailingCursor(self._real.cursor(), self._trigger)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
 class DatabaseTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -911,6 +941,191 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(migrated_reservation.discount_count, 0)
         self.assertEqual(migrated_reservation.discount_unit_amount, 0.0)
         self.assertEqual(migrated_reservation.discount_amount, 0.0)
+
+    def test_list_pending_reservations_returns_pending_oldest_first(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        first = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["First Guest"],
+            payment_file_id="proof-1",
+            payment_file_type="external",
+        )
+        second = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Second Guest"],
+            payment_file_id="proof-2",
+            payment_file_type="photo",
+        )
+        approved = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Approved Guest"],
+            payment_file_id="proof-3",
+            payment_file_type="photo",
+        )
+        ok, _msg, _res = self.db.approve_reservation(approved.id, 999)
+        self.assertTrue(ok)
+
+        rows = self.db.list_pending_reservations()
+        ids = [row["reservation_id"] for row in rows]
+        self.assertIn(first.id, ids)
+        self.assertIn(second.id, ids)
+        self.assertNotIn(approved.id, ids)
+        self.assertLess(ids.index(first.id), ids.index(second.id))
+
+        created = [row["created_at"] for row in rows]
+        self.assertEqual(created, sorted(created))
+
+        first_row = next(row for row in rows if row["reservation_id"] == first.id)
+        self.assertEqual(first_row["event_title"], "Sample Event")
+        self.assertEqual(first_row["buyer_name"], "Test")
+        self.assertEqual(first_row["buyer_surname"], "User")
+        self.assertEqual(first_row["buyer_phone"], "12345")
+        self.assertEqual(first_row["payment_file_id"], "proof-1")
+        self.assertEqual(first_row["payment_file_type"], "external")
+        self.assertEqual(first_row["reservation_status"], STATUS_PENDING)
+        self.assertEqual(first_row["boys"], 1)
+        self.assertEqual(first_row["girls"], 0)
+
+    def test_list_pending_reservations_respects_limit(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        for idx in range(3):
+            self.db.create_pending_reservation(
+                user_id=self.user_id,
+                event_id=event_id,
+                boys=1,
+                girls=0,
+                attendees=[f"Guest {idx}"],
+                payment_file_id=f"proof-{idx}",
+                payment_file_type="photo",
+            )
+        rows = self.db.list_pending_reservations(limit=2)
+        self.assertEqual(len(rows), 2)
+
+    def test_delete_admin_web_session_removes_session(self):
+        token = self.db.create_admin_web_session()
+        self.assertTrue(self.db.is_valid_admin_web_session(token))
+
+        self.db.delete_admin_web_session(token)
+        self.assertFalse(self.db.is_valid_admin_web_session(token))
+
+        # No-op for unknown / empty tokens.
+        self.db.delete_admin_web_session(token)
+        self.db.delete_admin_web_session("does-not-exist")
+        self.db.delete_admin_web_session("")
+
+    def test_busy_timeout_pragma_is_set(self):
+        cursor = self.db.conn.cursor()
+        cursor.execute("PRAGMA busy_timeout")
+        self.assertEqual(cursor.fetchone()[0], 5000)
+
+    def test_write_method_rolls_back_on_midwrite_exception(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        real_conn = self.db.conn
+        # Force the attendee INSERT (second write of create_pending_reservation) to fail
+        # after the reservation row has already been inserted (but not committed).
+        self.db.conn = _ConnProxy(real_conn, "INSERT INTO attendees")
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.create_pending_reservation(
+                    user_id=self.user_id,
+                    event_id=event_id,
+                    boys=1,
+                    girls=0,
+                    attendees=["Rollback Guest"],
+                    payment_file_id="proof",
+                    payment_file_type="photo",
+                )
+        finally:
+            self.db.conn = real_conn
+
+        # The partial reservation must have been rolled back (no orphan rows).
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM reservations")
+        self.assertEqual(cursor.fetchone()[0], 0)
+        cursor.execute("SELECT COUNT(*) FROM attendees")
+        self.assertEqual(cursor.fetchone()[0], 0)
+
+        # The connection is not stuck mid-transaction: the next write still works
+        # and does not resurrect the rolled-back partial row.
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Good Guest"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        self.assertIsNotNone(reservation)
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM reservations")
+        self.assertEqual(cursor.fetchone()[0], 1)
+        cursor.execute("SELECT COUNT(*) FROM attendees")
+        self.assertEqual(cursor.fetchone()[0], 1)
+
+    def test_stock_not_half_decremented_on_write_failure(self):
+        # QA gap coverage for M6: the existing rollback test fails at the attendee
+        # INSERT (before any stock decrement). This forces the failure at the final
+        # "UPDATE events" stock-decrement step to prove the hold/stock is not
+        # half-decremented when a write blows up mid-transaction.
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+        real_conn = self.db.conn
+
+        def _early_qty():
+            cur = real_conn.cursor()
+            cur.execute("SELECT early_bird_qty FROM events WHERE id = ?", (event_id,))
+            return cur.fetchone()[0]
+
+        self.assertEqual(_early_qty(), 10)
+
+        self.db.conn = _ConnProxy(real_conn, "UPDATE events")
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.create_pending_reservation(
+                    user_id=self.user_id,
+                    event_id=event_id,
+                    boys=1,
+                    girls=0,
+                    attendees=["Stock Guest"],
+                    payment_file_id="proof",
+                    payment_file_type="photo",
+                )
+        finally:
+            self.db.conn = real_conn
+
+        # Stock must be untouched (not half-decremented) and no orphan rows remain.
+        self.assertEqual(_early_qty(), 10)
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM reservations")
+        self.assertEqual(cursor.fetchone()[0], 0)
+        cursor.execute("SELECT COUNT(*) FROM attendees")
+        self.assertEqual(cursor.fetchone()[0], 0)
+
+        # Connection remains usable; a subsequent booking commits and decrements
+        # stock by exactly one.
+        reservation = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=event_id,
+            boys=1,
+            girls=0,
+            attendees=["Good Guest"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+        )
+        self.assertIsNotNone(reservation)
+        self.assertEqual(_early_qty(), 9)
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM reservations")
+        self.assertEqual(cursor.fetchone()[0], 1)
 
 
 if __name__ == "__main__":

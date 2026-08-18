@@ -270,13 +270,41 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(index_response.headers.get("cache-control"), "no-store, max-age=0")
         self.assertIn("/static/styles.css?v=20260818a", index_response.text)
         self.assertIn("/static/app.js?v=20260818a", index_response.text)
-        self.assertIn('/static/logo.png?v=20260817f', index_response.text)
+        self.assertIn('/static/logo.png?v=20260818b', index_response.text)
         self.assertIn('/static/noun-ornament-1565565.svg', self.client.get('/static/styles.css').text)
         self.assertNotIn("Signed in with", index_response.text)
 
         js_response = self.client.get("/static/app.js")
         self.assertEqual(js_response.status_code, 200)
         self.assertEqual(js_response.headers.get("cache-control"), "no-store, max-age=0")
+
+    def test_static_images_are_cached_immutable(self):
+        logo_response = self.client.get("/static/logo.png")
+        self.assertEqual(logo_response.status_code, 200)
+        self.assertEqual(
+            logo_response.headers.get("cache-control"),
+            "public, max-age=31536000, immutable",
+        )
+        # HTML and JS keep the intentional no-store policy for instant deploys.
+        self.assertEqual(
+            self.client.get("/").headers.get("cache-control"), "no-store, max-age=0"
+        )
+        self.assertEqual(
+            self.client.get("/static/app.js").headers.get("cache-control"),
+            "no-store, max-age=0",
+        )
+
+    def test_tg_init_script_is_served_and_sdk_is_conditional(self):
+        response = self.client.get("/static/tg-init.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("javascript", response.headers.get("content-type", ""))
+        self.assertIn("telegram-web-app.js", response.text)
+        # tg-init.js is same-origin code, so it keeps the no-store policy.
+        self.assertEqual(response.headers.get("cache-control"), "no-store, max-age=0")
+        # A plain website visitor must not be forced to fetch telegram.org.
+        index_text = self.client.get("/").text
+        self.assertNotIn("https://telegram.org/js/telegram-web-app.js", index_text)
+        self.assertIn("/static/tg-init.js", index_text)
 
     def test_website_registration_can_book_and_read_tickets_without_telegram(self):
         start_resp = self.client.post(
@@ -465,6 +493,223 @@ class MiniAppAdminApiTests(unittest.TestCase):
             files=[("file", ("proof.png", PNG_BYTES, "image/png"))],
         )
         self.assertEqual(response.status_code, 401, response.text)
+
+    def _login_admin_web(self):
+        resp = self.client.post("/api/admin/login", json={"password": "test-admin-password"})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp
+
+    def test_admin_pending_list_resigns_external_proof_and_notes_telegram(self):
+        self._login_admin_web()
+
+        booking = self._book_with_payment(boys=1, girls=0, attendees=["Web Guest"])
+        self.assertEqual(booking.status_code, 200, booking.text)
+        ext_res = self.db.get_reservation_by_code(booking.json()["code"])
+        self.assertEqual(ext_res.payment_file_type, "external")
+        upload_name = Path(urlparse(ext_res.payment_file_id).path).name
+
+        # Corrupt the stored signed link so only a fresh re-sign yields a working URL.
+        self.db.conn.execute(
+            "UPDATE reservations SET payment_file_id = ? WHERE id = ?",
+            (f"https://example.invalid/uploads/{upload_name}?expires=1&token=deadbeef", ext_res.id),
+        )
+        self.db.conn.commit()
+
+        tg_res = self._create_reservation("Telegram Guest")
+
+        resp = self.client.get("/api/admin/reservation/pending")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        items = {item["reservation_id"]: item for item in resp.json()["items"]}
+        self.assertIn(ext_res.id, items)
+        self.assertIn(tg_res.id, items)
+
+        ext_item = items[ext_res.id]
+        self.assertIsNotNone(ext_item["proof_url"])
+        self.assertIn(f"/uploads/{upload_name}", ext_item["proof_url"])
+        self.assertEqual(ext_item["attendees"], ["Web Guest"])
+        parsed = urlparse(ext_item["proof_url"])
+        fetch = self.client.get(f"{parsed.path}?{parsed.query}")
+        self.assertEqual(fetch.status_code, 200, fetch.text)
+
+        tg_item = items[tg_res.id]
+        self.assertIsNone(tg_item["proof_url"])
+        self.assertEqual(tg_item["proof_note"], "Payment proof was sent in Telegram.")
+
+    def test_admin_pending_list_includes_fresh_repost_proof_urls(self):
+        self.db.set_event_fields(
+            self.event_id,
+            {
+                "repost_discount_enabled": 1,
+                "repost_discount_amount": 1000,
+            },
+        )
+
+        # External repost proof via the real web booking flow (writes a real file).
+        booking = self._book_with_payment(
+            boys=1,
+            girls=0,
+            attendees=["Repost Guest"],
+            discounted_attendee_indexes=[0],
+            repost_files={0: ("repost-0.png", PNG_BYTES, "image/png")},
+            content=PNG_BYTES,
+            mime="image/png",
+        )
+        self.assertEqual(booking.status_code, 200, booking.text)
+        ext_res = self.db.get_reservation_by_code(booking.json()["code"])
+        ext_attendees = self.db.list_attendees(ext_res.id)
+        self.assertEqual(ext_attendees[0]["repost_proof_file_type"], "external")
+        upload_name = Path(urlparse(ext_attendees[0]["repost_proof_file_id"]).path).name
+
+        # Corrupt the stored signed link so only a fresh re-sign yields a working URL.
+        self.db.conn.execute(
+            "UPDATE attendees SET repost_proof_file_id = ? WHERE id = ?",
+            (
+                f"https://example.invalid/uploads/{upload_name}?expires=1&token=deadbeef",
+                ext_attendees[0]["id"],
+            ),
+        )
+        self.db.conn.commit()
+
+        # Non-external repost proof (sent in Telegram) must be omitted from the web review.
+        tg_res = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=self.event_id,
+            boys=1,
+            girls=0,
+            attendees=["Telegram Repost Guest"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("tg-repost-file-id", "photo")},
+        )
+
+        self._login_admin_web()
+        resp = self.client.get("/api/admin/reservation/pending")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        items = {item["reservation_id"]: item for item in resp.json()["items"]}
+        self.assertIn(ext_res.id, items)
+        self.assertIn(tg_res.id, items)
+
+        ext_item = items[ext_res.id]
+        self.assertEqual(len(ext_item["repost_proofs"]), 1)
+        proof = ext_item["repost_proofs"][0]
+        self.assertEqual(proof["full_name"], "Repost Guest")
+        self.assertIsNotNone(proof["url"])
+        self.assertIn(f"/uploads/{upload_name}", proof["url"])
+        parsed = urlparse(proof["url"])
+        fetch = self.client.get(f"{parsed.path}?{parsed.query}")
+        self.assertEqual(fetch.status_code, 200, fetch.text)
+
+        tg_item = items[tg_res.id]
+        self.assertEqual(tg_item["repost_proofs"], [])
+
+    def test_admin_pending_omits_absent_and_unusable_repost_proofs(self):
+        """M2 gap: repost_discount_applied but no usable external file -> omitted,
+        never surfaced as a null/broken entry."""
+        self.db.set_event_fields(
+            self.event_id,
+            {"repost_discount_enabled": 1, "repost_discount_amount": 1000},
+        )
+
+        # (a) External repost type but EMPTY stored file id -> no filename -> omit.
+        empty_res = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=self.event_id,
+            boys=1,
+            girls=0,
+            attendees=["Empty Proof Guest"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("", "external")},
+        )
+
+        # (b) External repost type but the stored value is not an /uploads/ path -> omit.
+        badpath_res = self.db.create_pending_reservation(
+            user_id=self.user_id,
+            event_id=self.event_id,
+            boys=1,
+            girls=0,
+            attendees=["Bad Path Guest"],
+            payment_file_id="proof",
+            payment_file_type="photo",
+            discounted_attendee_indexes=[0],
+            repost_proofs_by_index={0: ("https://evil.example/not-uploads/x.png", "external")},
+        )
+
+        self._login_admin_web()
+        resp = self.client.get("/api/admin/reservation/pending")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        items = {item["reservation_id"]: item for item in resp.json()["items"]}
+
+        self.assertIn(empty_res.id, items)
+        self.assertIn(badpath_res.id, items)
+        # Key is always present and is an empty list (never null / never a broken entry).
+        self.assertEqual(items[empty_res.id]["repost_proofs"], [])
+        self.assertEqual(items[badpath_res.id]["repost_proofs"], [])
+
+    def test_admin_approve_moves_pending_to_approved_and_requires_session(self):
+        reservation = self._create_reservation("Approve Guest")
+
+        no_auth = self.client.post(
+            "/api/admin/reservation/approve",
+            json={"reservation_id": reservation.id},
+        )
+        self.assertEqual(no_auth.status_code, 401, no_auth.text)
+        self.assertEqual(self.db.get_reservation(reservation.id).status, "pending_payment_review")
+
+        self._login_admin_web()
+        approve = self.client.post(
+            "/api/admin/reservation/approve",
+            json={"reservation_id": reservation.id},
+        )
+        self.assertEqual(approve.status_code, 200, approve.text)
+        self.assertTrue(approve.json()["ok"])
+        self.assertEqual(self.db.get_reservation(reservation.id).status, "approved")
+
+    def test_admin_reject_requires_note_and_releases_hold(self):
+        event_before = self.db.get_event(self.event_id)
+        reservation = self._create_reservation("Reject Guest")
+        event_held = self.db.get_event(self.event_id)
+        self.assertEqual(event_held.early_bird_qty, event_before.early_bird_qty - 1)
+
+        self._login_admin_web()
+
+        missing = self.client.post(
+            "/api/admin/reservation/reject",
+            json={"reservation_id": reservation.id},
+        )
+        self.assertEqual(missing.status_code, 400, missing.text)
+        self.assertEqual(missing.json()["detail"], "Rejection note is required.")
+
+        blank = self.client.post(
+            "/api/admin/reservation/reject",
+            json={"reservation_id": reservation.id, "note": "   "},
+        )
+        self.assertEqual(blank.status_code, 400, blank.text)
+        self.assertEqual(self.db.get_reservation(reservation.id).status, "pending_payment_review")
+
+        ok = self.client.post(
+            "/api/admin/reservation/reject",
+            json={"reservation_id": reservation.id, "note": "Blurry proof"},
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+        rejected = self.db.get_reservation(reservation.id)
+        self.assertEqual(rejected.status, "rejected")
+        self.assertEqual(rejected.admin_note, "Blurry proof")
+        event_after = self.db.get_event(self.event_id)
+        self.assertEqual(event_after.early_bird_qty, event_before.early_bird_qty)
+
+    def test_admin_logout_invalidates_session(self):
+        self._login_admin_web()
+        self.assertEqual(self.client.get("/api/admin/events").status_code, 200)
+
+        logout = self.client.post("/api/admin/logout")
+        self.assertEqual(logout.status_code, 200, logout.text)
+        self.assertTrue(logout.json()["ok"])
+
+        after = self.client.get("/api/admin/events")
+        self.assertEqual(after.status_code, 401, after.text)
 
     def test_admin_guest_rename_and_remove_api(self):
         reservation = self._create_reservation("Azat Jolamanov", status="approved")
@@ -906,6 +1151,45 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(duplicate_resp.status_code, 200, duplicate_resp.text)
         self.assertFalse(duplicate_resp.json()["ok"])
         self.assertIn("already checked in", duplicate_resp.json()["message"])
+
+    def test_checkin_endpoints_reject_non_admin(self):
+        reservation = self._create_reservation("Gate Crasher", status="approved")
+        attendee = self.db.list_attendees(reservation.id)[0]
+        token = attendee["ticket_token"]
+
+        lookup_resp = self.client.get(
+            "/api/admin/checkin/lookup",
+            params={"tg_id": self.user_tg_id, "token": token},
+        )
+        self.assertEqual(lookup_resp.status_code, 403, lookup_resp.text)
+
+        checkin_resp = self.client.post(
+            "/api/admin/checkin",
+            json={"tg_id": self.user_tg_id, "token": token},
+        )
+        self.assertEqual(checkin_resp.status_code, 403, checkin_resp.text)
+
+        # The ticket must remain not checked-in after the blocked attempts.
+        admin_lookup = self.client.get(
+            "/api/admin/checkin/lookup",
+            params={"tg_id": self.admin_tg_id, "token": token},
+        )
+        self.assertEqual(admin_lookup.status_code, 200, admin_lookup.text)
+        self.assertFalse(admin_lookup.json()["ticket"]["checked_in"])
+
+    def test_jsqr_scanner_fallback_is_self_hosted_and_served(self):
+        response = self.client.get("/static/jsqr.js")
+        self.assertEqual(response.status_code, 200, response.text)
+        content_type = response.headers.get("content-type", "")
+        self.assertTrue(
+            "javascript" in content_type or "ecmascript" in content_type,
+            content_type,
+        )
+        # A real QR decoder is far larger than a stub; guard against truncation.
+        self.assertGreater(len(response.content), 50000)
+        self.assertIn("jsQR", response.text)
+        # .js keeps the intentional no-store policy so deploys take effect.
+        self.assertEqual(response.headers.get("cache-control"), "no-store, max-age=0")
 
     def test_pending_ticket_has_no_qr_and_cannot_check_in(self):
         reservation = self._create_reservation("Pending Door", status="pending_payment_review")
@@ -1364,6 +1648,85 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertFalse(os.path.exists(repost_reviewed_path), "Old reviewed repost proof should be deleted.")
         self.assertFalse(os.path.exists(orphan_path), "Orphan file should be deleted.")
         self.assertIsNotNone(pending_res)
+
+    def test_blocked_web_user_is_forbidden_on_me_and_booking(self):
+        # Create a website (email-login) user and establish a web session cookie.
+        start_resp = self.client.post(
+            "/api/web/login/start",
+            json={
+                "name": "Blocked",
+                "surname": "Guest",
+                "email": "blocked.guest@example.invalid",
+                "phone": "+36 20 555 0000",
+            },
+        )
+        self.assertEqual(start_resp.status_code, 200, start_resp.text)
+        verify_resp = self.client.post(
+            "/api/web/login/verify",
+            json={"email": "blocked.guest@example.invalid", "code": start_resp.json()["dev_code"]},
+        )
+        self.assertEqual(verify_resp.status_code, 200, verify_resp.text)
+
+        # Sanity: the freshly registered user can access /api/me before being blocked.
+        ok_me = self.client.get("/api/me")
+        self.assertEqual(ok_me.status_code, 200, ok_me.text)
+
+        # Block the user directly in the database.
+        self.db.conn.execute(
+            "UPDATE users SET blocked = 1 WHERE email = ?",
+            ("blocked.guest@example.invalid",),
+        )
+        self.db.conn.commit()
+
+        # /api/me must now be forbidden.
+        me_resp = self.client.get("/api/me")
+        self.assertEqual(me_resp.status_code, 403, me_resp.text)
+        self.assertIn("blocked", me_resp.json()["detail"].lower())
+
+        # Booking must also be blocked (it flows through _request_user).
+        booking_resp = self.client.post(
+            "/api/book_with_payment",
+            data={
+                "event_id": str(self.event_id),
+                "boys": "1",
+                "girls": "0",
+                "attendees": json.dumps(["Blocked Guest"]),
+                "discounted_attendee_indexes": "[]",
+                "terms_accepted": "true",
+            },
+            files=[("file", ("proof.png", PNG_BYTES, "image/png"))],
+        )
+        self.assertEqual(booking_resp.status_code, 403, booking_resp.text)
+        self.assertIn("blocked", booking_resp.json()["detail"].lower())
+
+    def test_blocked_telegram_user_is_forbidden_on_me_and_booking(self):
+        # QA gap coverage: verify the Telegram (tg_id) path of _request_user also
+        # enforces the block, not just the web-session path.
+        ok_me = self.client.get("/api/me", params={"tg_id": self.user_tg_id})
+        self.assertEqual(ok_me.status_code, 200, ok_me.text)
+
+        # Block the Telegram user directly in the database.
+        self.db.conn.execute(
+            "UPDATE users SET blocked = 1 WHERE tg_id = ?",
+            (self.user_tg_id,),
+        )
+        self.db.conn.commit()
+
+        # /api/me must now be forbidden for the blocked Telegram user.
+        me_resp = self.client.get("/api/me", params={"tg_id": self.user_tg_id})
+        self.assertEqual(me_resp.status_code, 403, me_resp.text)
+        self.assertIn("blocked", me_resp.json()["detail"].lower())
+
+        # Booking (flows through _request_user) must also be blocked.
+        booking_resp = self._book_with_payment(tg_id=self.user_tg_id, attendees=["Blocked Guest"])
+        self.assertEqual(booking_resp.status_code, 403, booking_resp.text)
+        self.assertIn("blocked", booking_resp.json()["detail"].lower())
+
+        # A different, non-blocked Telegram user still works (no over-blocking).
+        other_tg_id = 424242424
+        self.db.upsert_user(other_tg_id, "Other", "User", "phone")
+        other_me = self.client.get("/api/me", params={"tg_id": other_tg_id})
+        self.assertEqual(other_me.status_code, 200, other_me.text)
 
 
 if __name__ == "__main__":

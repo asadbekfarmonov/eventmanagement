@@ -4,8 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Budapest Tunderi</title>
-  <link rel="icon" type="image/png" href="/static/logo.png?v=20260817f">
-  <link rel="apple-touch-icon" href="/static/logo.png?v=20260817f">
+  <meta name="description" content="Budapest Tunderi hosts unforgettable nights for Central Asians and the Russian-speaking community in Budapest. Book event tickets, meet your people, and feel at home away from home.">
+  <meta name="theme-color" content="#0b0b12">
+  <link rel="canonical" href="https://budapesttunderi.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Budapest Tunderi">
+  <meta property="og:title" content="Budapest Tunderi — Nights for our people in Budapest">
+  <meta property="og:description" content="Book tickets for Budapest Tunderi nights: warm rooms, familiar music, and a real community for Central Asians and Russian-speaking students in Budapest.">
+  <meta property="og:url" content="https://budapesttunderi.com/">
+  <meta property="og:image" content="https://budapesttunderi.com/static/main-carousel-1.jpg">
+  <meta property="og:locale" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Budapest Tunderi — Nights for our people in Budapest">
+  <meta name="twitter:description" content="Book tickets for Budapest Tunderi nights: warm rooms, familiar music, and a real community in Budapest.">
+  <meta name="twitter:image" content="https://budapesttunderi.com/static/main-carousel-1.jpg">
+  <link rel="icon" type="image/png" href="/static/logo.png?v=20260818b">
+  <link rel="apple-touch-icon" href="/static/logo.png?v=20260818b">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
@@ -16,27 +30,40 @@
     <header class="hero">
       <div class="hero-brand">
         <div class="brand-logo-wrap">
-          <img class="brand-logo" src="/static/logo.png?v=20260311f" alt="Budapest Tunderi logo" />
+          <img class="brand-logo" src="/static/logo.png?v=20260818b" alt="Budapest Tunderi logo" width="239" height="256" decoding="async" />
         </div>
         <h1 class="hero-title">BUDAPEST TUNDERI</h1>
       </div>
-      <p class="sub">Мы создадим атмосферу. Вы сделаете эту ночь.</p>
+      <p class="sub" lang="ru">Мы создадим атмосферу. Вы сделаете эту ночь.</p>
       <p id="admin-open-status" class="admin-open-status" role="status" aria-live="polite"></p>
       <div class="nav-row">
-        <nav class="top-nav" aria-label="Page sections">
-          <button type="button" class="top-nav-item active" data-page-tab="main">Main</button>
-          <button type="button" class="top-nav-item" data-page-tab="book">Book</button>
-          <button type="button" class="top-nav-item" data-page-tab="tickets">My tickets</button>
-          <button type="button" class="top-nav-item" data-page-tab="contact">Contact</button>
-          <button id="admin-open" type="button" class="top-nav-item admin-nav-item" data-page-tab="admin" hidden>Admin</button>
+        <nav class="top-nav" aria-label="Page sections" role="tablist">
+          <button type="button" class="top-nav-item active" data-page-tab="main" role="tab" aria-selected="true" aria-controls="main-panel">Main</button>
+          <button type="button" class="top-nav-item" data-page-tab="book" role="tab" aria-selected="false" aria-controls="events-panel group-panel attendees-panel summary-panel">Book</button>
+          <button type="button" class="top-nav-item" data-page-tab="tickets" role="tab" aria-selected="false" aria-controls="tickets-panel">My tickets</button>
+          <button type="button" class="top-nav-item" data-page-tab="contact" role="tab" aria-selected="false" aria-controls="contact-panel">Contact</button>
+          <button id="admin-open" type="button" class="top-nav-item admin-nav-item" data-page-tab="admin" role="tab" aria-selected="false" aria-controls="admin-area" hidden>Admin</button>
         </nav>
         <button id="account-open" class="account-chip" type="button" aria-haspopup="dialog" aria-expanded="false">
           <span id="account-chip-initials">BT</span>
         </button>
       </div>
+      <div class="hero-cta-row">
+        <button id="hero-get-tickets" class="primary hero-cta" type="button">Get tickets</button>
+        <p class="hero-cta-note">Upcoming nights in Budapest — grab your spot below.</p>
+      </div>
     </header>
 
     <section class="panel page-section main-panel" id="main-panel" data-page-section="main">
+      <div class="upcoming-events" id="upcoming-events">
+        <div class="upcoming-head">
+          <p class="eyebrow">Upcoming events</p>
+          <h2>Get your tickets</h2>
+        </div>
+        <div id="upcoming-events-list" class="upcoming-grid"></div>
+        <p id="upcoming-events-empty" class="hint" hidden>No upcoming events yet — follow us on Instagram</p>
+      </div>
+      <div class="main-story">
       <div class="main-carousel" aria-label="Budapest Tunderi photos">
         <div class="main-carousel-track">
           <a
@@ -46,7 +73,7 @@
             rel="noopener noreferrer"
             aria-label="Open Budapest Tunderi photo 1 on Instagram"
           >
-            <img src="/static/main-carousel-1.jpg?v=20260816a" alt="Budapest Tunderi dance floor crowd" />
+            <img src="/static/main-carousel-1.jpg?v=20260818b" alt="Budapest Tunderi dance floor crowd" width="1170" height="878" decoding="async" fetchpriority="high" />
           </a>
           <a
             class="main-carousel-slide"
@@ -55,7 +82,7 @@
             rel="noopener noreferrer"
             aria-label="Open Budapest Tunderi photo 2 on Instagram"
           >
-            <img src="/static/main-carousel-2.jpg?v=20260816a" alt="Budapest Tunderi guests posing at the party" />
+            <img src="/static/main-carousel-2.jpg?v=20260816a" alt="Budapest Tunderi guests posing at the party" width="1170" height="882" decoding="async" loading="lazy" />
           </a>
           <a
             class="main-carousel-slide"
@@ -64,7 +91,7 @@
             rel="noopener noreferrer"
             aria-label="Open Budapest Tunderi photo 3 on Instagram"
           >
-            <img src="/static/main-carousel-3.jpg?v=20260816a" alt="Budapest Tunderi guests near the Kazakhstan flag" />
+            <img src="/static/main-carousel-3.jpg?v=20260818b" alt="Budapest Tunderi guests near the Kazakhstan flag" width="1170" height="882" decoding="async" loading="lazy" />
           </a>
         </div>
         <div class="main-carousel-dots" aria-hidden="true">
@@ -98,6 +125,7 @@
           It is not about luxury or showing off. It is about the right people, a warm room, and nights in
           Budapest that feel like they belong to us.
         </p>
+      </div>
       </div>
     </section>
 
@@ -151,6 +179,7 @@
         <button id="account-save" class="primary" type="button">Continue</button>
         <button id="account-edit" type="button" hidden>Edit profile</button>
         <button id="account-send-code" class="primary" type="button" hidden>Send code</button>
+        <button id="account-logout" type="button" hidden>Log out</button>
       </div>
       <div id="google-signin-wrap" class="google-signin-wrap" hidden>
         <div class="account-divider"><span>or</span></div>
@@ -276,6 +305,7 @@
       <div class="panel-head">
         <h2>Admin dashboard</h2>
         <button id="admin-refresh-all" type="button">Refresh all</button>
+        <button id="admin-logout" type="button">Log out</button>
       </div>
       <p id="admin-ident" class="hint"></p>
       <p id="admin-status" class="hint"></p>
@@ -290,15 +320,25 @@
         <button id="admin-login" class="primary" type="button">Log in</button>
       </div>
 
-      <nav class="admin-tabs" aria-label="Admin sections">
-        <button type="button" class="admin-tab active" data-admin-tab="events">Events</button>
-        <button type="button" class="admin-tab" data-admin-tab="guests">Guests</button>
-        <button type="button" class="admin-tab" data-admin-tab="checkin">Check-in</button>
-        <button type="button" class="admin-tab" data-admin-tab="add_guest">Add Guest</button>
-        <button type="button" class="admin-tab" data-admin-tab="import_export">Import/Export</button>
+      <nav class="admin-tabs" aria-label="Admin sections" role="tablist">
+        <button type="button" class="admin-tab active" data-admin-tab="payments" role="tab" aria-selected="true" aria-controls="admin-section-payments">Payments</button>
+        <button type="button" class="admin-tab" data-admin-tab="events" role="tab" aria-selected="false" aria-controls="admin-section-events">Events</button>
+        <button type="button" class="admin-tab" data-admin-tab="guests" role="tab" aria-selected="false" aria-controls="admin-section-guests">Guests</button>
+        <button type="button" class="admin-tab" data-admin-tab="checkin" role="tab" aria-selected="false" aria-controls="admin-section-checkin">Check-in</button>
+        <button type="button" class="admin-tab" data-admin-tab="add_guest" role="tab" aria-selected="false" aria-controls="admin-section-add_guest">Add Guest</button>
+        <button type="button" class="admin-tab" data-admin-tab="import_export" role="tab" aria-selected="false" aria-controls="admin-section-import_export">Import/Export</button>
       </nav>
 
-      <section class="admin-block admin-section" data-admin-section="events">
+      <section class="admin-block admin-section" id="admin-section-payments" data-admin-section="payments" role="tabpanel" aria-label="Payments">
+        <div class="panel-head">
+          <h3>Payment review</h3>
+          <button id="admin-reviews-refresh" type="button">Refresh</button>
+        </div>
+        <p class="hint">Pending payments awaiting approval (oldest first).</p>
+        <div id="admin-reviews-list" class="admin-cards"></div>
+      </section>
+
+      <section class="admin-block admin-section" id="admin-section-events" data-admin-section="events" role="tabpanel" aria-label="Events" hidden>
         <div class="panel-head">
           <h3>Event setup</h3>
           <button id="admin-events-refresh" type="button">Reload events</button>
@@ -308,6 +348,10 @@
           <select id="admin-event-select"></select>
         </label>
         <label>Title<input id="admin-ev-title" type="text" /></label>
+        <div class="admin-grid2">
+          <label>Date &amp; time<input id="admin-ev-when" type="text" placeholder="YYYY-MM-DD HH:MM (Budapest)" /></label>
+          <label>Location<input id="admin-ev-location" type="text" placeholder="Location" /></label>
+        </div>
         <label>
           Event description
           <textarea
@@ -378,7 +422,7 @@
         </div>
       </section>
 
-      <section class="admin-block admin-section" data-admin-section="add_guest" hidden>
+      <section class="admin-block admin-section" id="admin-section-add_guest" data-admin-section="add_guest" role="tabpanel" aria-label="Add Guest" hidden>
         <h3>Add guest</h3>
         <div class="grid-2">
           <label>
@@ -402,7 +446,7 @@
         </div>
       </section>
 
-      <section class="admin-block admin-section" data-admin-section="checkin" hidden>
+      <section class="admin-block admin-section" id="admin-section-checkin" data-admin-section="checkin" role="tabpanel" aria-label="Check-in" hidden>
         <div class="panel-head">
           <h3>Door check-in</h3>
           <button id="admin-scan-stop" type="button" hidden>Stop camera</button>
@@ -432,7 +476,7 @@
         </div>
       </section>
 
-      <section class="admin-block admin-section" data-admin-section="import_export" hidden>
+      <section class="admin-block admin-section" id="admin-section-import_export" data-admin-section="import_export" role="tabpanel" aria-label="Import/Export" hidden>
         <h3>Import guests (Excel)</h3>
         <label>Event<select id="admin-import-event-select"></select></label>
         <label>
@@ -449,7 +493,7 @@
         </div>
       </section>
 
-      <section class="admin-block admin-section" data-admin-section="guests" hidden>
+      <section class="admin-block admin-section" id="admin-section-guests" data-admin-section="guests" role="tabpanel" aria-label="Guests" hidden>
         <div class="panel-head">
           <h3>Guest list</h3>
           <button id="admin-guests-refresh" type="button">Refresh</button>
@@ -473,9 +517,19 @@
         <div id="admin-guests-list" class="admin-cards"></div>
       </section>
     </section>
+    <footer class="site-footer">
+      <p class="footer-brand">&copy; 2026 Budapest Tunderi</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="mailto:hello@budapesttunderi.com">hello@budapesttunderi.com</a>
+        <a id="footer-terms-link" href="#summary-panel">Booking terms</a>
+        <a href="https://t.me/budapest_tunderi" target="_blank" rel="noopener noreferrer">Telegram</a>
+        <a href="https://instagram.com/budapest_tunderi" target="_blank" rel="noopener noreferrer">Instagram</a>
+        <a href="https://www.tiktok.com/@budapest_tunderi" target="_blank" rel="noopener noreferrer">TikTok</a>
+      </nav>
+    </footer>
   </main>
 
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/tg-init.js?v=20260818a" defer></script>
   <script src="/static/app.js?v=20260818a" defer></script>
 </body>
 </html>

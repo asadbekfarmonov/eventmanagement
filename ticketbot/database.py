@@ -1,4 +1,5 @@
 import os
+import functools
 import hashlib
 import secrets
 import sqlite3
@@ -20,6 +21,28 @@ STATUS_CANCELLED = "cancelled"
 LEGACY_PENDING_STATUSES = {"pending"}
 
 
+def _rollback_on_error(method):
+    """Roll back the shared connection on any exception before re-raising.
+
+    Guards multi-statement write methods so an unexpected error cannot leave the
+    shared sqlite connection mid-transaction (whose partial writes would otherwise
+    be committed by the next write method that calls commit()).
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise
+
+    return wrapper
+
+
 class Database:
     def __init__(self, path: str) -> None:
         self._lock = threading.RLock()
@@ -31,6 +54,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
         self._init_schema()
         self._migrate_schema()
 
@@ -727,29 +751,30 @@ class Database:
             raise ValueError("Email is required")
 
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id FROM users WHERE lower(email) = ?", (normalized_email,))
+        cursor.execute(
+            "SELECT id, name, surname, phone FROM users WHERE lower(email) = ?",
+            (normalized_email,),
+        )
         existing = cursor.fetchone()
         now = self._utc_now()
         if existing:
             user_id = int(existing["id"])
-            if normalized_phone:
-                cursor.execute(
-                    """
-                    UPDATE users
-                    SET name = ?, surname = ?, email = ?, phone = ?
-                    WHERE id = ?
-                    """,
-                    ((name or "").strip(), (surname or "").strip(), normalized_email, normalized_phone, user_id),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE users
-                    SET name = ?, surname = ?, email = ?
-                    WHERE id = ?
-                    """,
-                    ((name or "").strip(), (surname or "").strip(), normalized_email, user_id),
-                )
+            # Never clobber a saved profile: only fill fields that are currently empty.
+            # Explicit edits go through update_web_user_profile instead.
+            stored_name = (existing["name"] or "").strip()
+            stored_surname = (existing["surname"] or "").strip()
+            stored_phone = (existing["phone"] or "").strip()
+            final_name = stored_name or (name or "").strip()
+            final_surname = stored_surname or (surname or "").strip()
+            final_phone = stored_phone or normalized_phone
+            cursor.execute(
+                """
+                UPDATE users
+                SET name = ?, surname = ?, email = ?, phone = ?
+                WHERE id = ?
+                """,
+                (final_name, final_surname, normalized_email, final_phone, user_id),
+            )
         else:
             tg_id = self._next_web_tg_id(cursor)
             cursor.execute(
@@ -964,6 +989,24 @@ class Database:
         self.conn.commit()
         return True
 
+    def delete_web_session(self, token: str) -> None:
+        raw = (token or "").strip()
+        if not raw:
+            return
+        token_hash = self._web_session_hash(raw)
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM web_sessions WHERE token_hash = ?", (token_hash,))
+        self.conn.commit()
+
+    def delete_admin_web_session(self, token: str) -> None:
+        raw = (token or "").strip()
+        if not raw:
+            return
+        token_hash = self._web_session_hash(raw)
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
+        self.conn.commit()
+
     def get_user(self, tg_id: int) -> Optional[User]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,))
@@ -1023,6 +1066,7 @@ class Database:
         row = cursor.fetchone()
         return Event(**dict(row)) if row else None
 
+    @_rollback_on_error
     def create_event(
         self,
         title: str,
@@ -1110,6 +1154,7 @@ class Database:
     def total_remaining(self, event: Event) -> int:
         return event.early_bird_qty + event.regular_tier1_qty + event.regular_tier2_qty
 
+    @_rollback_on_error
     def create_pending_reservation(
         self,
         user_id: int,
@@ -1446,6 +1491,7 @@ class Database:
             "total_price": total_price,
         }
 
+    @_rollback_on_error
     def admin_add_guest(
         self,
         reservation_code: str,
@@ -1541,6 +1587,7 @@ class Database:
         updated = self.get_reservation(reservation_row["id"])
         return True, "Guest added successfully.", updated
 
+    @_rollback_on_error
     def admin_add_guest_by_event(
         self,
         admin_tg_id: int,
@@ -1646,6 +1693,7 @@ class Database:
         self.conn.commit()
         return True, "Guest added successfully.", self.get_reservation(reservation_id)
 
+    @_rollback_on_error
     def admin_import_guest_by_event(
         self,
         admin_tg_id: int,
@@ -1727,6 +1775,7 @@ class Database:
         self.conn.commit()
         return True, "Guest imported successfully.", self.get_reservation(reservation_id)
 
+    @_rollback_on_error
     def admin_remove_guest(self, attendee_id: int) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()
         cursor.execute(
@@ -1837,6 +1886,7 @@ class Database:
         updated = self.get_reservation(row["id"])
         return True, "Guest removed successfully.", updated
 
+    @_rollback_on_error
     def admin_remove_guest_by_name(
         self,
         event_id: int,
@@ -2137,6 +2187,41 @@ class Database:
         cursor.execute(query, tuple(params))
         return cursor.fetchall()
 
+    def list_pending_reservations(self, limit: int = 100) -> List[sqlite3.Row]:
+        query = """
+            SELECT
+                r.id AS reservation_id,
+                r.code AS reservation_code,
+                r.status AS reservation_status,
+                r.quantity,
+                r.boys,
+                r.girls,
+                r.total_price,
+                r.base_total_price,
+                r.group_discount_amount,
+                r.discount_amount,
+                r.created_at,
+                r.payment_file_id,
+                r.payment_file_type,
+                e.id AS event_id,
+                e.title AS event_title,
+                e.event_datetime,
+                u.tg_id AS buyer_tg_id,
+                u.name AS buyer_name,
+                u.surname AS buyer_surname,
+                u.phone AS buyer_phone
+            FROM reservations r
+            JOIN events e ON e.id = r.event_id
+            JOIN users u ON u.id = r.user_id
+            WHERE r.status IN (?, ?)
+            ORDER BY r.created_at ASC
+            LIMIT ?
+        """
+        params: List[Any] = [STATUS_PENDING, "pending", int(limit)]
+        cursor = self.conn.cursor()
+        cursor.execute(query, tuple(params))
+        return cursor.fetchall()
+
     def lookup_ticket(self, ticket_token: str) -> Optional[sqlite3.Row]:
         cursor = self.conn.cursor()
         cursor.execute(
@@ -2168,6 +2253,7 @@ class Database:
         )
         return cursor.fetchone()
 
+    @_rollback_on_error
     def check_in_ticket(self, ticket_token: str, admin_tg_id: int) -> Tuple[bool, str, Optional[sqlite3.Row]]:
         cursor = self.conn.cursor()
         row = self.lookup_ticket(ticket_token)
@@ -2193,6 +2279,7 @@ class Database:
         self.conn.commit()
         return True, "Checked in.", self.lookup_ticket(ticket_token)
 
+    @_rollback_on_error
     def cancel_reservation_for_user(self, user_id: int, reservation_code: str) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()
         cursor.execute(
@@ -2222,6 +2309,7 @@ class Database:
         self.conn.commit()
         return True, "Reservation cancelled. Please text admin for payment resolution.", self.get_reservation(row["id"])
 
+    @_rollback_on_error
     def approve_reservation(self, reservation_id: int, admin_tg_id: int) -> Tuple[bool, str, Optional[Reservation]]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
@@ -2242,6 +2330,7 @@ class Database:
         self.conn.commit()
         return True, "Reservation approved.", self.get_reservation(reservation_id)
 
+    @_rollback_on_error
     def reject_reservation(
         self,
         reservation_id: int,
@@ -2287,6 +2376,7 @@ class Database:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    @_rollback_on_error
     def set_event_fields(self, event_id: int, updates: Dict[str, Any]) -> Tuple[bool, str]:
         field_map = {
             "title": "title",
@@ -2392,6 +2482,7 @@ class Database:
             return False, "Event not found."
         return True, "Event updated."
 
+    @_rollback_on_error
     def delete_event(self, event_id: int) -> Tuple[bool, str, Dict[str, int]]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, title FROM events WHERE id = ?", (event_id,))

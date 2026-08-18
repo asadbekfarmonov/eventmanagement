@@ -18,7 +18,15 @@ from zoneinfo import ZoneInfo
 import qrcode
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
@@ -32,7 +40,7 @@ WEB_DIR = BASE_DIR / "miniapp"
 load_dotenv()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/bot.db")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
 ADMIN_WEB_PASSWORD = os.getenv("ADMIN_WEB_PASSWORD", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
@@ -43,6 +51,44 @@ ALLOW_TG_ID_FALLBACK = os.getenv("MINIAPP_ALLOW_TG_ID_FALLBACK", "0").strip().lo
     "true",
     "yes",
 }
+# REQUIRE_SECURE_CONFIG turns on production hardening. It is OFF by default so the
+# development/test fallbacks (dev signing secrets, tg_id query fallback) keep working.
+# ENVIRONMENT="production" implicitly enables it.
+REQUIRE_SECURE_CONFIG = (
+    os.getenv("REQUIRE_SECURE_CONFIG", "0").strip().lower() in {"1", "true", "yes"}
+    or os.getenv("ENVIRONMENT", "").strip().lower() == "production"
+)
+
+
+def _enforce_secure_config() -> None:
+    """Fail fast at import time when production hardening is required but unsafe.
+
+    When REQUIRE_SECURE_CONFIG is ON we refuse to start with the forgeable tg_id query
+    fallback enabled, and we require real signing secrets (dedicated env vars, or a
+    BOT_TOKEN to back them) so the getters can never fall back to the 'dev-*' literals.
+    """
+    if not REQUIRE_SECURE_CONFIG:
+        return
+    if ALLOW_TG_ID_FALLBACK:
+        raise RuntimeError(
+            "REQUIRE_SECURE_CONFIG is enabled but MINIAPP_ALLOW_TG_ID_FALLBACK is on. "
+            "The tg_id query fallback is forgeable and must be disabled in production."
+        )
+    if not BOT_TOKEN:
+        missing = [
+            name
+            for name in ("UPLOAD_LINK_SECRET", "TICKET_QR_SECRET", "EMAIL_LOGIN_SECRET")
+            if not (os.getenv(name, "") or "").strip()
+        ]
+        if missing:
+            raise RuntimeError(
+                "REQUIRE_SECURE_CONFIG is enabled but required signing secrets are missing: "
+                + ", ".join(missing)
+                + ". Set dedicated secrets (or a BOT_TOKEN to back them) before starting."
+            )
+
+
+_enforce_secure_config()
 
 
 def _env_positive_float(name: str, default: float) -> float:
@@ -118,8 +164,15 @@ async def add_security_headers(request: Request, call_next):
         "frame-ancestors https://web.telegram.org https://*.telegram.org;",
     )
     path = request.url.path
+    # Keep the intentional no-store policy for HTML/JS/CSS so code deploys take
+    # effect immediately. The .js/.css checks are ordered first so they always
+    # win no-store, even though they also live under /static.
     if path in {"/", "/admin"} or path.endswith((".html", ".js", ".css")):
         response.headers["Cache-Control"] = "no-store, max-age=0"
+    elif path.endswith((".jpg", ".jpeg", ".png", ".svg", ".woff", ".woff2", ".ico")):
+        # Static images/fonts are content-addressed via query-version strings,
+        # so they can be cached far-future and immutable.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
@@ -202,6 +255,15 @@ def _set_session_cookie(request: Request, response: Response, name: str, token: 
     )
 
 
+def _ensure_not_blocked(user: Any) -> None:
+    tg_id = getattr(user, "tg_id", None)
+    if getattr(user, "blocked", 0) or (tg_id is not None and db.is_blocked(tg_id)):
+        raise HTTPException(
+            status_code=403,
+            detail="Your account is blocked. Contact the organizers.",
+        )
+
+
 def _request_user(request: Request, provided_tg_id: Optional[int]) -> Tuple[Any, Optional[int]]:
     try:
         tg_id = _request_tg_id(request, provided_tg_id)
@@ -212,11 +274,13 @@ def _request_user(request: Request, provided_tg_id: Optional[int]) -> Tuple[Any,
         user = db.get_user(tg_id)
         if not user:
             raise HTTPException(status_code=404, detail="Create your profile before booking.")
+        _ensure_not_blocked(user)
         return user, tg_id
 
     user = db.get_user_by_web_session(_request_web_token(request))
     if not user:
         raise HTTPException(status_code=401, detail="Register or log in before booking.")
+    _ensure_not_blocked(user)
     return user, None
 
 
@@ -421,6 +485,48 @@ def _send_login_code(email: str, code: str) -> None:
         raise HTTPException(status_code=502, detail="Could not send the login code.") from exc
     except urllib.error.URLError as exc:
         raise HTTPException(status_code=502, detail="Email service is temporarily unavailable.") from exc
+
+
+def _send_email(to_email: str, subject: str, text: str, html: Optional[str] = None) -> None:
+    """Best-effort transactional email via Resend.
+
+    Mirrors _send_login_code: no-op when email delivery is not configured or when
+    EMAIL_LOGIN_DEV_MODE is on, and never raises into the caller (all network errors
+    are swallowed) so booking approval/rejection flows are unaffected by mail failures.
+    """
+    recipient = (to_email or "").strip()
+    if not recipient:
+        return
+    if EMAIL_LOGIN_DEV_MODE:
+        return
+    if not RESEND_API_KEY or not RESEND_FROM_EMAIL:
+        return
+
+    payload = {
+        "from": RESEND_FROM_EMAIL,
+        "to": [recipient],
+        "subject": subject,
+        "text": text,
+    }
+    if html:
+        payload["html"] = html
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "BudapestTunderiTicketBot/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            _ = response.status
+    except Exception:
+        # Best-effort only: notifications must never break the admin action.
+        return
 
 
 def _verified_email_code_row(email: str, code_value: str):
@@ -839,6 +945,10 @@ class WebProfileUpdateRequest(BaseModel):
     phone: str = Field(min_length=5, max_length=40)
 
 
+class WebCancelRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
 class AdminWebLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
@@ -912,6 +1022,17 @@ class AdminGuestRemoveByNameRequest(BaseModel):
     event_id: int
     name: str
     surname: str
+
+
+class AdminReservationApproveRequest(BaseModel):
+    tg_id: Optional[int] = None
+    reservation_id: int
+
+
+class AdminReservationRejectRequest(BaseModel):
+    tg_id: Optional[int] = None
+    reservation_id: int
+    note: str = ""
 
 
 def _require_admin(tg_id: Optional[int]) -> int:
@@ -1007,6 +1128,81 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/robots.txt")
+def robots_txt() -> PlainTextResponse:
+    sitemap_target = f"{WEB_APP_URL}/sitemap.xml" if WEB_APP_URL else "/sitemap.xml"
+    lines = [
+        "User-agent: *",
+        "Allow: /",
+        "Disallow: /api/",
+        "Disallow: /admin",
+        "Disallow: /uploads/",
+        "Disallow: /checkin/",
+        f"Sitemap: {sitemap_target}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
+
+
+@app.get("/sitemap.xml")
+def sitemap_xml() -> Response:
+    home_url = WEB_APP_URL + "/" if WEB_APP_URL else "/"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"  <url>\n    <loc>{home_url}</loc>\n    <changefreq>weekly</changefreq>\n"
+        "    <priority>1.0</priority>\n  </url>\n"
+        "</urlset>\n"
+    )
+    return Response(content=xml, media_type="application/xml")
+
+
+_NOT_FOUND_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Page not found — Budapest Tunderi</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      font-family: "Manrope", "Segoe UI", Arial, sans-serif;
+      color: #f6f0e6;
+      background: linear-gradient(180deg, #08080f 0%, #151019 48%, #0f0c12 100%);
+      text-align: center;
+      padding: 24px;
+    }
+    h1 { margin: 0; font-size: 3rem; color: #d8a83f; }
+    p { margin: 0; color: #b8aa99; }
+    a { color: #d8a83f; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>404</h1>
+  <p>This page could not be found.</p>
+  <p><a href="/">Return to Budapest Tunderi</a></p>
+</body>
+</html>
+"""
+
+
+@app.exception_handler(StarletteHTTPException)
+async def not_found_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+        return HTMLResponse(content=_NOT_FOUND_HTML, status_code=404)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
+
 @app.get("/uploads/{filename}")
 def signed_upload(filename: str, expires: int, token: str) -> FileResponse:
     _verify_upload_token(filename, expires, token)
@@ -1066,6 +1262,7 @@ def web_register(request: Request, response: Response, payload: WebRegisterReque
     try:
         existing_user = db.get_user_by_web_session(_request_web_token(request))
         if existing_user:
+            _ensure_not_blocked(existing_user)
             user = db.update_web_user_profile(
                 existing_user.id,
                 payload.name.strip(),
@@ -1218,6 +1415,37 @@ def web_profile_update(request: Request, response: Response, payload: WebProfile
     return {"ok": True, "profile": _profile_payload(updated)}
 
 
+@app.post("/api/web/logout")
+def web_logout(request: Request, response: Response) -> Dict[str, Any]:
+    token = _request_web_token(request)
+    if token:
+        db.delete_web_session(token)
+    response.delete_cookie(WEB_SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/web/cancel")
+def web_cancel(
+    request: Request,
+    payload: WebCancelRequest,
+    tg_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    user, _verified_tg_id = _request_user(request, tg_id)
+    code = (payload.code or "").strip()
+    reservation = db.get_reservation_by_code(code)
+    if not reservation or int(reservation.user_id) != int(user.id):
+        raise HTTPException(status_code=404, detail="Reservation not found for your account.")
+    if (reservation.status or "").strip() != STATUS_PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail="Approved bookings can't be cancelled online. Please contact us.",
+        )
+    ok, message, updated = db.cancel_reservation_for_user(user.id, code)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message, "status": updated.status if updated else None}
+
+
 @app.get("/api/me")
 def me(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
     user, _verified_tg_id = _request_user(request, tg_id)
@@ -1252,6 +1480,7 @@ def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -
                 "event_id": reservation.event_id,
                 "event_title": event.title if event else f"Event #{reservation.event_id}",
                 "status": reservation.status,
+                "admin_note": reservation.admin_note or "",
                 "tier_label": _tier_label(reservation.ticket_type),
                 "boys": reservation.boys,
                 "girls": reservation.girls,
@@ -1316,6 +1545,11 @@ async def book_with_payment(request: Request) -> Dict[str, Any]:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="tg_id must be an integer when provided.") from exc
         user, verified_tg_id = _request_user(request, provided_tg_id)
+        if int(getattr(user, "tg_id", 0) or 0) <= 0 and not (getattr(user, "phone", "") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Add your phone number to your profile before booking.",
+            )
         _enforce_rate_limit(request, "booking", BOOKING_RATE_LIMIT, verified_tg_id or user.id)
         if not _truthy_form_value(form.get("terms_accepted")):
             raise HTTPException(status_code=400, detail="Accept the booking terms before booking.")
@@ -1757,6 +1991,164 @@ def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleR
         "message": "Event created.",
         "event": event.__dict__ if event else None,
     }
+
+
+def _pending_reservation_item(row) -> Dict[str, Any]:
+    data = _row_dict(row)
+    payment_file_id = data.get("payment_file_id") or ""
+    payment_file_type = (data.get("payment_file_type") or "").strip()
+    proof_url = None
+    proof_note = None
+    if payment_file_type == "external":
+        stored_name = _extract_upload_filename(payment_file_id)
+        proof_url = _build_upload_url(stored_name) if stored_name else None
+    else:
+        proof_note = "Payment proof was sent in Telegram."
+    attendee_rows = db.list_attendees(int(data.get("reservation_id") or 0))
+    attendees = [row_a["full_name"] for row_a in attendee_rows]
+    repost_proofs = []
+    for row_a in attendee_rows:
+        if not row_a["repost_discount_applied"]:
+            continue
+        if (row_a["repost_proof_file_type"] or "").strip() != "external":
+            # Non-external repost proofs were sent in Telegram; skip for the web review.
+            continue
+        stored_name = _extract_upload_filename(row_a["repost_proof_file_id"] or "")
+        if not stored_name:
+            continue
+        repost_proofs.append(
+            {
+                "full_name": row_a["full_name"],
+                "url": _build_upload_url(stored_name),
+            }
+        )
+    return {
+        "reservation_id": data.get("reservation_id"),
+        "code": data.get("reservation_code"),
+        "status": data.get("reservation_status"),
+        "quantity": data.get("quantity"),
+        "boys": data.get("boys"),
+        "girls": data.get("girls"),
+        "total_price": data.get("total_price"),
+        "base_total_price": data.get("base_total_price"),
+        "group_discount_amount": data.get("group_discount_amount"),
+        "discount_amount": data.get("discount_amount"),
+        "created_at": data.get("created_at"),
+        "event_id": data.get("event_id"),
+        "event_title": data.get("event_title"),
+        "event_datetime": data.get("event_datetime"),
+        "buyer_tg_id": data.get("buyer_tg_id"),
+        "buyer_name": data.get("buyer_name"),
+        "buyer_surname": data.get("buyer_surname"),
+        "buyer_phone": data.get("buyer_phone"),
+        "attendees": attendees,
+        "payment_file_type": payment_file_type,
+        "proof_url": proof_url,
+        "proof_note": proof_note,
+        "repost_proofs": repost_proofs,
+    }
+
+
+@app.get("/api/admin/reservation/pending")
+def admin_reservation_pending(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    _request_admin(request, tg_id)
+    rows = db.list_pending_reservations(limit=100)
+    return {"items": [_pending_reservation_item(row) for row in rows]}
+
+
+@app.post("/api/admin/reservation/approve")
+def admin_reservation_approve(request: Request, payload: AdminReservationApproveRequest) -> Dict[str, Any]:
+    admin_tg_id = _request_admin(request, payload.tg_id)
+    ok, message, reservation = db.approve_reservation(payload.reservation_id, admin_tg_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    if reservation is not None:
+        buyer = db.get_user_by_id(reservation.user_id)
+        buyer_tg_id = int(buyer.tg_id) if buyer else 0
+        if buyer_tg_id > 0:
+            _bot_api(
+                "sendMessage",
+                {
+                    "chat_id": buyer_tg_id,
+                    "text": (
+                        "Your booking is approved!\n"
+                        f"Code: {reservation.code}\n\n"
+                        "Your tickets are confirmed. See you at the event!"
+                    ),
+                },
+            )
+        buyer_email = (getattr(buyer, "email", "") or "").strip() if buyer else ""
+        if buyer_email:
+            event = db.get_event(reservation.event_id)
+            event_title = event.title if event else f"Event #{reservation.event_id}"
+            _send_email(
+                buyer_email,
+                "Your Budapest Tunderi booking is approved",
+                (
+                    "Good news! Your booking is approved.\n"
+                    f"Event: {event_title}\n"
+                    f"Code: {reservation.code}\n\n"
+                    "Your tickets are confirmed. Open the website to view your QR passes. "
+                    "See you at the event!"
+                ),
+            )
+        if (reservation.payment_file_type or "").strip() == "external":
+            _delete_stored_upload(reservation.payment_file_id)
+    return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}
+
+
+@app.post("/api/admin/reservation/reject")
+def admin_reservation_reject(request: Request, payload: AdminReservationRejectRequest) -> Dict[str, Any]:
+    admin_tg_id = _request_admin(request, payload.tg_id)
+    note = (payload.note or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="Rejection note is required.")
+    ok, message, reservation = db.reject_reservation(payload.reservation_id, admin_tg_id, note)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    if reservation is not None:
+        buyer = db.get_user_by_id(reservation.user_id)
+        buyer_tg_id = int(buyer.tg_id) if buyer else 0
+        if buyer_tg_id > 0:
+            _bot_api(
+                "sendMessage",
+                {
+                    "chat_id": buyer_tg_id,
+                    "text": (
+                        "Your booking was rejected.\n"
+                        f"Code: {reservation.code}\n\n"
+                        f"Reason: {note}\n\n"
+                        "Contact us on Telegram: @budapest_tunderi"
+                    ),
+                },
+            )
+        buyer_email = (getattr(buyer, "email", "") or "").strip() if buyer else ""
+        if buyer_email:
+            event = db.get_event(reservation.event_id)
+            event_title = event.title if event else f"Event #{reservation.event_id}"
+            _send_email(
+                buyer_email,
+                "Your Budapest Tunderi booking was rejected",
+                (
+                    "Unfortunately your booking was rejected.\n"
+                    f"Event: {event_title}\n"
+                    f"Code: {reservation.code}\n\n"
+                    f"Reason: {note}\n\n"
+                    "If you have questions, contact us on Telegram: @budapest_tunderi"
+                ),
+            )
+        if (reservation.payment_file_type or "").strip() == "external":
+            _delete_stored_upload(reservation.payment_file_id)
+    return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(request: Request, response: Response) -> Dict[str, Any]:
+    token = _request_admin_token(request)
+    if token:
+        db.delete_admin_web_session(token)
+    response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+    return {"ok": True}
 
 
 if __name__ == "__main__":

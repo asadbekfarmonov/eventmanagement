@@ -536,7 +536,8 @@ class TelegramBot:
 
     async def _notify_user_after_review(self, reservation, approved: bool, note: str) -> None:
         user = self.users.get_by_id(reservation.user_id)
-        if not user:
+        if not user or (getattr(user, "tg_id", 0) or 0) <= 0:
+            # Web buyers have a non-positive tg_id and cannot receive Telegram messages.
             return
         event = self.events.get(reservation.event_id)
         event_title = event.title if event else f"Event #{reservation.event_id}"
@@ -553,7 +554,11 @@ class TelegramBot:
                 f"Reason: {note}\n"
                 "Please contact us directly on Telegram: @budapest_tunderi"
             )
-        await self.application.bot.send_message(chat_id=user.tg_id, text=text)
+        try:
+            await self.application.bot.send_message(chat_id=user.tg_id, text=text)
+        except Exception:
+            # Never let a delivery failure break admin review cleanup.
+            return
 
     def _resolve_external_upload_file(self, payment_file_id: str) -> Optional[Path]:
         raw = (payment_file_id or "").strip()
