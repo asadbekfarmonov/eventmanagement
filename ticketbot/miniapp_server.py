@@ -32,7 +32,7 @@ from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from ticketbot.database import Database, STATUS_PENDING
+from ticketbot.database import Database, STATUS_PENDING, normalize_maps_url
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "miniapp"
@@ -2018,9 +2018,12 @@ def admin_event_create_simple(request: Request, payload: AdminEventCreateSimpleR
 
     # Payment fields accept a URL OR free text (e.g. a phone number for
     # Revolut/bank transfer), so there is no scheme requirement here.
-    maps_url = (payload.maps_url or "").strip()
-    if maps_url and not maps_url.lower().startswith("https://"):
-        raise HTTPException(status_code=400, detail="maps_url must start with https://")
+    # The maps field accepts an https URL OR a pasted Google Maps <iframe> embed
+    # (we extract the src); non-https values are rejected.
+    try:
+        maps_url = normalize_maps_url(payload.maps_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     total_qty = int(payload.early_qty) + int(payload.tier1_qty) + int(payload.tier2_qty)
     if total_qty <= 0:

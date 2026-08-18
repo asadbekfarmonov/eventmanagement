@@ -114,6 +114,13 @@ class EventMediaDbTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("https://", msg)
 
+    def test_set_event_fields_extracts_iframe_embed_src(self):
+        eid = self._create()
+        iframe = '<iframe src="https://www.google.com/maps/embed?pb=ABC" width="400"></iframe>'
+        ok, msg = self.db.set_event_fields(eid, {"maps_url": iframe})
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.db.get_event(eid).maps_url, "https://www.google.com/maps/embed?pb=ABC")
+
     def test_set_event_fields_allows_empty_maps_url(self):
         eid = self._create(maps_url="https://maps.google.com/x")
         ok, msg = self.db.set_event_fields(eid, {"maps_url": ""})
@@ -315,6 +322,28 @@ class EventMediaApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(resp.status_code, 400, resp.text)
+
+    def test_create_simple_extracts_iframe_embed_src(self):
+        iframe = '<iframe src="https://www.google.com/maps/embed?pb=XYZ" height="300"></iframe>'
+        resp = self.client.post(
+            "/api/admin/event/create_simple",
+            json={
+                "tg_id": self.admin_tg_id,
+                "title": "Iframe Map",
+                "early_boy": 1000,
+                "early_girl": 1000,
+                "early_qty": 5,
+                "tier1_boy": 0,
+                "tier1_girl": 0,
+                "tier1_qty": 0,
+                "tier2_boy": 0,
+                "tier2_girl": 0,
+                "tier2_qty": 0,
+                "maps_url": iframe,
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["event"]["maps_url"], "https://www.google.com/maps/embed?pb=XYZ")
 
     def test_event_payload_includes_absolute_photo_url_and_maps(self):
         self._upload()

@@ -1,4 +1,5 @@
 import os
+import re
 import functools
 import hashlib
 import secrets
@@ -19,6 +20,24 @@ STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
 STATUS_CANCELLED = "cancelled"
 LEGACY_PENDING_STATUSES = {"pending"}
+
+
+def normalize_maps_url(value: str) -> str:
+    """Return a clean https maps URL.
+
+    Accepts a plain https URL (share/place link or Google Maps embed URL) OR a
+    pasted Google Maps <iframe ... src="..."> embed snippet (Share -> Embed a map),
+    from which the src is extracted. Empty stays empty. A non-empty value that does
+    not resolve to an https:// URL raises ValueError.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    match = re.search(r"""<iframe[^>]*\ssrc=["']([^"']+)["']""", raw, re.IGNORECASE)
+    candidate = (match.group(1) if match else raw).strip()
+    if not candidate.lower().startswith("https://"):
+        raise ValueError("Google Maps link must be an https:// URL or a Google Maps embed code.")
+    return candidate
 
 
 def _rollback_on_error(method):
@@ -2485,9 +2504,10 @@ class Database:
                 # only turns real URLs into links (see the frontend).
                 value = str(value or "").strip()
             if key == "maps_url":
-                value = str(value or "").strip()
-                if value and not value.lower().startswith("https://"):
-                    return False, "maps_url must start with https://"
+                try:
+                    value = normalize_maps_url(value)
+                except ValueError as exc:
+                    return False, str(exc)
 
             assignments.append(f"{column} = ?")
             params.append(value)

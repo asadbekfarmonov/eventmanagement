@@ -211,11 +211,14 @@ function eventMapHtml(event) {
     return '';
   }
   const link = `<a class="event-map-link" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noopener">Open in Google Maps</a>`;
-  // Google's ?output=embed needs an address/place query, NOT a share link
-  // (short maps.app.goo.gl links don't render). Embed by the event location text
-  // and keep the admin's link as the "Open in Google Maps" button.
+  // A pasted Google Maps embed URL (Share -> "Embed a map") renders the exact pin.
+  // A plain share link (maps.app.goo.gl / place) can't be embedded, so fall back to
+  // embedding the event location text; the link button still opens the exact pin.
+  const isEmbed = /^https:\/\/www\.google\.com\/maps\/embed/i.test(mapsUrl);
   const query = (event && event.location ? String(event.location).trim() : '') || mapsUrl;
-  const src = `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed`;
+  const src = isEmbed
+    ? mapsUrl
+    : `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed`;
   const iframe = `<div class="event-map"><iframe src="${escapeHtml(src)}" loading="lazy" `
     + 'referrerpolicy="no-referrer-when-downgrade" title="Event location map" '
     + 'allowfullscreen></iframe></div>';
@@ -2371,8 +2374,8 @@ async function saveAdminEvent() {
     setAdminStatus('Date & time must be in YYYY-MM-DD HH:MM format.', true);
     return;
   }
-  if (mapsVal && !/^https:\/\//i.test(mapsVal)) {
-    setAdminStatus('Google Maps link must start with https://.', true);
+  if (mapsVal && !/^https:\/\//i.test(mapsVal) && !/<iframe[^>]*\ssrc=/i.test(mapsVal)) {
+    setAdminStatus('Google Maps: paste an https link or the "Embed a map" code.', true);
     return;
   }
 
