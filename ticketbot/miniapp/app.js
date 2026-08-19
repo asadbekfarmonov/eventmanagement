@@ -753,16 +753,9 @@ function renderSummary() {
       repostersGirls += 1;
     }
   });
-  const nonRepostersBoys = Math.max(0, boysCountForDiscount - repostersBoys);
-  const nonRepostersGirls = Math.max(0, Number(state.girls || 0) - repostersGirls);
-  const freedRepostersGirls = Math.max(0, girlsGroupFreeCount - nonRepostersGirls);
-  const freedRepostersBoys = Math.max(0, boysGroupFreeCount - nonRepostersBoys);
-  const appliedDiscountAmount = Math.min(
-    baseTotal,
-    groupDiscountAmount
-      + discountUnitAmount * (repostersGirls - freedRepostersGirls)
-      + discountUnitAmount * (repostersBoys - freedRepostersBoys),
-  );
+  const girlsApplied = Math.max(girlsGroupDiscountAmount, discountUnitAmount * repostersGirls);
+  const boysApplied = Math.max(boysGroupDiscountAmount, discountUnitAmount * repostersBoys);
+  const appliedDiscountAmount = Math.min(baseTotal, girlsApplied + boysApplied);
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
     const paymentSection = paymentOptionsHtml(event);
@@ -1174,6 +1167,8 @@ function getPayload() {
     ? Number(state.quote.base_total_price !== undefined ? state.quote.base_total_price : (state.quote.total_price || 0))
     : 0;
   const groupDiscountAmount = quoteMatches ? Number(state.quote.group_discount_amount || 0) : 0;
+  const girlsGroupDiscountAmount = quoteMatches ? Number(state.quote.girls_group_discount_amount || 0) : 0;
+  const boysGroupDiscountAmount = quoteMatches ? Number(state.quote.boys_group_discount_amount || 0) : 0;
   const girlsGroupFreeCount = quoteMatches ? Number(state.quote.girls_group_free_count || 0) : 0;
   const boysGroupFreeCount = quoteMatches ? Number(state.quote.boys_group_free_count || 0) : 0;
   const discountUnitAmount = repostDiscountEnabled(event) ? Number(event.repost_discount_amount || 0) : 0;
@@ -1189,16 +1184,9 @@ function getPayload() {
       repostersGirls += 1;
     }
   });
-  const nonRepostersBoys = Math.max(0, boysCountForDiscount - repostersBoys);
-  const nonRepostersGirls = Math.max(0, Number(state.girls || 0) - repostersGirls);
-  const freedRepostersGirls = Math.max(0, girlsGroupFreeCount - nonRepostersGirls);
-  const freedRepostersBoys = Math.max(0, boysGroupFreeCount - nonRepostersBoys);
-  const combinedDiscount = Math.min(
-    baseTotal,
-    groupDiscountAmount
-      + discountUnitAmount * (repostersGirls - freedRepostersGirls)
-      + discountUnitAmount * (repostersBoys - freedRepostersBoys),
-  );
+  const girlsApplied = Math.max(girlsGroupDiscountAmount, discountUnitAmount * repostersGirls);
+  const boysApplied = Math.max(boysGroupDiscountAmount, discountUnitAmount * repostersBoys);
+  const combinedDiscount = Math.min(baseTotal, girlsApplied + boysApplied);
   const total = Math.max(0, baseTotal - combinedDiscount);
 
   return {

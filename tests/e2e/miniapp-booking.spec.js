@@ -1057,8 +1057,8 @@ test('mixed group offer + repost: displayed Final total matches server-charged t
   await expect(page.locator('#admin-status')).toContainText('Event updated.');
 
   // Book 1 boy (reposted) + 3 girls (2+1 frees 1 girl). Early prices 2500 each => base 10000.
-  // Group frees a NON-reposting girl (2500) AND the boy's repost (1000) applies to a
-  // DIFFERENT attendee, so BOTH add up: combined discount 3500 => final 6500.
+  // Per-gender rule: girls = max(group 2500, repost 0) = 2500; boys = max(group 0,
+  // repost 1000) = 1000. Cross-gender discounts ADD: 2500 + 1000 = 3500 => final 6500.
   await page.goto('/?tg_id=511308234');
   await page.getByRole('tab', { name: 'Book' }).click();
   await expect(page.locator('#events-list .event-card')).toHaveCount(2);
