@@ -829,14 +829,18 @@ function renderSummary() {
     boysGroupOfferEnabled ? `<div>Boys 3+1: ${boysGroupFreeCount} free = ${money(boysGroupDiscountAmount)}</div>` : '',
     (girlsGroupOfferEnabled || boysGroupOfferEnabled) ? `<div>Group offer discount total: ${money(groupDiscountAmount)}</div>` : '',
   ].filter(Boolean);
+  const discountRuleNote = repostEligible && (girlsGroupOfferEnabled || boysGroupOfferEnabled)
+    ? '<div class="hint">Per gender, the larger of the group offer or the repost discount applies (they don\u2019t stack); different genders add up.</div>'
+    : '';
   const repostSummary = repostEligible
     ? [
         repostHint,
         ...groupSummary,
         `<div>Repost discount: ${selectedDiscounts.length} x ${money(discountUnitAmount)} = ${money(discountAmount)}</div>`,
+        discountRuleNote,
         `<div>Applied discount: ${money(appliedDiscountAmount)}</div>`,
         `<div><strong>Final total: ${money(finalTotal)}</strong></div>`,
-      ]
+      ].filter(Boolean)
     : [
         ...groupSummary,
         (girlsGroupOfferEnabled || boysGroupOfferEnabled) ? `<div>Applied discount: ${money(appliedDiscountAmount)}</div>` : '',
