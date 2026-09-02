@@ -951,6 +951,55 @@ class MiniAppAdminApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413, response.text)
         self.assertIn("Max allowed size", response.json().get("detail", ""))
 
+    def test_export_xlsx_has_status_column_and_reimport_ignores_it(self):
+        from openpyxl import load_workbook
+
+        self._create_reservation("Approved Guest", status="approved")
+        self._create_reservation("Rejected Guest", status="rejected")
+        self._create_reservation("Pending Guest", status="pending")
+        cancelled = self._create_reservation("Cancelled Guest")
+        ok, _msg, _r = self.db.cancel_reservation_for_user(self.user_id, cancelled.code)
+        self.assertTrue(ok)
+
+        # Full export: 3 columns, every status labelled (rejected/cancelled included).
+        resp = self.client.get("/api/admin/guest/export_xlsx", params={"tg_id": self.admin_tg_id})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        wb = load_workbook(filename=BytesIO(resp.content))
+        rows = list(wb.active.iter_rows(values_only=True))
+        self.assertEqual(rows[0], ("Name", "Surname", "Status"))
+        by_name = {r[0]: (r[1], r[2]) for r in rows[1:]}
+        self.assertEqual(by_name["Approved"], ("Guest", "Approved"))
+        self.assertEqual(by_name["Rejected"], ("Guest", "Rejected"))
+        self.assertEqual(by_name["Pending"], ("Guest", "Pending"))
+        self.assertEqual(by_name["Cancelled"], ("Guest", "Cancelled"))
+
+        # status filter produces a door list of approved guests only.
+        approved_resp = self.client.get(
+            "/api/admin/guest/export_xlsx",
+            params={"tg_id": self.admin_tg_id, "status": "approved"},
+        )
+        self.assertEqual(approved_resp.status_code, 200, approved_resp.text)
+        approved_rows = list(load_workbook(filename=BytesIO(approved_resp.content)).active.iter_rows(values_only=True))
+        self.assertEqual(approved_rows[0], ("Name", "Surname", "Status"))
+        self.assertEqual([r[2] for r in approved_rows[1:]], ["Approved"])
+
+        # The exported 3-column file re-imports cleanly (Status column ignored).
+        reimport = self.client.post(
+            "/api/admin/guest/import_xlsx",
+            data={"tg_id": str(self.admin_tg_id), "event_id": str(self.event_id)},
+            files={
+                "file": (
+                    "guests_export.xlsx",
+                    resp.content,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(reimport.status_code, 200, reimport.text)
+        body = reimport.json()
+        self.assertEqual(body["added"], 4)
+        self.assertEqual(body["skipped"], 0)
+
     def test_admin_guests_without_limit_returns_all_rows(self):
         wb = Workbook()
         ws = wb.active

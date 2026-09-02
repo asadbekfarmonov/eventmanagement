@@ -918,6 +918,48 @@ class DatabaseTests(unittest.TestCase):
         pairs = self.db.list_guest_name_pairs()
         self.assertTrue(("Olzhas", "Olzhasov") in pairs)
 
+    def test_list_guest_export_rows_labels_and_orders_by_status(self):
+        event_id = self._create_event(early_qty=10, t1_qty=0, t2_qty=0)
+
+        def _book(name):
+            return self.db.create_pending_reservation(
+                user_id=self.user_id,
+                event_id=event_id,
+                boys=1,
+                girls=0,
+                attendees=[name],
+                payment_file_id="proof",
+                payment_file_type="photo",
+            )
+
+        approved = _book("Approved Guest")
+        rejected = _book("Rejected Guest")
+        cancelled = _book("Cancelled Guest")
+        _pending = _book("Pending Guest")
+
+        self.assertTrue(self.db.approve_reservation(approved.id, 7164876915)[0])
+        self.assertTrue(self.db.reject_reservation(rejected.id, 7164876915, "no proof")[0])
+        self.assertTrue(self.db.cancel_reservation_for_user(self.user_id, cancelled.code)[0])
+
+        rows = self.db.list_guest_export_rows()
+        by_name = {first: status for first, _last, status in rows}
+        self.assertEqual(by_name["Approved"], "Approved")
+        self.assertEqual(by_name["Rejected"], "Rejected")
+        self.assertEqual(by_name["Cancelled"], "Cancelled")
+        self.assertEqual(by_name["Pending"], "Pending")
+
+        order = [status for _first, _last, status in rows]
+        self.assertLess(order.index("Approved"), order.index("Pending"))
+        self.assertLess(order.index("Pending"), order.index("Rejected"))
+        self.assertLess(order.index("Rejected"), order.index("Cancelled"))
+
+        approved_only = self.db.list_guest_export_rows(status="approved")
+        self.assertEqual([status for _f, _l, status in approved_only], ["Approved"])
+        self.assertEqual(approved_only[0][0], "Approved")
+
+        self.assertEqual(self.db.list_guest_export_rows(event_id=999999), [])
+        self.assertGreaterEqual(len(self.db.list_guest_export_rows(event_id=event_id)), 4)
+
     def test_migrates_legacy_schema_for_new_fields(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy.db")
         conn = sqlite3.connect(legacy_path)

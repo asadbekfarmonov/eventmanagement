@@ -21,6 +21,24 @@ STATUS_REJECTED = "rejected"
 STATUS_CANCELLED = "cancelled"
 LEGACY_PENDING_STATUSES = {"pending"}
 
+# Friendly labels shown in the admin guest export (column C). Any status not
+# listed here falls back to a title-cased version of the raw value.
+GUEST_STATUS_LABELS = {
+    STATUS_APPROVED: "Approved",
+    STATUS_PENDING: "Pending",
+    "pending": "Pending",
+    STATUS_REJECTED: "Rejected",
+    STATUS_CANCELLED: "Cancelled",
+}
+# Sort priority for the export so approved guests come first and cancelled last.
+GUEST_STATUS_ORDER = {
+    STATUS_APPROVED: 0,
+    STATUS_PENDING: 1,
+    "pending": 1,
+    STATUS_REJECTED: 2,
+    STATUS_CANCELLED: 3,
+}
+
 
 def normalize_maps_url(value: str) -> str:
     """Return a clean https maps URL.
@@ -2312,6 +2330,60 @@ class Database:
             )
             rows.append((first, last))
         return rows
+
+    def list_guest_export_rows(
+        self,
+        status: Optional[str] = None,
+        event_id: Optional[int] = None,
+    ) -> List[Tuple[str, str, str]]:
+        """Return (name, surname, status_label) rows for the admin export.
+
+        Unlike ``list_guest_name_pairs`` this joins reservations so each guest
+        carries the current reservation status (Approved / Pending / Rejected /
+        Cancelled). All statuses are included by default; pass ``status`` to
+        filter (e.g. "approved" for a door list) or ``event_id`` for one event.
+        Rows are ordered approved -> pending -> rejected -> cancelled, then by
+        name, so a rejected guest is clearly labelled rather than silently mixed
+        into the list.
+        """
+        query = """
+            SELECT a.name, a.surname, a.full_name, r.status AS reservation_status
+            FROM attendees a
+            JOIN reservations r ON r.id = a.reservation_id
+            JOIN events e ON e.id = r.event_id
+            WHERE 1 = 1
+        """
+        params: List[Any] = []
+        if status:
+            wanted = status.strip().lower()
+            if wanted == "pending":
+                query += " AND r.status IN (?, ?)"
+                params.extend([STATUS_PENDING, "pending"])
+            else:
+                query += " AND r.status = ?"
+                params.append(wanted)
+        if event_id is not None:
+            query += " AND e.id = ?"
+            params.append(int(event_id))
+        query += " ORDER BY a.id"
+        cursor = self.conn.cursor()
+        cursor.execute(query, tuple(params))
+        rows = []
+        for row in cursor.fetchall():
+            first, last = self._name_parts(
+                name=row["name"],
+                surname=row["surname"],
+                full_name=row["full_name"],
+            )
+            raw_status = row["reservation_status"] or ""
+            label = GUEST_STATUS_LABELS.get(
+                raw_status,
+                raw_status.replace("_", " ").title() if raw_status else "Unknown",
+            )
+            order = GUEST_STATUS_ORDER.get(raw_status, 4)
+            rows.append((first, last, label, order))
+        rows.sort(key=lambda item: (item[3], item[0].lower(), item[1].lower()))
+        return [(first, last, label) for first, last, label, _order in rows]
 
     def list_active_reservations(self, search: Optional[str] = None, limit: int = 12) -> List[sqlite3.Row]:
         query = """

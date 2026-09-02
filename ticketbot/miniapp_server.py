@@ -2002,14 +2002,19 @@ async def admin_guest_import_xlsx(
 
 
 @app.get("/api/admin/guest/export_xlsx")
-def admin_guest_export_xlsx(request: Request, tg_id: Optional[int] = None) -> StreamingResponse:
+def admin_guest_export_xlsx(
+    request: Request,
+    tg_id: Optional[int] = None,
+    status: Optional[str] = None,
+    event_id: Optional[int] = None,
+) -> StreamingResponse:
     verified_tg_id = _request_admin(request, tg_id)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Guests"
-    sheet.append(["Name", "Surname"])
-    for first, last in db.list_guest_name_pairs():
-        sheet.append([first, last])
+    sheet.append(["Name", "Surname", "Status"])
+    for first, last, status_label in db.list_guest_export_rows(status=status, event_id=event_id):
+        sheet.append([first, last, status_label])
 
     output = BytesIO()
     workbook.save(output)
