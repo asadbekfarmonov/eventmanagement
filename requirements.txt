@@ -5,3 +5,4 @@ uvicorn==0.34.0
 openpyxl==3.1.5
 python-multipart==0.0.20
 qrcode[pil]==7.4.2
+reportlab==4.2.5

@@ -8,6 +8,7 @@ import hmac
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import base64
 import json
 import uuid
 import urllib.request
@@ -32,7 +33,7 @@ from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from ticketbot.database import Database, STATUS_PENDING, normalize_maps_url
+from ticketbot.database import Database, STATUS_PENDING, STATUS_APPROVED, BUDAPEST_TZ, normalize_maps_url
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "miniapp"
@@ -43,7 +44,9 @@ ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEB_APP_URL = os.getenv("WEB_APP_URL", "").rstrip("/")
 ADMIN_WEB_PASSWORD = os.getenv("ADMIN_WEB_PASSWORD", "")
+GUARD_WEB_PASSWORD = os.getenv("GUARD_WEB_PASSWORD", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+TELEGRAM_LOGIN_BOT_USERNAME = os.getenv("TELEGRAM_LOGIN_BOT_USERNAME", "").strip()
 DEFAULT_UPLOAD_DIR = str(Path(DATABASE_PATH).resolve().parent / "uploads")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", DEFAULT_UPLOAD_DIR)
 # Event banners are PUBLIC + PERMANENT (unlike signed/expiring payment proofs), so
@@ -128,6 +131,9 @@ UPLOAD_LINK_TTL_SECONDS = _env_positive_int("UPLOAD_LINK_TTL_SECONDS", UPLOAD_RE
 RATE_LIMIT_WINDOW_SECONDS = _env_positive_int("RATE_LIMIT_WINDOW_SECONDS", 60)
 QUOTE_RATE_LIMIT = _env_positive_int("QUOTE_RATE_LIMIT", 120)
 BOOKING_RATE_LIMIT = _env_positive_int("BOOKING_RATE_LIMIT", 12)
+TICKET_CHANGE_RATE_LIMIT = _env_positive_int("TICKET_CHANGE_RATE_LIMIT", 12)
+TICKET_MOVE_MIN_HOURS = _env_positive_int("TICKET_MOVE_MIN_HOURS", 24)
+TICKET_REFUND_MIN_HOURS = _env_positive_int("TICKET_REFUND_MIN_HOURS", 72)
 EMAIL_LOGIN_TTL_SECONDS = _env_positive_int("EMAIL_LOGIN_TTL_SECONDS", 600)
 EMAIL_LOGIN_RATE_LIMIT = _env_positive_int("EMAIL_LOGIN_RATE_LIMIT", 8)
 EMAIL_CODE_ATTEMPT_LIMIT = _env_positive_int("EMAIL_CODE_ATTEMPT_LIMIT", 5)
@@ -141,6 +147,7 @@ LEGACY_WEB_REGISTER_ENABLED = os.getenv("LEGACY_WEB_REGISTER_ENABLED", "0").stri
 }
 WEB_SESSION_COOKIE = "bt_web_session"
 ADMIN_SESSION_COOKIE = "bt_admin_session"
+GUARD_SESSION_COOKIE = "bt_guard_session"
 SESSION_COOKIE_MAX_AGE_SECONDS = _env_positive_int("SESSION_COOKIE_MAX_AGE_SECONDS", 60 * 60 * 24 * 90)
 _LAST_UPLOAD_CLEANUP_TS = 0.0
 _RATE_LIMIT_BUCKETS: Dict[Tuple[str, str], List[float]] = {}
@@ -166,7 +173,7 @@ async def add_security_headers(request: Request, call_next):
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
         "connect-src 'self' https://accounts.google.com; "
-        "frame-src https://accounts.google.com https://www.google.com https://maps.google.com; "
+        "frame-src https://accounts.google.com https://www.google.com https://maps.google.com https://oauth.telegram.org; "
         "frame-ancestors https://web.telegram.org https://*.telegram.org;",
     )
     path = request.url.path
@@ -242,6 +249,10 @@ def _request_web_token(request: Request) -> str:
 
 def _request_admin_token(request: Request) -> str:
     return (request.cookies.get(ADMIN_SESSION_COOKIE) or "").strip()
+
+
+def _request_guard_token(request: Request) -> str:
+    return (request.cookies.get(GUARD_SESSION_COOKIE) or "").strip()
 
 
 def _cookie_secure(request: Request) -> bool:
@@ -493,7 +504,13 @@ def _send_login_code(email: str, code: str) -> None:
         raise HTTPException(status_code=502, detail="Email service is temporarily unavailable.") from exc
 
 
-def _send_email(to_email: str, subject: str, text: str, html: Optional[str] = None) -> None:
+def _send_email(
+    to_email: str,
+    subject: str,
+    text: str,
+    html: Optional[str] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> None:
     """Best-effort transactional email via Resend.
 
     Mirrors _send_login_code: no-op when email delivery is not configured or when
@@ -516,6 +533,23 @@ def _send_email(to_email: str, subject: str, text: str, html: Optional[str] = No
     }
     if html:
         payload["html"] = html
+    if attachments:
+        encoded = []
+        for att in attachments:
+            content_bytes = att.get("content_bytes")
+            filename = att.get("filename")
+            if content_bytes is None or not filename:
+                continue
+            entry = {
+                "filename": filename,
+                "content": base64.b64encode(content_bytes).decode("ascii"),
+            }
+            mime = att.get("mime")
+            if mime:
+                entry["content_type"] = mime
+            encoded.append(entry)
+        if encoded:
+            payload["attachments"] = encoded
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         "https://api.resend.com/emails",
@@ -876,6 +910,168 @@ def _ticket_qr_signature(token: str) -> str:
     return hmac.new(secret.encode("utf-8"), (token or "").strip().encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _invoice_checkin_url(token: str) -> str:
+    """Check-in URL for a ticket token, matching _ticket_qr_text but without a Request.
+
+    Uses WEB_APP_URL as the base (the same value _ticket_qr_text prefers); when it is
+    empty the URL is a site-relative "/checkin/<token>".
+    """
+    base_url = WEB_APP_URL or ""
+    return f"{base_url}/checkin/{token}"
+
+
+def _invoice_unit_price(event, tier_key: str, gender: str) -> float:
+    prices = {
+        "early": (getattr(event, "early_bird_price", 0.0), getattr(event, "early_bird_price_girl", 0.0)),
+        "tier1": (getattr(event, "regular_tier1_price", 0.0), getattr(event, "regular_tier1_price_girl", 0.0)),
+        "tier2": (getattr(event, "regular_tier2_price", 0.0), getattr(event, "regular_tier2_price_girl", 0.0)),
+    }
+    boy_price, girl_price = prices.get((tier_key or "").strip(), (0.0, 0.0))
+    if (gender or "").strip().lower() == "girl":
+        return float(girl_price or 0.0)
+    return float(boy_price or 0.0)
+
+
+def _fmt_amount(value: Any) -> str:
+    try:
+        return f"{float(value or 0):,.0f} Ft"
+    except (TypeError, ValueError):
+        return "0 Ft"
+
+
+def build_invoice_pdf(reservation, event, buyer, attendees, payment_title: str) -> bytes:
+    """Render a Budapest Tunderi invoice PDF (bytes) with one QR per attendee.
+
+    Includes the reservation code, event title/date/location, buyer name + email, a
+    per-tier/gender line-items section, group and repost discounts, base and final
+    totals, the chosen payment option title, and one check-in QR per attendee (same
+    URL format as _ticket_qr_text) with the attendee name printed underneath.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle,
+        Image as RLImage,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "InvoiceTitle", parent=styles["Title"], fontSize=20, spaceAfter=6
+    )
+    normal = styles["Normal"]
+    caption = ParagraphStyle("QRCaption", parent=normal, alignment=1, fontSize=8)
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, title="Budapest Tunderi Invoice")
+    flow: List[Any] = []
+
+    flow.append(Paragraph("Budapest Tunderi", title_style))
+    flow.append(Paragraph("Invoice / Booking confirmation", styles["Heading2"]))
+    flow.append(Spacer(1, 6))
+
+    code = getattr(reservation, "code", "") or ""
+    event_title = getattr(event, "title", "") or ""
+    event_dt = getattr(event, "event_datetime", "") or ""
+    event_loc = getattr(event, "location", "") or ""
+    buyer_name = f"{getattr(buyer, 'name', '') or ''} {getattr(buyer, 'surname', '') or ''}".strip()
+    buyer_email = getattr(buyer, "email", "") or ""
+
+    flow.append(Paragraph(f"Reservation code: <b>{code}</b>", normal))
+    flow.append(Paragraph(f"Event: {event_title}", normal))
+    flow.append(Paragraph(f"Date: {event_dt}", normal))
+    flow.append(Paragraph(f"Location: {event_loc}", normal))
+    flow.append(Paragraph(f"Buyer: {buyer_name}", normal))
+    flow.append(Paragraph(f"Email: {buyer_email}", normal))
+    flow.append(Spacer(1, 10))
+
+    # Line items grouped by (tier, gender).
+    grouped: Dict[Tuple[str, str], int] = {}
+    order: List[Tuple[str, str]] = []
+    for att in attendees or []:
+        tier_key = (att["ticket_tier"] if "ticket_tier" in att.keys() else "") or (
+            getattr(reservation, "ticket_type", "") or ""
+        )
+        gender = (att["gender"] if "gender" in att.keys() else "") or ""
+        key = (tier_key, "girl" if gender.strip().lower() == "girl" else "boy")
+        if key not in grouped:
+            grouped[key] = 0
+            order.append(key)
+        grouped[key] += 1
+
+    line_rows = [["Ticket type", "Qty", "Unit price", "Amount"]]
+    for key in order:
+        tier_key, gender = key
+        qty = grouped[key]
+        unit = _invoice_unit_price(event, tier_key, gender)
+        label = f"{_tier_label(tier_key)} ({'Girls' if gender == 'girl' else 'Boys'})"
+        line_rows.append([label, str(qty), _fmt_amount(unit), _fmt_amount(unit * qty)])
+
+    table = Table(line_rows, hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ]
+        )
+    )
+    flow.append(table)
+    flow.append(Spacer(1, 10))
+
+    base_total = getattr(reservation, "base_total_price", 0.0) or 0.0
+    group_discount = getattr(reservation, "group_discount_amount", 0.0) or 0.0
+    repost_discount = getattr(reservation, "discount_amount", 0.0) or 0.0
+    final_total = getattr(reservation, "total_price", 0.0) or 0.0
+
+    flow.append(Paragraph(f"Base total: {_fmt_amount(base_total)}", normal))
+    if group_discount:
+        flow.append(Paragraph(f"Group discount: -{_fmt_amount(group_discount)}", normal))
+    if repost_discount:
+        flow.append(Paragraph(f"Repost discount: -{_fmt_amount(repost_discount)}", normal))
+    flow.append(Paragraph(f"<b>Total: {_fmt_amount(final_total)}</b>", normal))
+    flow.append(Spacer(1, 6))
+    flow.append(Paragraph(f"Payment option: {payment_title or '-'}", normal))
+    flow.append(Spacer(1, 14))
+
+    flow.append(Paragraph("Entry passes", styles["Heading2"]))
+    flow.append(Spacer(1, 6))
+
+    qr_cells: List[Any] = []
+    for att in attendees or []:
+        token = (att["ticket_token"] if "ticket_token" in att.keys() else "") or ""
+        full_name = (att["full_name"] if "full_name" in att.keys() else "") or ""
+        url = _invoice_checkin_url(token)
+        qr_img = qrcode.make(url)
+        qr_buf = BytesIO()
+        qr_img.save(qr_buf, format="PNG")
+        qr_buf.seek(0)
+        img = RLImage(qr_buf, width=35 * mm, height=35 * mm)
+        cell = [img, Paragraph(full_name, caption)]
+        qr_cells.append(cell)
+
+    if qr_cells:
+        per_row = 3
+        grid = [qr_cells[i:i + per_row] for i in range(0, len(qr_cells), per_row)]
+        # Pad last row so Table gets equal-length rows.
+        for row in grid:
+            while len(row) < per_row:
+                row.append("")
+        qr_table = Table(grid, hAlign="LEFT", colWidths=[45 * mm] * per_row)
+        qr_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+        flow.append(qr_table)
+
+    doc.build(flow)
+    return buf.getvalue()
+
+
 def _bot_api(method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if not BOT_TOKEN:
         return {"ok": False, "description": "BOT_TOKEN is missing"}
@@ -1019,6 +1215,16 @@ class WebGoogleLoginRequest(BaseModel):
     phone: str = Field(default="", max_length=40)
 
 
+class WebTelegramLoginRequest(BaseModel):
+    id: int
+    first_name: str = Field(default="", max_length=256)
+    last_name: Optional[str] = Field(default=None, max_length=256)
+    username: Optional[str] = Field(default=None, max_length=256)
+    photo_url: Optional[str] = Field(default=None, max_length=2048)
+    auth_date: int
+    hash: str = Field(min_length=1, max_length=256)
+
+
 class WebProfileUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     surname: str = Field(min_length=1, max_length=80)
@@ -1027,6 +1233,12 @@ class WebProfileUpdateRequest(BaseModel):
 
 class WebCancelRequest(BaseModel):
     code: str = Field(min_length=1, max_length=64)
+
+
+class TicketChangeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+    kind: str = Field(min_length=1, max_length=16)
+    tg_id: Optional[int] = None
 
 
 class AdminWebLoginRequest(BaseModel):
@@ -1136,6 +1348,28 @@ def _request_admin(request: Request, provided_tg_id: Optional[int] = None) -> in
             raise HTTPException(status_code=401, detail="Admin login required.") from exc
         raise
     return _require_admin(verified_tg_id)
+
+
+def _request_guard_or_admin(request: Request, provided_tg_id: Optional[int] = None) -> int:
+    """Authorize check-in actions for either a valid admin or a valid guard session.
+
+    Returns the admin tg_id (0 for a website admin session) when an admin is
+    authenticated, or 0 for a valid guard-only session. Raises 401 otherwise. Only the
+    two check-in endpoints use this; every other admin endpoint stays admin-only.
+    """
+    try:
+        return _request_admin(request, provided_tg_id)
+    except HTTPException as exc:
+        if exc.status_code not in {401, 403}:
+            raise
+        admin_error = exc
+    guard_token = _request_guard_token(request)
+    if guard_token and db.is_valid_guard_web_session(guard_token):
+        return 0
+    # No valid guard session: surface the admin auth error as-is so an authenticated
+    # but non-admin user still gets 403 (authorization) while an unauthenticated caller
+    # gets 401 (authentication), matching the existing check-in behaviour.
+    raise admin_error
 
 
 def _row_dict(row) -> Dict[str, Any]:
@@ -1352,6 +1586,7 @@ def web_auth_config() -> Dict[str, Any]:
         "email_login_enabled": _email_login_configured(),
         "code_ttl_seconds": EMAIL_LOGIN_TTL_SECONDS,
         "google_client_id": GOOGLE_CLIENT_ID,
+        "telegram_bot_username": TELEGRAM_LOGIN_BOT_USERNAME,
     }
 
 
@@ -1480,6 +1715,53 @@ def web_email_update_verify(
     return {"ok": True, "profile": _profile_payload(updated)}
 
 
+def _verify_telegram_login_widget(payload: "WebTelegramLoginRequest") -> Dict[str, str]:
+    """Verify a Telegram Login Widget payload.
+
+    NOTE: this differs from Mini App initData. The Login Widget uses
+    secret = sha256(BOT_TOKEN) directly, whereas initData uses
+    HMAC_SHA256(key="WebAppData", BOT_TOKEN)."""
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Telegram login is not configured.")
+    fields: Dict[str, str] = {
+        "id": str(int(payload.id)),
+        "first_name": payload.first_name or "",
+        "auth_date": str(int(payload.auth_date)),
+    }
+    if payload.last_name is not None:
+        fields["last_name"] = payload.last_name
+    if payload.username is not None:
+        fields["username"] = payload.username
+    if payload.photo_url is not None:
+        fields["photo_url"] = payload.photo_url
+    data_check_string = "\n".join(f"{key}={fields[key]}" for key in sorted(fields))
+    secret_key = hashlib.sha256(BOT_TOKEN.encode("utf-8")).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_hash, payload.hash):
+        raise HTTPException(status_code=401, detail="Telegram login is invalid.")
+    if TELEGRAM_AUTH_MAX_AGE_SECONDS > 0 and time.time() - int(payload.auth_date) > TELEGRAM_AUTH_MAX_AGE_SECONDS:
+        raise HTTPException(status_code=401, detail="Telegram login expired. Try again.")
+    if int(payload.id) <= 0:
+        raise HTTPException(status_code=401, detail="Telegram user is invalid.")
+    return fields
+
+
+@app.post("/api/web/login/telegram")
+def web_telegram_login(request: Request, response: Response, payload: WebTelegramLoginRequest) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "web_telegram_login", EMAIL_LOGIN_RATE_LIMIT)
+    _verify_telegram_login_widget(payload)
+    try:
+        user, token = db.get_or_create_web_session_for_tg_user(
+            int(payload.id),
+            (payload.first_name or "").strip(),
+            (payload.last_name or "").strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _set_session_cookie(request, response, WEB_SESSION_COOKIE, token)
+    return {"ok": True, "profile": _profile_payload(user)}
+
+
 @app.post("/api/web/login/google")
 def web_google_login(request: Request, response: Response, payload: WebGoogleLoginRequest) -> Dict[str, Any]:
     _enforce_rate_limit(request, "web_google_login", EMAIL_LOGIN_RATE_LIMIT)
@@ -1547,6 +1829,85 @@ def web_cancel(
     return {"ok": True, "message": message, "status": updated.status if updated else None}
 
 
+def _hours_until_event(event) -> Optional[float]:
+    """Return hours from now (Europe/Budapest) until the event start, or None if
+    the event datetime cannot be parsed."""
+    if not event:
+        return None
+    try:
+        starts_at = db.parse_event_datetime(event.event_datetime)
+    except Exception:
+        return None
+    if starts_at is None:
+        return None
+    delta = starts_at - datetime.now(BUDAPEST_TZ)
+    return delta.total_seconds() / 3600.0
+
+
+@app.post("/api/web/ticket/request")
+def web_ticket_request(
+    request: Request,
+    payload: TicketChangeRequest,
+) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "ticket_change", TICKET_CHANGE_RATE_LIMIT, payload.tg_id)
+    user, _verified_tg_id = _request_user(request, payload.tg_id)
+    code = (payload.code or "").strip()
+    kind = (payload.kind or "").strip().lower()
+    reservation = db.get_reservation_by_code(code)
+    if not reservation or int(reservation.user_id) != int(user.id):
+        raise HTTPException(status_code=404, detail="Reservation not found for your account.")
+    if kind not in {"move", "refund"}:
+        raise HTTPException(status_code=400, detail="Unknown request type.")
+    if (reservation.status or "").strip() != STATUS_APPROVED:
+        raise HTTPException(status_code=400, detail="Only approved tickets can be moved or refunded.")
+    # Idempotency: if a change request is already on file, do not overwrite it or
+    # re-notify admins. Return the existing request as-is.
+    existing = (getattr(reservation, "change_request", "") or "").strip()
+    if existing:
+        return {
+            "ok": True,
+            "message": "A change request is already on file; we will contact you.",
+            "kind": existing,
+            "change_request": existing,
+        }
+    event = db.get_event(reservation.event_id)
+    hours = _hours_until_event(event)
+    if hours is None or hours <= 0:
+        raise HTTPException(status_code=400, detail="This event has already started or ended.")
+    if kind == "move" and hours < TICKET_MOVE_MIN_HOURS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Moves must be requested at least {TICKET_MOVE_MIN_HOURS} hours before the event.",
+        )
+    if kind == "refund" and hours < TICKET_REFUND_MIN_HOURS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refunds must be requested at least {TICKET_REFUND_MIN_HOURS} hours before the event.",
+        )
+    ok, message, updated = db.request_ticket_change(user.id, code, kind)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    # Best-effort admin notification; never break the customer response.
+    try:
+        buyer_name = f"{(user.name or '').strip()} {(user.surname or '').strip()}".strip() or "customer"
+        event_title = event.title if event else f"Event #{reservation.event_id}"
+        text = (
+            f"Ticket change request ({kind}) for {event_title}\n"
+            f"Code: {code}\n"
+            f"Buyer: {buyer_name}"
+        )
+        for admin_id in ADMIN_IDS:
+            _bot_api("sendMessage", {"chat_id": admin_id, "text": text})
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "message": message,
+        "kind": kind,
+        "change_request": updated.change_request if updated else kind,
+    }
+
+
 @app.get("/api/me")
 def me(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
     user, _verified_tg_id = _request_user(request, tg_id)
@@ -1561,6 +1922,16 @@ def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -
     for reservation in rows:
         event = db.get_event(reservation.event_id)
         attendees = db.list_attendees(reservation.id)
+        status_norm = (reservation.status or "").strip().lower()
+        change_request = (getattr(reservation, "change_request", "") or "").strip()
+        hours_until = _hours_until_event(event)
+        eligible_base = status_norm == STATUS_APPROVED and change_request == ""
+        can_request_move = bool(
+            eligible_base and hours_until is not None and hours_until >= TICKET_MOVE_MIN_HOURS
+        )
+        can_request_refund = bool(
+            eligible_base and hours_until is not None and hours_until >= TICKET_REFUND_MIN_HOURS
+        )
         ticket_items = []
         for row in attendees:
             checked_in_at = row["checked_in_at"]
@@ -1590,6 +1961,12 @@ def my_tickets(request: Request, tg_id: Optional[int] = None, limit: int = 20) -
                 "payment_slot_title": _payment_slot_title(event, getattr(reservation, "payment_slot", 0)),
                 "attendees": [row["full_name"] for row in attendees],
                 "tickets": ticket_items,
+                "event_datetime": event.event_datetime if event else "",
+                "change_request": change_request,
+                "can_request_move": can_request_move,
+                "can_request_refund": can_request_refund,
+                "move_min_hours": TICKET_MOVE_MIN_HOURS,
+                "refund_min_hours": TICKET_REFUND_MIN_HOURS,
             }
         )
     return {"items": items}
@@ -1804,6 +2181,43 @@ def admin_bootstrap(request: Request, tg_id: Optional[int] = None) -> Dict[str, 
     }
 
 
+@app.post("/api/guard/login")
+def guard_login(request: Request, response: Response, payload: AdminWebLoginRequest) -> Dict[str, Any]:
+    _enforce_rate_limit(request, "guard_login", 10)
+    if not GUARD_WEB_PASSWORD:
+        raise HTTPException(status_code=503, detail="Guard login is not configured.")
+    if not hmac.compare_digest(payload.password, GUARD_WEB_PASSWORD):
+        raise HTTPException(status_code=403, detail="Wrong guard password.")
+    token = db.create_guard_web_session()
+    _set_session_cookie(request, response, GUARD_SESSION_COOKIE, token)
+    return {"ok": True, "role": "guard"}
+
+
+@app.post("/api/guard/logout")
+def guard_logout(request: Request, response: Response) -> Dict[str, Any]:
+    token = _request_guard_token(request)
+    if token:
+        db.delete_guard_web_session(token)
+    response.delete_cookie(GUARD_SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/guard/bootstrap")
+def guard_bootstrap(request: Request, tg_id: Optional[int] = None) -> Dict[str, Any]:
+    # Full admins are also allowed here so the frontend can detect access; a valid
+    # guard-only session reports role "guard" so the SPA can render check-in-only mode.
+    try:
+        verified_tg_id = _request_admin(request, tg_id)
+    except HTTPException:
+        verified_tg_id = None
+    if verified_tg_id is not None:
+        return {"ok": True, "role": "admin", "tg_id": verified_tg_id if verified_tg_id else None}
+    guard_token = _request_guard_token(request)
+    if guard_token and db.is_valid_guard_web_session(guard_token):
+        return {"ok": True, "role": "guard"}
+    raise HTTPException(status_code=401, detail="Guard or admin login required.")
+
+
 @app.get("/api/admin/guests")
 def admin_guests(
     request: Request,
@@ -1829,9 +2243,27 @@ def admin_reservations(
     return {"items": [_row_dict(r) for r in rows]}
 
 
+@app.get("/api/admin/purchase_history")
+def admin_purchase_history(
+    request: Request,
+    tg_id: Optional[int] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    _request_admin(request, tg_id)
+    rows = db.admin_purchase_history(search=search, limit=limit)
+    items = []
+    for row in rows:
+        item = _row_dict(row)
+        event = db.get_event(int(row["event_id"])) if row["event_id"] is not None else None
+        item["payment_slot_title"] = _payment_slot_title(event, row["payment_slot"])
+        items.append(item)
+    return {"items": items}
+
+
 @app.get("/api/admin/checkin/lookup")
 def admin_checkin_lookup(request: Request, token: str, tg_id: Optional[int] = None) -> Dict[str, Any]:
-    _request_admin(request, tg_id)
+    _request_guard_or_admin(request, tg_id)
     clean_token = _ticket_token_from_value(token)
     row = db.lookup_ticket(clean_token)
     if not row:
@@ -1841,7 +2273,7 @@ def admin_checkin_lookup(request: Request, token: str, tg_id: Optional[int] = No
 
 @app.post("/api/admin/checkin")
 def admin_checkin(request: Request, payload: CheckInRequest) -> Dict[str, Any]:
-    admin_tg_id = _request_admin(request, payload.tg_id)
+    admin_tg_id = _request_guard_or_admin(request, payload.tg_id)
     clean_token = _ticket_token_from_value(payload.token)
     ok, message, row = db.check_in_ticket(clean_token, admin_tg_id)
     if not row:
@@ -2281,6 +2713,7 @@ def _pending_reservation_item(row) -> Dict[str, Any]:
         "reservation_id": data.get("reservation_id"),
         "code": data.get("reservation_code"),
         "status": data.get("reservation_status"),
+        "change_request": data.get("change_request") or "",
         "quantity": data.get("quantity"),
         "boys": data.get("boys"),
         "girls": data.get("girls"),
@@ -2379,6 +2812,31 @@ def admin_reservation_approve(request: Request, payload: AdminReservationApprove
                     "See you at the event!"
                 ),
             )
+            # Best-effort invoice PDF with per-attendee QR passes. Must never break
+            # approval, so any PDF/email failure is swallowed here.
+            try:
+                attendees = db.list_attendees(reservation.id)
+                payment_title = _payment_slot_title(event, getattr(reservation, "payment_slot", 0))
+                pdf_bytes = build_invoice_pdf(reservation, event, buyer, attendees, payment_title)
+                _send_email(
+                    buyer_email,
+                    "Your Budapest Tunderi invoice",
+                    (
+                        "Thanks for your booking! Your invoice is attached as a PDF, "
+                        "including a QR entry pass for each guest.\n"
+                        f"Event: {event_title}\n"
+                        f"Code: {reservation.code}"
+                    ),
+                    attachments=[
+                        {
+                            "filename": f"invoice-{reservation.code}.pdf",
+                            "content_bytes": pdf_bytes,
+                            "mime": "application/pdf",
+                        }
+                    ],
+                )
+            except Exception:
+                pass
         if (reservation.payment_file_type or "").strip() == "external":
             _delete_stored_upload(reservation.payment_file_id)
     return {"ok": True, "message": message, "reservation": reservation.__dict__ if reservation else None}

@@ -385,6 +385,24 @@ h3 {
   transform: none;
 }
 
+.register-note {
+  width: 100%;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--gold-soft);
+  border-radius: 14px;
+  background: rgba(241, 181, 49, 0.12);
+  color: var(--amber);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.register-note:hover {
+  background: rgba(241, 181, 49, 0.18);
+}
+
 .danger-btn {
   border-color: rgba(255, 156, 156, 0.55);
   color: #ff9c9c;
@@ -1405,6 +1423,28 @@ input[type="file"]::file-selector-button {
   color: #ffb4b4;
 }
 
+.ticket-move-btn,
+.ticket-refund-btn {
+  margin-top: 10px;
+  margin-right: 8px;
+}
+
+.ticket-change-hint {
+  margin-top: 6px;
+  opacity: 0.8;
+}
+
+.ticket-change-badge {
+  margin-top: 10px;
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 196, 92, 0.14);
+  border: 1px solid rgba(255, 196, 92, 0.5);
+  color: #ffc45c;
+  font-size: 13px;
+}
+
 /* Event banner photos (public) + embedded Google Map */
 .upcoming-banner {
   display: block;
@@ -1587,4 +1627,131 @@ input[type="file"]::file-selector-button {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* Purchase history (admin History tab): buyer-grouped cards reusing card tokens. */
+.admin-history-group .admin-history-purchases {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.admin-history-item {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper-soft);
+}
+
+.admin-history-item .admin-card-meta:first-child {
+  color: var(--ink, inherit);
+  font-weight: 700;
+}
+
+/* Guard-only mode marker shown in #admin-ident. */
+#admin-ident:not(:empty) {
+  display: inline-block;
+}
+
+/* ---- Booking wizard (Feature 4) ------------------------------------------ */
+.booking-wizard .wizard-step[hidden] {
+  display: none;
+}
+
+.wizard-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.wizard-progress-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted, #8a8a8a);
+  opacity: 0.75;
+}
+
+.wizard-progress-step .wizard-progress-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.wizard-progress-step.active {
+  color: var(--accent, #d81b60);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.wizard-progress-step.done {
+  opacity: 1;
+}
+
+.wizard-step-title {
+  margin-top: 0;
+}
+
+.wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.wizard-nav .wizard-next {
+  margin-left: auto;
+}
+
+.wizard-nav button[hidden] {
+  display: none;
+}
+
+/* Per-guest repost controls only show on the Repost step (attendees list is
+   moved there and flagged with attendees-mode-repost). */
+#attendees-list .attendee-repost {
+  display: none;
+}
+
+#attendees-list.attendees-mode-repost .attendee-repost {
+  display: block;
+  margin-top: 8px;
+}
+
+.repost-rules {
+  margin-bottom: 16px;
+}
+
+.telegram-signin-wrap[hidden] {
+  display: none;
+}
+
+.telegram-signin-button {
+  display: flex;
+  justify-content: center;
+}
+
+/* Design polish: wizard steps no longer repeat the step title as an inner
+   heading, so keep the single step title breathing and right-align the lone
+   Refresh action on the Choose-event step. */
+.wizard-step .panel-head.actions-only {
+  justify-content: flex-end;
+}
+
+.wizard-step-title {
+  margin-bottom: 14px;
+}
+
+.wizard-step > h3:first-child {
+  margin-top: 0;
 }

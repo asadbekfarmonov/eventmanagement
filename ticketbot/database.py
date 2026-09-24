@@ -186,6 +186,8 @@ class Database:
                 reviewed_by_tg_id INTEGER,
                 hold_applied INTEGER NOT NULL DEFAULT 1,
                 payment_slot INTEGER NOT NULL DEFAULT 0,
+                change_request TEXT NOT NULL DEFAULT '',
+                change_request_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id),
                 FOREIGN KEY (event_id) REFERENCES events(id)
             )
@@ -225,6 +227,15 @@ class Database:
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS admin_web_sessions (
+                token_hash TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guard_web_sessions (
                 token_hash TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL
@@ -349,6 +360,10 @@ class Database:
             cursor.execute("ALTER TABLE reservations ADD COLUMN hold_applied INTEGER NOT NULL DEFAULT 1")
         if "payment_slot" not in reservation_cols:
             cursor.execute("ALTER TABLE reservations ADD COLUMN payment_slot INTEGER NOT NULL DEFAULT 0")
+        if "change_request" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN change_request TEXT NOT NULL DEFAULT ''")
+        if "change_request_at" not in reservation_cols:
+            cursor.execute("ALTER TABLE reservations ADD COLUMN change_request_at TEXT")
 
         cursor.execute("UPDATE reservations SET status = ? WHERE status = 'reserved'", (STATUS_APPROVED,))
 
@@ -415,6 +430,16 @@ class Database:
                 image_url TEXT NOT NULL,
                 position INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guard_web_sessions (
+                token_hash TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
             )
             """
         )
@@ -908,6 +933,55 @@ class Database:
             raise ValueError("Could not create user profile")
         return user, token
 
+    def get_or_create_web_session_for_tg_user(
+        self,
+        tg_id: int,
+        name: str,
+        surname: str,
+    ) -> Tuple[User, str]:
+        """Get-or-create a user row for a REAL positive Telegram id (Login Widget)
+        and open a website session for it, mirroring create_or_update_web_user_by_email."""
+        tid = int(tg_id)
+        if tid <= 0:
+            raise ValueError("A valid Telegram id is required")
+        cursor = self.conn.cursor()
+        now = self._utc_now()
+        cursor.execute("SELECT id, name, surname FROM users WHERE tg_id = ?", (tid,))
+        existing = cursor.fetchone()
+        if existing:
+            user_id = int(existing["id"])
+            # Never clobber a saved profile: only fill name/surname when empty.
+            final_name = (existing["name"] or "").strip() or (name or "").strip()
+            final_surname = (existing["surname"] or "").strip() or (surname or "").strip()
+            cursor.execute(
+                "UPDATE users SET name = ?, surname = ? WHERE id = ?",
+                (final_name, final_surname, user_id),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO users (tg_id, name, surname, phone, blocked, blocked_reason)
+                VALUES (?, ?, ?, '', 0, '')
+                """,
+                (tid, (name or "").strip(), (surname or "").strip()),
+            )
+            user_id = int(cursor.lastrowid)
+
+        token = secrets.token_urlsafe(32)
+        token_hash = self._web_session_hash(token)
+        cursor.execute(
+            """
+            INSERT INTO web_sessions (token_hash, user_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (token_hash, user_id, now, now),
+        )
+        self.conn.commit()
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("Could not create user profile")
+        return user, token
+
     def save_email_login_code(
         self,
         email: str,
@@ -1113,6 +1187,109 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM admin_web_sessions WHERE token_hash = ?", (token_hash,))
         self.conn.commit()
+
+    def create_guard_web_session(self) -> str:
+        token = secrets.token_urlsafe(32)
+        token_hash = self._web_session_hash(token)
+        now = self._utc_now()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO guard_web_sessions (token_hash, created_at, last_seen_at)
+            VALUES (?, ?, ?)
+            """,
+            (token_hash, now, now),
+        )
+        self.conn.commit()
+        return token
+
+    def is_valid_guard_web_session(self, token: str) -> bool:
+        raw = (token or "").strip()
+        if not raw:
+            return False
+        token_hash = self._web_session_hash(raw)
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT token_hash, created_at FROM guard_web_sessions WHERE token_hash = ?", (token_hash,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        if self._session_is_expired(row["created_at"]):
+            cursor.execute("DELETE FROM guard_web_sessions WHERE token_hash = ?", (token_hash,))
+            self.conn.commit()
+            return False
+        cursor.execute(
+            "UPDATE guard_web_sessions SET last_seen_at = ? WHERE token_hash = ?",
+            (self._utc_now(), token_hash),
+        )
+        self.conn.commit()
+        return True
+
+    def delete_guard_web_session(self, token: str) -> None:
+        raw = (token or "").strip()
+        if not raw:
+            return
+        token_hash = self._web_session_hash(raw)
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM guard_web_sessions WHERE token_hash = ?", (token_hash,))
+        self.conn.commit()
+
+    def admin_purchase_history(self, search: Optional[str], limit: int = 100) -> List[sqlite3.Row]:
+        """Return reservations (all statuses, incl. cancelled/rejected) for the admin
+        purchase-history view, grouped by buyer. When ``search`` is empty the most
+        recent ``limit`` rows are returned; otherwise it matches buyer identity and
+        reservation/event fields case-insensitively."""
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 100
+        if limit <= 0:
+            limit = 100
+        # Cap the upper bound so a huge ?limit= cannot load unbounded rows into memory.
+        limit = min(limit, 500)
+        columns = """
+            r.code, r.status, r.quantity, r.boys, r.girls, r.total_price,
+            r.base_total_price, r.group_discount_amount, r.discount_amount,
+            r.created_at, r.reviewed_at, r.payment_slot,
+            r.change_request, r.change_request_at,
+            e.id AS event_id, e.title AS event_title, e.event_datetime,
+            u.tg_id, u.name AS buyer_name, u.surname AS buyer_surname,
+            u.email AS buyer_email, u.phone AS buyer_phone
+        """
+        cursor = self.conn.cursor()
+        term = (search or "").strip()
+        if term:
+            like = f"%{term.lower()}%"
+            cursor.execute(
+                f"""
+                SELECT {columns}
+                FROM reservations r
+                JOIN events e ON e.id = r.event_id
+                JOIN users u ON u.id = r.user_id
+                WHERE lower(u.name) LIKE ?
+                   OR lower(u.surname) LIKE ?
+                   OR lower(u.email) LIKE ?
+                   OR lower(u.phone) LIKE ?
+                   OR lower(CAST(u.tg_id AS TEXT)) LIKE ?
+                   OR lower(r.code) LIKE ?
+                   OR lower(e.title) LIKE ?
+                ORDER BY u.id, r.created_at DESC
+                LIMIT ?
+                """,
+                (like, like, like, like, like, like, like, limit),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT {columns}
+                FROM reservations r
+                JOIN events e ON e.id = r.event_id
+                JOIN users u ON u.id = r.user_id
+                ORDER BY u.id, r.created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        return cursor.fetchall()
 
     def list_carousel_images(self) -> List[sqlite3.Row]:
         """Return homepage carousel images ordered by position, then id."""
@@ -1478,7 +1655,8 @@ class Database:
                    discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
-                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot
+                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot,
+                   change_request, change_request_at
             FROM reservations
             WHERE id = ?
             """,
@@ -1497,7 +1675,8 @@ class Database:
                    discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
-                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot
+                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot,
+                   change_request, change_request_at
             FROM reservations
             WHERE code = ?
             """,
@@ -1516,7 +1695,8 @@ class Database:
                    discount_count, discount_unit_amount, discount_amount,
                    boys, girls, status, created_at,
                    payment_file_id, payment_file_type, admin_note,
-                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot
+                   reviewed_at, reviewed_by_tg_id, hold_applied, payment_slot,
+                   change_request, change_request_at
             FROM reservations
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -2476,6 +2656,7 @@ class Database:
                 r.payment_file_id,
                 r.payment_file_type,
                 r.payment_slot,
+                r.change_request,
                 e.id AS event_id,
                 e.title AS event_title,
                 e.event_datetime,
@@ -2602,6 +2783,38 @@ class Database:
         )
         self.conn.commit()
         return True, "Reservation approved.", self.get_reservation(reservation_id)
+
+    @_rollback_on_error
+    def request_ticket_change(
+        self, user_id: int, code: str, kind: str
+    ) -> Tuple[bool, str, Optional[Reservation]]:
+        """Record a customer request to move or refund an approved ticket.
+
+        Validates ownership, request kind, and approved status. Records the
+        request kind and timestamp WITHOUT changing the reservation status; the
+        time-window policy is enforced by the server layer before this is called.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM reservations WHERE code = ? AND user_id = ?",
+            (code, user_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False, "Reservation not found for your account.", None
+        if kind not in {"move", "refund"}:
+            return False, "Unknown request type.", self.get_reservation(row["id"])
+        if row["status"] != STATUS_APPROVED:
+            return False, "Only approved tickets can be moved or refunded.", self.get_reservation(row["id"])
+        cursor.execute(
+            "UPDATE reservations SET change_request = ?, change_request_at = ? WHERE id = ?",
+            (kind, self._utc_now(), row["id"]),
+        )
+        self.conn.commit()
+        message = "Move requested. We will contact you shortly." if kind == "move" else (
+            "Refund requested. We will contact you shortly."
+        )
+        return True, message, self.get_reservation(row["id"])
 
     @_rollback_on_error
     def reject_reservation(

@@ -1034,6 +1034,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("discount_amount", reservation_cols)
         self.assertIn("admin_note", reservation_cols)
         self.assertIn("hold_applied", reservation_cols)
+        self.assertIn("change_request", reservation_cols)
+        self.assertIn("change_request_at", reservation_cols)
         self.assertIn("full_name", attendee_cols)
         self.assertIn("gender", attendee_cols)
         self.assertIn("ticket_token", attendee_cols)
