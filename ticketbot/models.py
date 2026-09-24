@@ -63,6 +63,8 @@ class Reservation:
     reviewed_by_tg_id: Optional[int]
     hold_applied: int
     payment_slot: int = 0
+    change_request: str = ''
+    change_request_at: Optional[str] = None
 
 
 @dataclass

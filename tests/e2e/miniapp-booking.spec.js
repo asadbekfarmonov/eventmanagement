@@ -9,10 +9,50 @@ const proofFile = {
   ),
 };
 
+const WIZARD_ORDER = ['register', 'event', 'guests', 'repost', 'group', 'summary', 'payment'];
+
+// The Book flow is now a step-by-step wizard: only one step is visible at a time
+// (Back/Next navigation). These helpers drive it so element IDs stay stable and
+// most assertions still hold once we navigate to the step that owns them.
+async function currentWizardStep(page) {
+  return page.locator('.wizard-step:not([hidden])').first().getAttribute('data-wizard-step');
+}
+
+async function gotoStep(page, target) {
+  await expect(page.locator('#booking-wizard')).toBeVisible();
+  for (let i = 0; i < 14; i += 1) {
+    const step = await currentWizardStep(page);
+    if (step === target) return;
+    if (WIZARD_ORDER.indexOf(step) < WIZARD_ORDER.indexOf(target)) {
+      await page.locator('#wizard-next').click();
+    } else {
+      await page.locator('#wizard-back').click();
+    }
+  }
+  await expect(page.locator(`.wizard-step[data-wizard-step="${target}"]`)).toBeVisible();
+}
+
+async function setGuests(page, { boys = 0, girls = 0, names = [] }) {
+  await gotoStep(page, 'guests');
+  if (boys) await page.locator('#boys').fill(String(boys));
+  if (girls) await page.locator('#girls').fill(String(girls));
+  await expect(page.locator('.attendee-row')).toHaveCount(boys + girls);
+  for (let i = 0; i < names.length; i += 1) {
+    await page.locator('.attendee-row').nth(i).locator('input[data-part="first"]').fill(names[i][0]);
+    await page.locator('.attendee-row').nth(i).locator('input[data-part="surname"]').fill(names[i][1]);
+  }
+}
+
 async function openBooking(page) {
   await page.goto('/?tg_id=511308234');
   await page.getByRole('tab', { name: 'Book' }).click();
-  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+  // A registered Telegram user skips the register gate and lands on the Event step.
+  await expect(page.locator('.wizard-step[data-wizard-step="event"]')).toBeVisible();
+  await expect(page.locator('#events-list .event-card').first()).toBeVisible();
+  // Defensive: if the account panel auto-opened before /api/me resolved, close it.
+  if (await page.locator('#account-panel').isVisible()) {
+    await page.locator('#account-close').click();
+  }
 }
 
 async function openAdmin(page) {
@@ -32,6 +72,7 @@ async function selectAdminEventByTitle(page, title) {
 }
 
 async function selectEventByTitle(page, title) {
+  await gotoStep(page, 'event');
   const card = page.locator('#events-list .event-card').filter({ hasText: title }).first();
   await expect(card).toBeVisible();
   await card.click();
@@ -41,16 +82,12 @@ test('booking stays blocked until payment proof is uploaded', async ({ page }) =
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
 
-  await page.locator('#boys').fill('1');
-  await page.locator('#girls').fill('1');
+  await setGuests(page, { boys: 1, girls: 1, names: [['John', 'Doe'], ['Jane', 'Doe']] });
 
-  await expect(page.locator('.attendee-row')).toHaveCount(2);
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
-  await page.locator('.attendee-row').nth(1).locator('input[data-part="first"]').fill('Jane');
-  await page.locator('.attendee-row').nth(1).locator('input[data-part="surname"]').fill('Doe');
-
+  await gotoStep(page, 'summary');
   await expect(page.locator('#summary')).toContainText('Total: 5000.00');
+
+  await gotoStep(page, 'payment');
   await expect(page.locator('#submit-booking')).toBeDisabled();
 
   await page.locator('#payment-proof').setInputFiles(proofFile);
@@ -65,9 +102,8 @@ test('booking submission shows pending status and appears in my tickets', async 
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
 
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await setGuests(page, { boys: 1, names: [['John', 'Doe']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
 
@@ -87,28 +123,32 @@ test('discounted attendee requires repost screenshot and updates final total', a
   await openBooking(page);
   await selectEventByTitle(page, 'Discount Event');
 
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await setGuests(page, { boys: 1, names: [['John', 'Doe']] });
 
+  // Repost controls live on the dedicated Repost step.
+  await gotoStep(page, 'repost');
+  const row = page.locator('.attendee-row').nth(0);
+  await expect(row.locator('input[data-part="repost-file"]')).toBeDisabled();
+
+  await row.locator('input[data-part="repost-check"]').check();
+  await expect(row.locator('input[data-part="repost-file"]')).toBeEnabled();
+  await expect(row.locator('input[data-part="repost-file"]')).toBeVisible();
+  // A checked guest without a screenshot cannot advance.
+  await expect(page.locator('#wizard-next')).toBeDisabled();
+
+  await row.locator('input[data-part="repost-file"]').setInputFiles(proofFile);
+  await expect(page.locator('#wizard-next')).toBeEnabled();
+
+  // The Review step shows the discounted breakdown.
+  await gotoStep(page, 'summary');
   await expect(page.locator('#summary')).toContainText('Base total: 2500.00');
   await expect(page.locator('#summary')).toContainText('Instagram repost discount: 1000.00 per guest.');
-  await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]')).toBeDisabled();
-
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]').check();
-  await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]')).toBeEnabled();
-  await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]')).toBeVisible();
-  await page.locator('#payment-proof').setInputFiles(proofFile);
-  await expect(page.locator('#submit-booking')).toBeDisabled();
-  await expect(page.locator('#summary')).toContainText('Upload a repost screenshot for each guest using the discount.');
-
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]').setInputFiles(proofFile);
-  await expect(page.locator('#summary')).not.toContainText('Upload a repost screenshot for each guest using the discount.');
-  await expect(page.locator('#status')).toHaveText('');
   await expect(page.locator('#summary')).toContainText('Repost discount: 1 x 1000.00 = 1000.00');
   await expect(page.locator('#summary')).toContainText('Final total: 1500.00');
-  await expect(page.locator('#submit-booking')).toBeDisabled();
 
+  await gotoStep(page, 'payment');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await expect(page.locator('#submit-booking')).toBeDisabled();
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
 });
@@ -125,16 +165,15 @@ test('admin can enable repost discount on existing event and guest sees it', asy
   await expect(page.locator('#admin-ev-repost-enabled')).toHaveValue('1');
   await expect(page.locator('#admin-ev-repost-amount')).toHaveValue('1000');
 
-  await page.goto('/?tg_id=511308234');
-  await page.getByRole('tab', { name: 'Book' }).click();
-  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+  await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await setGuests(page, { boys: 1, names: [['John', 'Doe']] });
 
-  await expect(page.locator('#summary')).toContainText('Instagram repost discount: 1000.00 per guest.');
+  // The now-enabled repost discount surfaces on the Repost step.
+  await gotoStep(page, 'repost');
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]')).toBeVisible();
+  await gotoStep(page, 'summary');
+  await expect(page.locator('#summary')).toContainText('Instagram repost discount: 1000.00 per guest.');
 });
 
 test('admin navigation is hidden for non-admins', async ({ page }) => {
@@ -154,16 +193,16 @@ test('top navigation shows one public section at a time', async ({ page }) => {
   await expect(page.locator('#upcoming-events-list .upcoming-card')).toHaveCount(2);
   await expect(page.locator('.main-carousel-slide img')).toHaveCount(3);
   await expect(page.locator('.main-carousel-slide img').first()).toBeVisible();
-  await expect(page.locator('#events-panel')).toBeHidden();
+  await expect(page.locator('#booking-wizard')).toBeHidden();
   await expect(page.locator('#tickets-panel')).toBeHidden();
   await expect(page.locator('#contact-panel')).toBeHidden();
 
   await page.getByRole('tab', { name: 'Book' }).click();
   await expect(page.locator('#main-panel')).toBeHidden();
-  await expect(page.locator('#events-panel')).toBeVisible();
+  await expect(page.locator('#booking-wizard')).toBeVisible();
 
   await page.getByRole('tab', { name: 'My tickets' }).click();
-  await expect(page.locator('#events-panel')).toBeHidden();
+  await expect(page.locator('#booking-wizard')).toBeHidden();
   await expect(page.locator('#tickets-panel')).toBeVisible();
 
   await page.getByRole('tab', { name: 'Main' }).click();
@@ -191,7 +230,8 @@ test('homepage leads with upcoming events and Get tickets preselects the event',
   await discountCard.getByRole('button', { name: 'Get tickets' }).click();
 
   await expect(page.locator('#main-panel')).toBeHidden();
-  await expect(page.locator('#events-panel')).toBeVisible();
+  // Get tickets opens the wizard on the Event step with the event preselected.
+  await expect(page.locator('.wizard-step[data-wizard-step="event"]')).toBeVisible();
 
   const activeCard = page.locator('#events-list .event-card.active');
   await expect(activeCard).toHaveCount(1);
@@ -202,6 +242,7 @@ test('website visitor registers before booking', async ({ page }) => {
   await page.goto('/');
 
   await page.getByRole('tab', { name: 'Book' }).click();
+  // The Book tab auto-opens the account panel for logged-out users.
   await expect(page.locator('#account-panel')).toBeVisible();
 
   await page.locator('#account-name').fill('Web');
@@ -217,7 +258,11 @@ test('website visitor registers before booking', async ({ page }) => {
   await expect(page.locator('#profile-name')).toHaveText('Web Guest');
   await expect(page.locator('#profile-email')).toHaveText('web.guest@example.invalid');
   await expect(page.locator('#profile-phone')).toHaveText('+36 20 555 0101');
-  await page.locator('#boys').fill('1');
+  await page.locator('#account-close').click();
+
+  // Now registered: the wizard advances past the register gate; add a guest.
+  await selectEventByTitle(page, 'Playwright Event');
+  await setGuests(page, { boys: 1, names: [] });
   await expect(page.locator('input[data-part="first"]').first()).toHaveValue('Web');
   await expect(page.locator('input[data-part="surname"]').first()).toHaveValue('Guest');
 });
@@ -417,7 +462,7 @@ test('page tabs expose ARIA tab semantics and account dialog manages focus', asy
   const bookTab = page.getByRole('tab', { name: 'Book' });
   await expect(mainTab).toHaveAttribute('aria-selected', 'true');
   await expect(bookTab).toHaveAttribute('aria-selected', 'false');
-  await expect(bookTab).toHaveAttribute('aria-controls', /events-panel/);
+  await expect(bookTab).toHaveAttribute('aria-controls', /booking-wizard/);
 
   await bookTab.click();
   await expect(bookTab).toHaveAttribute('aria-selected', 'true');
@@ -503,7 +548,7 @@ test('account dialog focus trap wraps with Tab and Shift+Tab', async ({ page }) 
 test('opening the account panel from the Book tab works and restores focus on Esc', async ({ page }) => {
   await page.goto('/?tg_id=511308234');
   await page.getByRole('tab', { name: 'Book' }).click();
-  await expect(page.locator('#events-panel')).toBeVisible();
+  await expect(page.locator('#booking-wizard')).toBeVisible();
 
   await page.locator('#account-open').click();
   await expect(page.locator('#account-panel')).toBeVisible();
@@ -575,6 +620,9 @@ test('website visitor never requests telegram.org', async ({ page }) => {
   await page.getByRole('tab', { name: 'Book' }).click();
   await expect(page.locator('#events-list .event-card')).toHaveCount(2);
 
+  // TELEGRAM_LOGIN_BOT_USERNAME is unset in e2e so the Telegram button is absent
+  // and the widget script is never requested.
+  await expect(page.locator('#telegram-signin-wrap')).toBeHidden();
   expect(telegramRequests).toEqual([]);
 });
 
@@ -617,9 +665,8 @@ test('admin can review and approve a pending payment', async ({ page }) => {
   // Seed a pending reservation through the public booking flow.
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('Pending');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Guest');
+  await setGuests(page, { boys: 1, names: [['Pending', 'Guest']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
@@ -654,10 +701,8 @@ test('admin can log out and returns to the main page', async ({ page }) => {
 test('web user can cancel a pending booking from My tickets', async ({ page }) => {
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('Cancel');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Me');
+  await setGuests(page, { boys: 1, names: [['Cancel', 'Me']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
@@ -718,9 +763,8 @@ test('admin can rename a guest from the web guest list', async ({ page }) => {
   // Seed an approved reservation so the attendee appears in the guest list.
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('RenameMe');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Guest');
+  await setGuests(page, { boys: 1, names: [['RenameMe', 'Guest']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
@@ -756,14 +800,14 @@ test('admin can rename a guest from the web guest list', async ({ page }) => {
 
 test('footer Booking terms link opens the terms from another tab', async ({ page }) => {
   await page.goto('/?tg_id=511308234');
-  // Start on the main page (Book sections hidden).
-  await expect(page.locator('#summary-panel')).toBeHidden();
+  // Start on the main page (Book wizard hidden).
+  await expect(page.locator('#booking-wizard')).toBeHidden();
 
   await page.locator('#footer-terms-link').click();
 
-  // Navigates to Book and reveals the terms section.
+  // Navigates to Book, jumps to the Payment step (which owns the terms) and opens them.
   await expect(page.getByRole('tab', { name: 'Book' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('#summary-panel')).toBeVisible();
+  await expect(page.locator('.wizard-step[data-wizard-step="payment"]')).toBeVisible();
   const termsOpen = await page.locator('.terms-box details').evaluate((el) => el.open);
   expect(termsOpen).toBe(true);
 });
@@ -820,6 +864,9 @@ test('admin uploads an event banner + maps link; users see the banner, embedded 
   // User booking view: banner image, embedded Google Map iframe and the text link.
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
+  // The banner + map render inside #summary (Review step); add a guest to reach it.
+  await setGuests(page, { boys: 1, names: [['Map', 'Viewer']] });
+  await gotoStep(page, 'summary');
 
   const summaryBanner = page.locator('#summary .summary-banner');
   await expect(summaryBanner).toHaveCount(1);
@@ -881,9 +928,12 @@ test('event map is not rendered for a non-https maps_url (no dangerous href)', a
 
   await page.goto('/?tg_id=511308234');
   await page.getByRole('tab', { name: 'Book' }).click();
+  await gotoStep(page, 'event');
   const card = page.locator('#events-list .event-card').filter({ hasText: 'Bad Map Event' }).first();
   await expect(card).toBeVisible();
   await card.click();
+  await setGuests(page, { boys: 1, names: [['No', 'Map']] });
+  await gotoStep(page, 'summary');
 
   // A non-https maps_url must produce neither an embedded map nor an Open-in-Maps link.
   await expect(page.locator('#summary .event-map iframe')).toHaveCount(0);
@@ -894,11 +944,8 @@ test('event map is not rendered for a non-https maps_url (no dangerous href)', a
 test('booking draft is restored after a page reload (sessionStorage persistence)', async ({ page }) => {
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-
-  await page.locator('#boys').fill('1');
-  await expect(page.locator('.attendee-row')).toHaveCount(1);
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await setGuests(page, { boys: 1, names: [['John', 'Doe']] });
+  await gotoStep(page, 'payment');
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#terms-accepted')).toBeChecked();
 
@@ -907,7 +954,7 @@ test('booking draft is restored after a page reload (sessionStorage persistence)
   await page.getByRole('tab', { name: 'Book' }).click();
   await expect(page.locator('#events-list .event-card')).toHaveCount(2);
 
-  // The selected event, counts, typed names, and terms must all survive the reload.
+  // The selected event, counts, typed names, terms and the current step must survive.
   const activeCard = page.locator('#events-list .event-card.active');
   await expect(activeCard).toHaveCount(1);
   await expect(activeCard).toContainText('Playwright Event');
@@ -916,12 +963,13 @@ test('booking draft is restored after a page reload (sessionStorage persistence)
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="first"]')).toHaveValue('John');
   await expect(page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]')).toHaveValue('Doe');
   await expect(page.locator('#terms-accepted')).toBeChecked();
+  // Reload restored the Payment step (the last one we were on).
+  await expect(page.locator('.wizard-step[data-wizard-step="payment"]')).toBeVisible();
 });
 
 test('switching events before a reload updates the persisted draft', async ({ page }) => {
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
   // Switch to the other event; selectEvent must re-save the draft with the new id.
   await selectEventByTitle(page, 'Discount Event');
   await expect(page.locator('#events-list .event-card.active')).toContainText('Discount Event');
@@ -981,9 +1029,8 @@ test('sessionStorage failures are swallowed and booking still works (no uncaught
 
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await setGuests(page, { boys: 1, names: [['John', 'Doe']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
 
@@ -1006,6 +1053,7 @@ test('a stale draft is not restored via innerHTML — restored names are inert t
       girls: 0,
       attendees: [{ first: name, surname: 'Doe', repostChecked: false }],
       termsAccepted: false,
+      step: 'guests',
     }));
   }, { id: eventId, name: payload });
 
@@ -1026,9 +1074,8 @@ test('a stale draft is not restored via innerHTML — restored names are inert t
 test('after a successful booking and reload the form is NOT re-populated from a stale draft', async ({ page }) => {
   await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('John');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Doe');
+  await setGuests(page, { boys: 1, names: [['John', 'Doe']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
@@ -1059,32 +1106,28 @@ test('mixed group offer + repost: displayed Final total matches server-charged t
   // Book 1 boy (reposted) + 3 girls (2+1 frees 1 girl). Early prices 2500 each => base 10000.
   // Per-gender rule: girls = max(group 2500, repost 0) = 2500; boys = max(group 0,
   // repost 1000) = 1000. Cross-gender discounts ADD: 2500 + 1000 = 3500 => final 6500.
-  await page.goto('/?tg_id=511308234');
-  await page.getByRole('tab', { name: 'Book' }).click();
-  await expect(page.locator('#events-list .event-card')).toHaveCount(2);
+  await openBooking(page);
   await selectEventByTitle(page, 'Discount Event');
+  await setGuests(page, {
+    boys: 1,
+    girls: 3,
+    names: [['Boy', 'One'], ['Girl', 'Two'], ['Girl', 'Three'], ['Girl', 'Four']],
+  });
 
-  await page.locator('#boys').fill('1');
-  await page.locator('#girls').fill('3');
-  await expect(page.locator('.attendee-row')).toHaveCount(4);
-
-  const names = [['Boy', 'One'], ['Girl', 'Two'], ['Girl', 'Three'], ['Girl', 'Four']];
-  for (let i = 0; i < names.length; i += 1) {
-    await page.locator('.attendee-row').nth(i).locator('input[data-part="first"]').fill(names[i][0]);
-    await page.locator('.attendee-row').nth(i).locator('input[data-part="surname"]').fill(names[i][1]);
-  }
-
-  // The boy (index 0) uses the repost discount.
+  // The boy (index 0) uses the repost discount on the Repost step.
+  await gotoStep(page, 'repost');
   await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-check"]').check();
   await page.locator('.attendee-row').nth(0).locator('input[data-part="repost-file"]').setInputFiles(proofFile);
-  await page.locator('#payment-proof').setInputFiles(proofFile);
 
+  await gotoStep(page, 'summary');
   await expect(page.locator('#summary')).toContainText('Base total: 10000.00');
   await expect(page.locator('#summary')).toContainText('Girls 2+1: 1 free = 2500.00');
   await expect(page.locator('#summary')).toContainText('Repost discount: 1 x 1000.00 = 1000.00');
   await expect(page.locator('#summary')).toContainText('Applied discount: 3500.00');
   await expect(page.locator('#summary')).toContainText('Final total: 6500.00');
 
+  await gotoStep(page, 'payment');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
   await page.locator('#submit-booking').click();
@@ -1130,33 +1173,30 @@ test('payment option is required, persists across reload, and admin money report
   await createPaymentOptionEvent(page, title);
 
   // Book as a normal buyer on the event that has payment options.
-  await page.goto('/?tg_id=511308234');
-  await page.getByRole('tab', { name: 'Book' }).click();
+  await openBooking(page);
   await selectEventByTitle(page, title);
-
-  await page.locator('#boys').fill('1');
-  await expect(page.locator('.attendee-row')).toHaveCount(1);
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('Pay');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Buyer');
+  await setGuests(page, { boys: 1, names: [['Pay', 'Buyer']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
 
-  // Submit stays blocked until a payment option is chosen.
+  // Submit stays blocked until a payment option is chosen. The chooser now lives
+  // on the Payment step, in its own #payment-options element (not in #summary).
   await expect(page.locator('.payment-choice-hint')).toBeVisible();
   await expect(page.locator('#submit-booking')).toBeDisabled();
 
-  const firstChoice = page.locator('#summary .payment-choice').first();
+  const firstChoice = page.locator('#payment-options .payment-choice').first();
   await firstChoice.click();
   await expect(firstChoice).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.payment-choice-hint')).toHaveCount(0);
   // Selecting an option reveals that option's payment details.
-  await expect(page.locator('#summary .payment-detail')).toBeVisible();
+  await expect(page.locator('#payment-options .payment-detail')).toBeVisible();
   await expect(page.locator('#submit-booking')).toBeEnabled();
 
   // The chosen option survives a full reload (restored from the session draft).
   await page.reload();
   await page.getByRole('tab', { name: 'Book' }).click();
-  await expect(page.locator('#summary .payment-choice').first()).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#payment-options .payment-choice').first()).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#terms-accepted')).toBeChecked();
 
   // The proof file cannot be restored after a reload; re-attach then submit.
@@ -1222,13 +1262,10 @@ test('admin Homepage shows 3 read-only default images when no custom photos, and
 });
 
 test('approved ticket can be downloaded as a PNG from My tickets', async ({ page }) => {
-  await page.goto('/?tg_id=511308234');
-  await page.getByRole('tab', { name: 'Book' }).click();
-  await expect(page.locator('#events-list .event-card').first()).toBeVisible();
+  await openBooking(page);
   await selectEventByTitle(page, 'Playwright Event');
-  await page.locator('#boys').fill('1');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="first"]').fill('Download');
-  await page.locator('.attendee-row').nth(0).locator('input[data-part="surname"]').fill('Me');
+  await setGuests(page, { boys: 1, names: [['Download', 'Me']] });
+  await gotoStep(page, 'payment');
   await page.locator('#payment-proof').setInputFiles(proofFile);
   await page.locator('#terms-accepted').check();
   await expect(page.locator('#submit-booking')).toBeEnabled();
@@ -1269,4 +1306,103 @@ test('approved ticket can be downloaded as a PNG from My tickets', async ({ page
     saveBtn.click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/^budapest-tunderi-.*\.png$/);
+});
+
+test('unregistered website visitor is gated by the wizard register step', async ({ page }) => {
+  // No tg_id and no session => logged-out website visitor.
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Book' }).click();
+  // The Book tab auto-opens the account panel for logged-out users; dismiss it
+  // so we can inspect the wizard underneath.
+  await page.locator('#account-close').click();
+
+  // The wizard's first step is the Register gate; Next is blocked until sign-in.
+  await expect(page.locator('.wizard-step[data-wizard-step="register"]')).toBeVisible();
+  await expect(page.locator('#wizard-next')).toBeDisabled();
+  await expect(page.locator('#wizard-register-signedout')).toBeVisible();
+
+  // The register step's call-to-action re-opens the registration/account panel.
+  await page.locator('#wizard-open-account').click();
+  await expect(page.locator('#account-panel')).toBeVisible();
+  await expect(page.locator('#account-name')).toBeVisible();
+});
+
+test('guard logs in with password and sees only the Check-in tab', async ({ page }) => {
+  // open_admin flow with no admin tg_id: the login panel is shown so a guard can
+  // sign in with just the shared guard password.
+  await page.goto('/?open_admin=1');
+  await expect(page.locator('#admin-area')).toBeVisible();
+  await expect(page.locator('#admin-login-panel')).toBeVisible();
+
+  await page.locator('#admin-password').fill('playwright-guard-password');
+  await page.locator('#guard-login').click();
+
+  // Guard-only mode: login panel gone, guard marker shown, Check-in tab visible.
+  await expect(page.locator('#admin-login-panel')).toBeHidden();
+  await expect(page.locator('#admin-ident')).toContainText('Signed in as guard');
+  await expect(page.locator('.admin-tab[data-admin-tab="checkin"]')).toBeVisible();
+
+  // Every other admin tab is hidden for guards.
+  await expect(page.locator('.admin-tab[data-admin-tab="payments"]')).toBeHidden();
+  await expect(page.locator('.admin-tab[data-admin-tab="events"]')).toBeHidden();
+  await expect(page.locator('.admin-tab[data-admin-tab="guests"]')).toBeHidden();
+  await expect(page.locator('.admin-tab[data-admin-tab="add_guest"]')).toBeHidden();
+  await expect(page.locator('.admin-tab[data-admin-tab="import_export"]')).toBeHidden();
+  await expect(page.locator('.admin-tab[data-admin-tab="carousel"]')).toBeHidden();
+  await expect(page.locator('.admin-tab[data-admin-tab="history"]')).toBeHidden();
+  await expect(page.locator('#admin-refresh-all')).toBeHidden();
+
+  // The check-in section is active and openable.
+  await expect(page.locator('#admin-section-checkin')).toBeVisible();
+  await page.locator('.admin-tab[data-admin-tab="checkin"]').click();
+  await expect(page.locator('#admin-section-checkin')).toBeVisible();
+  await expect(page.locator('#admin-checkin-lookup')).toBeVisible();
+});
+
+test('admin History tab lists a purchase grouped by buyer', async ({ page }) => {
+  // Seed a purchase through the booking flow so History has a row to render.
+  await openBooking(page);
+  await selectEventByTitle(page, 'Playwright Event');
+  await setGuests(page, { boys: 1, names: [['History', 'Guest']] });
+  await gotoStep(page, 'payment');
+  await page.locator('#payment-proof').setInputFiles(proofFile);
+  await page.locator('#terms-accepted').check();
+  await expect(page.locator('#submit-booking')).toBeEnabled();
+  await page.locator('#submit-booking').click();
+  await expect(page.locator('#status')).toContainText('Booking sent for review. Code:');
+
+  // Admin opens the History tab and sees the buyer-grouped card.
+  await openAdmin(page);
+  await page.getByRole('tab', { name: 'History' }).click();
+  await expect(page.locator('#admin-section-history')).toBeVisible();
+  const group = page.locator('#admin-history-list .admin-history-group').first();
+  await expect(group).toBeVisible();
+  await expect(group).toContainText('Buyer User');
+  await expect(group).toContainText('Playwright Event');
+});
+
+test('my tickets shows move and refund requests for a far-future approved ticket', async ({ page }) => {
+  // The e2e server seeds an APPROVED ticket (attendee "Buyer User") for this tg user
+  // on the far-future Discount Event. Attendee name is unique so we isolate that card.
+  await page.goto('/?tg_id=511308234');
+  await page.getByRole('tab', { name: 'My tickets' }).click();
+  await expect(page.locator('#tickets-panel')).toBeVisible();
+
+  const card = page.locator('#tickets-list .admin-card').filter({ hasText: 'Buyer User' }).first();
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('approved');
+  const moveBtn = card.locator('.ticket-move-btn');
+  const refundBtn = card.locator('.ticket-refund-btn');
+  await expect(moveBtn).toBeVisible();
+  await expect(refundBtn).toBeVisible();
+
+  // Accept the confirm() prompt, then request a move.
+  page.on('dialog', (dialog) => dialog.accept());
+  await moveBtn.click();
+
+  // The card now shows the "Move requested" badge and no more request buttons.
+  const updatedCard = page.locator('#tickets-list .admin-card').filter({ hasText: 'Buyer User' }).first();
+  await expect(updatedCard.locator('.ticket-change-badge')).toContainText('Move requested');
+  await expect(updatedCard.locator('.ticket-move-btn')).toHaveCount(0);
+  await expect(updatedCard.locator('.ticket-refund-btn')).toHaveCount(0);
 });

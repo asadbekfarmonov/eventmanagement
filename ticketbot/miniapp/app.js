@@ -16,6 +16,7 @@ const girlsEl = document.getElementById('girls');
 const summaryEl = document.getElementById('summary');
 const statusEl = document.getElementById('status');
 const submitBtn = document.getElementById('submit-booking');
+const registerNoteEl = document.getElementById('register-note');
 const paymentProofEl = document.getElementById('payment-proof');
 const termsAcceptedEl = document.getElementById('terms-accepted');
 const refreshBtn = document.getElementById('refresh-events');
@@ -26,6 +27,7 @@ const adminOpenStatusEl = document.getElementById('admin-open-status');
 const upcomingListEl = document.getElementById('upcoming-events-list');
 const upcomingEmptyEl = document.getElementById('upcoming-events-empty');
 const heroGetTicketsEl = document.getElementById('hero-get-tickets');
+const heroCtaRowEl = document.querySelector('.hero-cta-row');
 const pageTabs = Array.from(document.querySelectorAll('[data-page-tab]'));
 const pageSections = Array.from(document.querySelectorAll('[data-page-section]'));
 let carouselTrackEl = document.querySelector('.main-carousel-track');
@@ -55,12 +57,28 @@ const accountCodeEl = document.getElementById('account-code');
 const accountVerifyEl = document.getElementById('account-verify');
 const googleSigninWrapEl = document.getElementById('google-signin-wrap');
 const googleSigninButtonEl = document.getElementById('google-signin-button');
+const telegramSigninWrapEl = document.getElementById('telegram-signin-wrap');
+const telegramSigninButtonEl = document.getElementById('telegram-signin-button');
+const bookingWizardEl = document.getElementById('booking-wizard');
+const wizardProgressEl = document.getElementById('wizard-progress');
+const wizardStepTitleEl = document.getElementById('wizard-step-title');
+const wizardBackEl = document.getElementById('wizard-back');
+const wizardNextEl = document.getElementById('wizard-next');
+const wizardOpenAccountEl = document.getElementById('wizard-open-account');
+const wizardRegisterSignedOutEl = document.getElementById('wizard-register-signedout');
+const wizardRegisterSignedInEl = document.getElementById('wizard-register-signedin');
+const wizardSignedNameEl = document.getElementById('wizard-signed-name');
+const wizardGroupInfoEl = document.getElementById('wizard-group-info');
+const wizardGuestsHostEl = document.getElementById('wizard-guests-attendees');
+const wizardRepostHostEl = document.getElementById('wizard-repost-attendees');
+const paymentOptionsEl = document.getElementById('payment-options');
 
 const adminEl = {
   open: document.getElementById('admin-open'),
   area: document.getElementById('admin-area'),
   loginPanel: document.getElementById('admin-login-panel'),
   login: document.getElementById('admin-login'),
+  guardLogin: document.getElementById('guard-login'),
   password: document.getElementById('admin-password'),
   refreshAll: document.getElementById('admin-refresh-all'),
   logout: document.getElementById('admin-logout'),
@@ -73,6 +91,9 @@ const adminEl = {
   status: document.getElementById('admin-status'),
   tabs: Array.from(document.querySelectorAll('.admin-tab')),
   sections: Array.from(document.querySelectorAll('.admin-section')),
+  historySearch: document.getElementById('admin-history-search'),
+  historyRefresh: document.getElementById('admin-history-refresh'),
+  historyList: document.getElementById('admin-history-list'),
   guestsSearch: document.getElementById('admin-guests-search'),
   guestsSort: document.getElementById('admin-guests-sort'),
   guestsRefresh: document.getElementById('admin-guests-refresh'),
@@ -147,11 +168,17 @@ const state = {
   googleReady: false,
   editingProfile: false,
   accountOpen: false,
+  bookStep: 'register',
+  telegramBotUsername: '',
+  telegramReady: false,
 };
 
 const adminState = {
   ready: false,
+  guardMode: false,
   activeSection: 'payments',
+  history: [],
+  historySearch: '',
   guestsSort: 'newest',
   guestsSearch: '',
   guests: [],
@@ -165,6 +192,7 @@ const adminState = {
 };
 
 const MISSING_REPOST_PROOF_MESSAGE = 'Upload a repost screenshot for each guest using the discount.';
+const TICKET_CHANGE_POLICY_HTML = '<div class="hint">Can\u2019t attend? You can ask us to move your ticket up to 24h before, or request a refund up to 72h before the event.</div>';
 
 // Key for persisting the in-progress booking draft (survives same-tab navigation/reload).
 const BOOKING_DRAFT_KEY = 'bt_booking_draft';
@@ -261,6 +289,9 @@ function clearStatusIfMatches(message) {
 
 function setPageTab(tabKey) {
   const key = tabKey || 'main';
+  // The hero "Get tickets" CTA + note only make sense on the Main landing page;
+  // hide them on Book/My tickets/Contact/Admin so they don't waste the top of the screen.
+  if (heroCtaRowEl) heroCtaRowEl.hidden = key !== 'main';
   for (const tab of pageTabs) {
     const active = tab.dataset.pageTab === key;
     tab.classList.toggle('active', active);
@@ -445,6 +476,7 @@ function renderAccountPanel() {
   if (accountLogoutEl) accountLogoutEl.hidden = !registered || Boolean(tgId);
   if (accountCodePanelEl) accountCodePanelEl.hidden = !state.emailLoginEnabled || !state.emailCodeSent;
   if (googleSigninWrapEl) googleSigninWrapEl.hidden = registered || !state.googleClientId;
+  if (telegramSigninWrapEl) telegramSigninWrapEl.hidden = registered || !state.telegramBotUsername;
   if (accountStateEl) {
     if (registered) {
       accountStateEl.textContent = `Signed in as ${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim();
@@ -473,6 +505,7 @@ function renderAccountPanel() {
     restoreAccountOpener();
   }
   accountPanelWasOpen = isOpen;
+  syncWizard();
 }
 
 function updateCarouselDots() {
@@ -554,6 +587,7 @@ function buildBookingDraft() {
     paymentSlot: state.paymentSlot || null,
     attendees,
     termsAccepted: termsAccepted(),
+    step: state.bookStep,
   };
 }
 
@@ -627,6 +661,10 @@ function restoreBookingDraft() {
     }
   });
   if (termsAcceptedEl) termsAcceptedEl.checked = Boolean(draft.termsAccepted);
+  if (typeof draft.step === 'string' && WIZARD_STEP_ORDER.includes(draft.step)) {
+    // clampBookStep (via syncWizard) drops it if the step is no longer applicable.
+    state.bookStep = draft.step;
+  }
   refreshQuote();
   renderSummary();
   saveBookingDraft();
@@ -713,8 +751,271 @@ async function copyText(text) {
   }
 }
 
-function renderSummary() {
+// ---- Booking wizard (one step at a time) -----------------------------------
+const WIZARD_STEP_ORDER = ['register', 'event', 'guests', 'repost', 'group', 'summary', 'payment'];
+const WIZARD_TITLES = {
+  register: 'Sign in',
+  event: 'Choose event',
+  guests: 'Guests',
+  repost: 'Repost discount',
+  group: 'Group discount',
+  summary: 'Review',
+  payment: 'Payment',
+};
+
+// A Telegram/website identity is enough to advance past the register gate. For
+// website visitors that means state.userProfile; Telegram users pass via tgId.
+function wizardRegistered() {
+  return hasUserIdentity();
+}
+
+function repostStepApplicable() {
+  return repostDiscountEnabled(selectedEvent());
+}
+
+function groupStepApplicable() {
   const event = selectedEvent();
+  return Boolean(
+    event
+      && (Number(event.girls_group_offer_enabled || 0) || Number(event.boys_group_offer_enabled || 0)),
+  );
+}
+
+// The steps that apply right now, in order. Inapplicable steps are skipped so we
+// never land on Register once registered, or on Repost/Group when disabled.
+function wizardApplicableSteps() {
+  const steps = [];
+  if (!wizardRegistered()) steps.push('register');
+  steps.push('event', 'guests');
+  if (repostStepApplicable()) steps.push('repost');
+  if (groupStepApplicable()) steps.push('group');
+  steps.push('summary', 'payment');
+  return steps;
+}
+
+// Keep state.bookStep pointing at an applicable step; when the current one drops
+// out (e.g. registered, or event has no repost/group offer) move forward to the
+// nearest still-valid step by the canonical order.
+function clampBookStep() {
+  const steps = wizardApplicableSteps();
+  if (!steps.length) {
+    state.bookStep = 'event';
+    return;
+  }
+  if (!steps.includes(state.bookStep)) {
+    const target = WIZARD_STEP_ORDER.indexOf(state.bookStep);
+    let chosen = steps.find((name) => WIZARD_STEP_ORDER.indexOf(name) >= target);
+    if (!chosen) chosen = steps[steps.length - 1];
+    state.bookStep = chosen;
+  }
+}
+
+// Whether Next may be pressed on a given step.
+function wizardStepValid(name) {
+  const event = selectedEvent();
+  switch (name) {
+    case 'register':
+      return wizardRegistered();
+    case 'event':
+      return Boolean(event);
+    case 'guests': {
+      const qty = totalCount();
+      if (qty < 1) return false;
+      const rows = attendeeEntries();
+      return rows.length === qty && rows.every((row) => row.first && row.surname);
+    }
+    case 'repost': {
+      const missing = attendeeDiscountSelections().filter((item) => item.checked && !item.file);
+      return missing.length === 0;
+    }
+    default:
+      return true;
+  }
+}
+
+// Move the (single) attendees list into the container for the active step so its
+// inputs and listeners are preserved. Guests mode shows names; repost mode also
+// reveals the per-guest repost controls (via CSS class).
+function mountAttendees() {
+  if (!attendeesListEl) return;
+  if (state.bookStep === 'repost' && wizardRepostHostEl) {
+    if (attendeesListEl.parentElement !== wizardRepostHostEl) {
+      wizardRepostHostEl.appendChild(attendeesListEl);
+    }
+    attendeesListEl.classList.add('attendees-mode-repost');
+  } else if (wizardGuestsHostEl) {
+    if (attendeesListEl.parentElement !== wizardGuestsHostEl) {
+      wizardGuestsHostEl.appendChild(attendeesListEl);
+    }
+    attendeesListEl.classList.remove('attendees-mode-repost');
+  }
+}
+
+function renderWizardProgress(steps, current) {
+  if (!wizardProgressEl) return;
+  const activeIdx = steps.indexOf(current);
+  wizardProgressEl.innerHTML = steps
+    .map((name, index) => {
+      const cls = index === activeIdx ? 'active' : index < activeIdx ? 'done' : '';
+      const label = escapeHtml(WIZARD_TITLES[name] || name);
+      return (
+        `<li class="wizard-progress-step ${cls}" data-step="${name}">`
+        + `<span class="wizard-progress-dot">${index + 1}</span>`
+        + `<span class="wizard-progress-label">${label}</span></li>`
+      );
+    })
+    .join('');
+}
+
+// Informational group-discount breakdown (computed from the server quote).
+function renderWizardGroupInfo() {
+  if (!wizardGroupInfoEl) return;
+  const event = selectedEvent();
+  const quote = state.quote;
+  const quoteMatches = event
+    && quote
+    && Number(quote.event_id) === Number(event.id)
+    && Number(quote.boys) === Number(state.boys)
+    && Number(quote.girls) === Number(state.girls);
+  if (!event || !quoteMatches) {
+    wizardGroupInfoEl.innerHTML = '<p class="hint">Add your group size to see the group discount.</p>';
+    return;
+  }
+  const girlsEnabled = Boolean(Number(event.girls_group_offer_enabled || 0));
+  const boysEnabled = Boolean(Number(event.boys_group_offer_enabled || 0));
+  const parts = [];
+  if (girlsEnabled) {
+    parts.push(
+      `<div>Girls 2+1: ${Number(quote.girls_group_free_count || 0)} free = `
+      + `${money(quote.girls_group_discount_amount || 0)}</div>`,
+    );
+  }
+  if (boysEnabled) {
+    parts.push(
+      `<div>Boys 3+1: ${Number(quote.boys_group_free_count || 0)} free = `
+      + `${money(quote.boys_group_discount_amount || 0)}</div>`,
+    );
+  }
+  parts.push(`<div><strong>Group discount total: ${money(quote.group_discount_amount || 0)}</strong></div>`);
+  wizardGroupInfoEl.innerHTML = parts.join('');
+}
+
+// Payment option chooser lives on its own (payment) step, outside #summary.
+function renderPaymentOptions(event) {
+  if (!paymentOptionsEl) return;
+  paymentOptionsEl.innerHTML = event ? paymentOptionsHtml(event) : '';
+}
+
+// Reconcile the visible wizard step, progress bar, nav buttons and register
+// status with current state. Safe to call on every render (idempotent).
+function syncWizard() {
+  if (!bookingWizardEl) return;
+  clampBookStep();
+  const steps = wizardApplicableSteps();
+  const current = state.bookStep;
+  bookingWizardEl.querySelectorAll('.wizard-step').forEach((el) => {
+    el.hidden = el.dataset.wizardStep !== current;
+  });
+  mountAttendees();
+  const registered = wizardRegistered();
+  if (wizardRegisterSignedOutEl) wizardRegisterSignedOutEl.hidden = registered;
+  if (wizardRegisterSignedInEl) wizardRegisterSignedInEl.hidden = !registered;
+  if (wizardSignedNameEl) {
+    const name = state.userProfile
+      ? `${state.userProfile.name || ''} ${state.userProfile.surname || ''}`.trim()
+      : '';
+    wizardSignedNameEl.textContent = name || 'your account';
+  }
+  renderWizardProgress(steps, current);
+  if (wizardStepTitleEl) wizardStepTitleEl.textContent = WIZARD_TITLES[current] || 'Book your tickets';
+  const idx = steps.indexOf(current);
+  if (wizardBackEl) wizardBackEl.hidden = idx <= 0;
+  if (wizardNextEl) {
+    const isLast = current === 'payment';
+    wizardNextEl.hidden = isLast;
+    wizardNextEl.disabled = !wizardStepValid(current);
+  }
+}
+
+function wizardNext() {
+  const steps = wizardApplicableSteps();
+  const idx = steps.indexOf(state.bookStep);
+  if (idx < 0) {
+    syncWizard();
+    return;
+  }
+  if (!wizardStepValid(state.bookStep)) return;
+  if (idx < steps.length - 1) {
+    state.bookStep = steps[idx + 1];
+    saveBookingDraft();
+    renderSummary();
+  }
+}
+
+function wizardBack() {
+  const steps = wizardApplicableSteps();
+  const idx = steps.indexOf(state.bookStep);
+  if (idx > 0) {
+    state.bookStep = steps[idx - 1];
+    saveBookingDraft();
+    renderSummary();
+  }
+}
+
+// ---- Telegram Login Widget sign-in (Feature 6) -----------------------------
+async function handleTelegramAuth(user) {
+  if (!user || !user.id) {
+    setAccountStatus('Telegram sign-in was cancelled.', true);
+    return;
+  }
+  setAccountStatus('Signing in with Telegram...');
+  try {
+    const resp = await fetch('/api/web/login/telegram', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      body: JSON.stringify(user),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw data;
+    await finishWebsiteLogin(data, 'Telegram login complete. You can book now.');
+  } catch (err) {
+    setAccountStatus(apiErrorText(err, 'Telegram sign-in failed.'), true);
+  }
+}
+
+// Render the official Telegram widget only when a bot username is configured.
+// In dev/e2e (unset) the button is simply absent and no telegram.org script loads.
+function ensureTelegramSignin() {
+  if (!state.telegramBotUsername || state.telegramReady || !telegramSigninButtonEl) return;
+  window.onTelegramAuth = handleTelegramAuth;
+  const script = document.createElement('script');
+  script.async = true;
+  script.src = 'https://telegram.org/js/telegram-widget.js?22';
+  script.setAttribute('data-telegram-login', state.telegramBotUsername);
+  script.setAttribute('data-size', 'large');
+  script.setAttribute('data-userpic', 'false');
+  script.setAttribute('data-request-access', 'write');
+  script.setAttribute('data-onauth', 'onTelegramAuth(user)');
+  script.onerror = () => {
+    // Degrade gracefully: leave the wrap present but empty if the widget can't load.
+  };
+  telegramSigninButtonEl.innerHTML = '';
+  telegramSigninButtonEl.appendChild(script);
+  state.telegramReady = true;
+  renderAccountPanel();
+}
+
+function renderSummary() {
+  // Website users must register before booking. The Book button is already
+  // gated by hasUserIdentity(); surface the reason so it doesn't look broken.
+  const isRegistered = Boolean(state.userProfile);
+  if (registerNoteEl) registerNoteEl.hidden = isRegistered;
+  if (submitBtn) submitBtn.textContent = isRegistered ? 'Book' : 'Register to book';
+  const event = selectedEvent();
+  renderPaymentOptions(event);
+  renderWizardGroupInfo();
+  syncWizard();
   if (!event) {
     summaryEl.innerHTML = '<p>Choose an event and add your group size.</p>';
     submitBtn.disabled = true;
@@ -758,7 +1059,6 @@ function renderSummary() {
   const appliedDiscountAmount = Math.min(baseTotal, girlsApplied + boysApplied);
   const namesReady = rows.length === qty && rows.every((row) => row.first && row.surname);
   if (qty <= 0) {
-    const paymentSection = paymentOptionsHtml(event);
     const repostHint = repostEligible
       ? `<div class="hint">Instagram repost discount: ${money(discountUnitAmount)} per guest.</div>`
       : '';
@@ -772,7 +1072,6 @@ function renderSummary() {
       '<div><strong>Total: 0.00</strong></div>',
       '<div class="hint">Guests required: 0</div>',
       repostHint,
-      paymentSection,
       summaryMap,
     ].join('');
     submitBtn.disabled = true;
@@ -780,14 +1079,12 @@ function renderSummary() {
   }
 
   if (state.quoteLoading) {
-    const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
       summaryBanner,
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
       '<div>Calculating your price...</div>',
-      paymentSection,
       summaryMap,
     ].join('');
     submitBtn.disabled = true;
@@ -799,14 +1096,12 @@ function renderSummary() {
     && Number(quote.boys) === Number(state.boys)
     && Number(quote.girls) === Number(state.girls);
   if (!quoteMatches) {
-    const paymentSection = paymentOptionsHtml(event);
     summaryEl.innerHTML = [
       summaryBanner,
       `<strong>${safeTitle}</strong>`,
       `<div>${safeCaption}</div>`,
       '<hr>',
       '<div class="hint">Price is not available yet. Refresh or adjust the group size.</div>',
-      paymentSection,
       summaryMap,
     ].join('');
     submitBtn.disabled = true;
@@ -850,7 +1145,6 @@ function renderSummary() {
     ? `<div class="hint error">${MISSING_REPOST_PROOF_MESSAGE}</div>`
     : '';
 
-  const paymentSection = paymentOptionsHtml(event);
   summaryEl.innerHTML = [
     summaryBanner,
     `<strong>${safeTitle}</strong>`,
@@ -860,7 +1154,7 @@ function renderSummary() {
     ...repostSummary,
     `<div class="hint">Guests required: ${qty}</div>`,
     repostMissingHint,
-    paymentSection,
+    TICKET_CHANGE_POLICY_HTML,
     summaryMap,
   ].join('');
   submitBtn.disabled = !(
@@ -1215,6 +1509,13 @@ function getPayload() {
 }
 
 async function submitDraft() {
+  if (!state.userProfile) {
+    state.accountOpen = true;
+    renderAccountPanel();
+    setStatus('Please register before booking.', true);
+    return;
+  }
+
   const payload = getPayload();
   if (!payload) {
     setStatus('Choose an event first.', true);
@@ -1434,6 +1735,23 @@ function renderTickets(items) {
     const cancelHtml = isPending
       ? `<button type="button" class="ticket-cancel-btn" data-cancel-code="${escapeHtml(item.code || '')}">Cancel booking</button>`
       : '';
+    const changeRequest = (item.change_request || '').trim();
+    const moveMinHours = Number(item.move_min_hours || 24);
+    const refundMinHours = Number(item.refund_min_hours || 72);
+    let changeHtml = '';
+    if (changeRequest) {
+      const badgeLabel = changeRequest === 'refund' ? 'Refund requested' : 'Move requested';
+      changeHtml = `<p class="ticket-change-badge">${escapeHtml(badgeLabel)}</p>`;
+    } else if (item.can_request_move || item.can_request_refund) {
+      const moveBtn = item.can_request_move
+        ? `<button type="button" class="ticket-move-btn" data-change-code="${safeCode}">Can\u2019t make it \u2014 move my ticket</button>`
+        : '';
+      const refundBtn = item.can_request_refund
+        ? `<button type="button" class="ticket-refund-btn" data-change-code="${safeCode}">Request a refund</button>`
+        : '';
+      const hint = `<p class="admin-card-meta ticket-change-hint">Move requests need at least ${escapeHtml(moveMinHours)}h before the event; refunds at least ${escapeHtml(refundMinHours)}h before.</p>`;
+      changeHtml = `${moveBtn}${refundBtn}${hint}`;
+    }
     const tickets = Array.isArray(item.tickets) ? item.tickets : [];
     const ticketHtml = tickets.length
       ? tickets.map((ticket) => {
@@ -1466,11 +1784,20 @@ function renderTickets(items) {
       <p class="admin-card-meta">Tier: ${safeTierLabel} | Boys: ${safeBoys} | Girls: ${safeGirls} | Total: ${money(item.total_price)}</p>
       ${noteHtml}
       ${ticketHtml}
+      ${changeHtml}
       ${cancelHtml}
     `;
     const cancelBtn = card.querySelector('.ticket-cancel-btn');
     if (cancelBtn) {
       cancelBtn.addEventListener('click', () => cancelWebBooking(cancelBtn.dataset.cancelCode));
+    }
+    const moveBtn = card.querySelector('.ticket-move-btn');
+    if (moveBtn) {
+      moveBtn.addEventListener('click', () => requestTicketChange(moveBtn.dataset.changeCode, 'move'));
+    }
+    const refundBtn = card.querySelector('.ticket-refund-btn');
+    if (refundBtn) {
+      refundBtn.addEventListener('click', () => requestTicketChange(refundBtn.dataset.changeCode, 'refund'));
     }
     for (const saveBtn of card.querySelectorAll('.ticket-save-btn')) {
       saveBtn.addEventListener('click', () => downloadTicketImage(
@@ -1507,6 +1834,36 @@ async function cancelWebBooking(code) {
     await fetchEvents();
   } catch (_err) {
     setStatus('Could not cancel this booking.', true);
+  }
+}
+
+async function requestTicketChange(code, kind) {
+  const bookingCode = (code || '').trim();
+  const requestKind = (kind || '').trim();
+  if (!bookingCode || (requestKind !== 'move' && requestKind !== 'refund')) return;
+  const prompt = requestKind === 'refund'
+    ? 'Request a refund for this ticket? The organizers will contact you to arrange it.'
+    : 'Ask the organizers to move this ticket to another event? They will contact you to arrange it.';
+  const confirmed = window.confirm(prompt);
+  if (!confirmed) return;
+  try {
+    const changeUrl = new URL('/api/web/ticket/request', window.location.origin);
+    if (tgId) changeUrl.searchParams.set('tg_id', String(tgId));
+    const resp = await fetch(changeUrl.toString(), {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      body: JSON.stringify({ code: bookingCode, kind: requestKind, tg_id: tgId || null }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      setStatus(data.detail || 'Could not submit your request.', true);
+      return;
+    }
+    setStatus(data.message || 'Request submitted.');
+    await loadMeAndTickets();
+  } catch (_err) {
+    setStatus('Could not submit your request.', true);
   }
 }
 
@@ -1565,8 +1922,10 @@ async function loadAuthConfig() {
     if (resp.ok) {
       state.emailLoginEnabled = Boolean(data.email_login_enabled);
       state.googleClientId = data.google_client_id || '';
+      state.telegramBotUsername = data.telegram_bot_username || '';
       renderAccountPanel();
       ensureGoogleSignin();
+      ensureTelegramSignin();
     }
   } catch (_err) {
     state.emailLoginEnabled = false;
@@ -2072,6 +2431,86 @@ async function loadAdminEvents() {
   renderAdminEvents();
 }
 
+async function loadAdminHistory() {
+  const data = await adminGet('/api/admin/purchase_history', {
+    search: adminState.historySearch,
+  });
+  adminState.history = Array.isArray(data.items) ? data.items : [];
+  renderAdminHistory();
+}
+
+// Rows arrive ordered by buyer, so consecutive rows with the same buyer identity
+// belong to one group. All server strings go through escapeHtml before innerHTML.
+function historyBuyerKey(row) {
+  return [row.tg_id, row.buyer_name, row.buyer_surname, row.buyer_email, row.buyer_phone].join('|');
+}
+
+function historyPurchaseHtml(row) {
+  const parts = [];
+  parts.push(`<p class="admin-card-meta">${escapeHtml(row.event_title || '')} (${escapeHtml(row.event_datetime || '')})</p>`);
+  parts.push(`<p class="admin-card-meta">${escapeHtml(row.code || '')} | ${escapeHtml(row.status || '')}</p>`);
+  const historyChange = (row.change_request || '').trim();
+  if (historyChange) {
+    const changeLabel = historyChange === 'refund' ? 'Refund requested' : 'Move requested';
+    parts.push(`<p class="admin-card-meta ticket-change-badge">${escapeHtml(changeLabel)}</p>`);
+  }
+  parts.push(`<p class="admin-card-meta">Boys ${escapeHtml(row.boys)} / Girls ${escapeHtml(row.girls)} | Qty ${escapeHtml(row.quantity)}</p>`);
+  let totals = `Paid: ${money(row.total_price)}`;
+  if (row.base_total_price != null && Number(row.base_total_price) !== Number(row.total_price)) {
+    totals += ` (base ${money(row.base_total_price)})`;
+  }
+  const discounts = [];
+  if (Number(row.group_discount_amount)) discounts.push(`group ${money(row.group_discount_amount)}`);
+  if (Number(row.discount_amount)) discounts.push(`discount ${money(row.discount_amount)}`);
+  if (discounts.length) totals += ` | ${discounts.join(', ')}`;
+  parts.push(`<p class="admin-card-meta">${escapeHtml(totals)}</p>`);
+  if (row.payment_slot_title) {
+    parts.push(`<p class="admin-card-meta">Payment: ${escapeHtml(row.payment_slot_title)}</p>`);
+  }
+  const created = `Created: ${escapeHtml(row.created_at || '')}`;
+  const reviewed = row.reviewed_at ? ` | Reviewed: ${escapeHtml(row.reviewed_at)}` : '';
+  parts.push(`<p class="admin-card-meta">${created}${reviewed}</p>`);
+  return `<div class="admin-history-item">${parts.join('')}</div>`;
+}
+
+function renderAdminHistory() {
+  const list = adminEl.historyList;
+  if (!list) return;
+  list.innerHTML = '';
+  if (!adminState.history.length) {
+    list.innerHTML = '<p class="hint">No purchases found.</p>';
+    return;
+  }
+  let lastKey = null;
+  let purchasesEl = null;
+  for (const row of adminState.history) {
+    const key = historyBuyerKey(row);
+    if (key !== lastKey || !purchasesEl) {
+      const nameParts = [row.buyer_name, row.buyer_surname]
+        .filter(Boolean)
+        .map((v) => escapeHtml(v))
+        .join(' ');
+      const meta = [];
+      if (row.buyer_email) meta.push(escapeHtml(row.buyer_email));
+      if (row.buyer_phone) meta.push(escapeHtml(row.buyer_phone));
+      if (row.tg_id) meta.push(`TG ${escapeHtml(row.tg_id)}`);
+      const card = document.createElement('div');
+      card.className = 'admin-card admin-history-group';
+      card.innerHTML = `
+        <div class="admin-card-head">
+          <p class="admin-card-title">${nameParts || 'Unknown buyer'}</p>
+        </div>
+        <p class="admin-card-meta">${meta.join(' | ')}</p>
+        <div class="admin-history-purchases"></div>
+      `;
+      list.appendChild(card);
+      purchasesEl = card.querySelector('.admin-history-purchases');
+      lastKey = key;
+    }
+    purchasesEl.insertAdjacentHTML('beforeend', historyPurchaseHtml(row));
+  }
+}
+
 function reviewProofHtml(item) {
   const url = item.proof_url;
   if (!url) {
@@ -2120,6 +2559,10 @@ function renderAdminReviews() {
     const disc = Number(item.discount_amount || 0);
     const applied = Math.max(group, disc);
     const total = Number(item.total_price || 0);
+    const reviewChange = (item.change_request || '').trim();
+    const reviewChangeHtml = reviewChange
+      ? `<p class="admin-card-meta ticket-change-badge">${escapeHtml(reviewChange === 'refund' ? 'Refund requested' : 'Move requested')}</p>`
+      : '';
     const card = document.createElement('div');
     card.className = 'admin-card';
     card.innerHTML = `
@@ -2136,6 +2579,7 @@ function renderAdminReviews() {
         <p class="admin-card-meta">Boys: ${escapeHtml(String(item.boys ?? 0))} | Girls: ${escapeHtml(String(item.girls ?? 0))}</p>
         <p class="admin-card-meta">Base: ${escapeHtml(base.toFixed(2))} | Discount: ${escapeHtml(applied.toFixed(2))} | Total: ${escapeHtml(total.toFixed(2))}</p>
         <p class="admin-card-meta">Guests: ${attendeeHtml}</p>
+        ${reviewChangeHtml}
         <div class="admin-proof">${reviewProofHtml(item)}</div>
         ${reviewRepostProofsHtml(item)}
         <div class="admin-reject-box" hidden>
@@ -2419,7 +2863,8 @@ async function confirmCheckin() {
     const data = await adminPost('/api/admin/checkin', { token });
     adminState.checkinTicket = data.ticket || null;
     renderCheckinResult(adminState.checkinTicket, data.message || 'Checked in.');
-    await loadAdminGuests();
+    // Guards cannot call the admin-only guest list; only refresh it in full admin mode.
+    if (!adminState.guardMode) await loadAdminGuests();
   } catch (err) {
     renderCheckinResult(adminState.checkinTicket, apiErrorText(err, 'Check-in failed.'), true);
   }
@@ -2670,17 +3115,95 @@ async function loginAdmin() {
 }
 
 async function logoutAdmin() {
+  const wasGuard = adminState.guardMode;
+  const logoutPath = wasGuard ? '/api/guard/logout' : '/api/admin/logout';
   try {
-    await fetch('/api/admin/logout', { method: 'POST', headers: adminHeaders() });
+    await fetch(logoutPath, { method: 'POST', headers: adminHeaders() });
   } catch (_err) {
     /* best-effort: clear local state regardless */
   }
   adminState.ready = false;
+  adminState.guardMode = false;
+  applyGuardVisibility();
+  if (adminEl.ident) adminEl.ident.textContent = '';
   setAdminLocked(true);
   if (adminEl.loginPanel) adminEl.loginPanel.hidden = false;
   if (adminEl.open) adminEl.open.classList.remove('active');
   setAdminStatus('Logged out.');
   setPageTab('main');
+}
+
+// GUARD-ONLY MODE: guards may use the Check-in tab only. Every other admin tab and
+// the Refresh all button are hidden so guards never trigger admin-only fetches.
+function applyGuardVisibility() {
+  const guard = Boolean(adminState.guardMode);
+  for (const btn of adminEl.tabs || []) {
+    const key = btn.dataset ? btn.dataset.adminTab : '';
+    btn.hidden = guard && key !== 'checkin';
+  }
+  if (adminEl.refreshAll) adminEl.refreshAll.hidden = guard;
+}
+
+async function enterGuardMode() {
+  adminState.guardMode = true;
+  adminState.ready = true;
+  setPageTab('admin');
+  setAdminLocked(false);
+  if (adminEl.loginPanel) adminEl.loginPanel.hidden = true;
+  if (adminEl.open) adminEl.open.hidden = false;
+  if (adminEl.ident) adminEl.ident.textContent = 'Signed in as guard';
+  applyGuardVisibility();
+  setAdminSection('checkin');
+  setAdminOpenStatus('');
+  setAdminStatus('Guard mode: check-in only.');
+}
+
+async function loginGuard() {
+  const password = adminEl.password ? adminEl.password.value : '';
+  if (!password.trim()) {
+    setAdminStatus('Enter guard password.', true);
+    return;
+  }
+  if (adminEl.guardLogin) adminEl.guardLogin.disabled = true;
+  setAdminStatus('Logging in...');
+  try {
+    const res = await fetch('/api/guard/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw data;
+    if (adminEl.password) adminEl.password.value = '';
+    await enterGuardMode();
+  } catch (err) {
+    setAdminStatus(apiErrorText(err, 'Guard login failed.'), true);
+  } finally {
+    if (adminEl.guardLogin) adminEl.guardLogin.disabled = false;
+  }
+}
+
+// On the open_admin flow, probe which role the current session has and route to the
+// full admin dashboard, guard-only mode, or the login panel accordingly.
+async function bootstrapAdminOrGuard() {
+  let role = null;
+  try {
+    const data = await adminGet('/api/guard/bootstrap');
+    role = data ? data.role : null;
+  } catch (_err) {
+    role = null;
+  }
+  if (role === 'admin') {
+    await openAdminMode();
+  } else if (role === 'guard') {
+    await enterGuardMode();
+  } else {
+    setPageTab('admin');
+    setAdminLocked(true);
+    if (adminEl.loginPanel) adminEl.loginPanel.hidden = false;
+    setAdminOpenStatus('');
+    setAdminStatus('Log in to continue.');
+  }
 }
 
 async function addAdminGuest() {
@@ -2887,6 +3410,25 @@ girlsEl.addEventListener('input', () => {
 });
 
 submitBtn.addEventListener('click', submitDraft);
+if (wizardNextEl) {
+  wizardNextEl.addEventListener('click', wizardNext);
+}
+if (wizardBackEl) {
+  wizardBackEl.addEventListener('click', wizardBack);
+}
+if (wizardOpenAccountEl) {
+  wizardOpenAccountEl.addEventListener('click', () => {
+    state.accountOpen = true;
+    renderAccountPanel();
+    setAccountStatus('');
+  });
+}
+if (registerNoteEl) {
+  registerNoteEl.addEventListener('click', () => {
+    state.accountOpen = true;
+    renderAccountPanel();
+  });
+}
 refreshBtn.addEventListener('click', fetchEvents);
 if (paymentProofEl) {
   paymentProofEl.addEventListener('change', renderSummary);
@@ -2935,7 +3477,12 @@ if (accountPanelEl) {
 document.addEventListener('click', (event) => {
   if (!accountPanelEl || accountPanelEl.hidden) return;
   const target = event.target;
-  if (accountPanelEl.contains(target) || (accountOpenEl && accountOpenEl.contains(target))) return;
+  if (
+    accountPanelEl.contains(target)
+    || (accountOpenEl && accountOpenEl.contains(target))
+    || (registerNoteEl && registerNoteEl.contains(target))
+    || (wizardOpenAccountEl && wizardOpenAccountEl.contains(target))
+  ) return;
   if (target && target.closest && target.closest('[data-page-tab]')) return;
   closeAccountPanel();
 });
@@ -3036,8 +3583,8 @@ async function loadHomepageCarousel() {
   });
   wireCarousel();
 }
-if (summaryEl) {
-  summaryEl.addEventListener('click', async (event) => {
+if (paymentOptionsEl) {
+  paymentOptionsEl.addEventListener('click', async (event) => {
     const choice = event.target && event.target.closest ? event.target.closest('button.payment-choice') : null;
     if (choice) {
       event.preventDefault();
@@ -3069,6 +3616,9 @@ if (adminEl.open) {
 if (adminEl.login) {
   adminEl.login.addEventListener('click', loginAdmin);
 }
+if (adminEl.guardLogin) {
+  adminEl.guardLogin.addEventListener('click', loginGuard);
+}
 if (adminEl.logout) {
   adminEl.logout.addEventListener('click', logoutAdmin);
 }
@@ -3096,6 +3646,9 @@ if (footerTermsLink) {
     event.preventDefault();
     resetAccountPanelState();
     setPageTab('book');
+    // The booking terms live on the wizard's Payment step; jump there to reveal them.
+    state.bookStep = 'payment';
+    renderSummary();
     const termsDetails = document.querySelector('.terms-box details');
     if (termsDetails) {
       termsDetails.open = true;
@@ -3114,6 +3667,8 @@ if (adminEl.tabs && adminEl.tabs.length) {
         loadAdminPaymentTotals().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load payment totals.'), true));
       } else if (key === 'carousel') {
         loadAdminCarousel().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load carousel.'), true));
+      } else if (key === 'history') {
+        loadAdminHistory().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to load history.'), true));
       }
     });
   }
@@ -3142,6 +3697,29 @@ if (adminEl.carouselList) {
     if (!target) return;
     event.preventDefault();
     deleteAdminCarouselPhoto(target.getAttribute('data-carousel-id'));
+  });
+}
+if (adminEl.historyRefresh) {
+  adminEl.historyRefresh.addEventListener('click', () => {
+    if (adminEl.historySearch) adminState.historySearch = adminEl.historySearch.value.trim();
+    loadAdminHistory().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to refresh history.'), true));
+  });
+}
+if (adminEl.historySearch) {
+  let historySearchTimer = 0;
+  adminEl.historySearch.addEventListener('input', () => {
+    window.clearTimeout(historySearchTimer);
+    historySearchTimer = window.setTimeout(() => {
+      adminState.historySearch = adminEl.historySearch.value.trim();
+      loadAdminHistory().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to search history.'), true));
+    }, 300);
+  });
+  adminEl.historySearch.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      window.clearTimeout(historySearchTimer);
+      adminState.historySearch = adminEl.historySearch.value.trim();
+      loadAdminHistory().catch((err) => setAdminStatus(apiErrorText(err, 'Failed to search history.'), true));
+    }
   });
 }
 if (adminEl.refreshAll) {
@@ -3265,7 +3843,7 @@ loadAuthConfig();
 fetchEvents();
 loadMeAndTickets();
 if (autoOpenAdmin) {
-  openAdminMode().catch((err) => {
+  bootstrapAdminOrGuard().catch((err) => {
     setAdminStatus(apiErrorText(err, 'Admin access denied.'), true);
   });
 } else {

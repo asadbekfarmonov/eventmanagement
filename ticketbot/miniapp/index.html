@@ -39,7 +39,7 @@
       <div class="nav-row">
         <nav class="top-nav" aria-label="Page sections" role="tablist">
           <button type="button" class="top-nav-item active" data-page-tab="main" role="tab" aria-selected="true" aria-controls="main-panel">Main</button>
-          <button type="button" class="top-nav-item" data-page-tab="book" role="tab" aria-selected="false" aria-controls="events-panel group-panel attendees-panel summary-panel">Book</button>
+          <button type="button" class="top-nav-item" data-page-tab="book" role="tab" aria-selected="false" aria-controls="booking-wizard">Book</button>
           <button type="button" class="top-nav-item" data-page-tab="tickets" role="tab" aria-selected="false" aria-controls="tickets-panel">My tickets</button>
           <button type="button" class="top-nav-item" data-page-tab="contact" role="tab" aria-selected="false" aria-controls="contact-panel">Contact</button>
         </nav>
@@ -184,6 +184,10 @@
         <div class="account-divider"><span>or</span></div>
         <div id="google-signin-button"></div>
       </div>
+      <div id="telegram-signin-wrap" class="telegram-signin-wrap" hidden>
+        <div class="account-divider"><span>or</span></div>
+        <div id="telegram-signin-button" class="telegram-signin-button"></div>
+      </div>
       <div id="account-code-panel" class="account-code-panel" hidden>
         <label>
           Email code
@@ -194,45 +198,73 @@
       <p id="account-status" class="hint"></p>
     </section>
 
-    <section class="panel page-section" id="events-panel" data-page-section="book" hidden>
-      <div class="panel-head">
-        <h2>Choose event</h2>
-        <button id="refresh-events" type="button">Refresh</button>
-      </div>
-      <div id="events-list" class="event-grid"></div>
-      <p id="events-empty" class="hint" hidden>No active events right now.</p>
-    </section>
+    <section class="panel page-section booking-wizard" id="booking-wizard" data-page-section="book" hidden>
+      <ol class="wizard-progress" id="wizard-progress" aria-label="Booking steps"></ol>
+      <h2 class="wizard-step-title" id="wizard-step-title">Book your tickets</h2>
 
-    <section class="panel page-section" id="group-panel" data-page-section="book" hidden>
-      <h2>Group size</h2>
-      <div class="grid-2">
+      <div class="wizard-step" data-wizard-step="register" hidden>
+        <div id="wizard-register-signedout">
+          <p class="hint">Sign in or register first so we can keep your tickets together and contact you about your booking.</p>
+          <button id="wizard-open-account" class="primary" type="button">Register or sign in</button>
+        </div>
+        <div id="wizard-register-signedin" hidden>
+          <p class="hint">Signed in as <strong id="wizard-signed-name"></strong>.</p>
+        </div>
+      </div>
+
+      <div class="wizard-step" data-wizard-step="event" hidden>
+        <div class="panel-head actions-only">
+          <button id="refresh-events" type="button">Refresh</button>
+        </div>
+        <div id="events-list" class="event-grid"></div>
+        <p id="events-empty" class="hint" hidden>No active events right now.</p>
+      </div>
+
+      <div class="wizard-step" data-wizard-step="guests" hidden>
+        <h3>Group size</h3>
+        <div class="grid-2">
+          <label>
+            Boys
+            <input id="boys" type="number" min="0" value="0" />
+          </label>
+          <label>
+            Girls
+            <input id="girls" type="number" min="0" value="0" />
+          </label>
+        </div>
+        <p class="hint">We will create one name field for each guest.</p>
+        <h3>Guest names</h3>
+        <p class="hint">Use the name and surname from the passport or ID.</p>
+        <div id="wizard-guests-attendees">
+          <div id="attendees-list" class="attendees"></div>
+        </div>
+      </div>
+
+      <div class="wizard-step" data-wizard-step="repost" hidden>
+        <div class="repost-rules hint">
+          <p>To claim the repost discount you must post from a real, public account with at least 100 followers and 100 following, share the story to everyone (not Close Friends), keep it visible for at least 12 hours, and keep your account open for the whole verification period. If these conditions are not met, the discount is void and the remaining amount is due before entry.</p>
+          <p>Tick the guests who reposted and upload a screenshot of each story.</p>
+        </div>
+        <div id="wizard-repost-attendees"></div>
+      </div>
+
+      <div class="wizard-step" data-wizard-step="group" hidden>
+        <p class="hint">Girls 2+1: every third girl in the group is free. Boys 3+1: every fourth boy is free. The best offer is applied automatically.</p>
+        <div id="wizard-group-info" class="summary-card"></div>
+      </div>
+
+      <div class="wizard-step" data-wizard-step="summary" hidden>
+        <div id="summary" class="summary-card">
+          <p>Choose an event and add your group size.</p>
+        </div>
+      </div>
+
+      <div class="wizard-step" data-wizard-step="payment" hidden>
+        <div id="payment-options"></div>
         <label>
-          Boys
-          <input id="boys" type="number" min="0" value="0" />
+          Payment proof (PDF or image)
+          <input id="payment-proof" type="file" accept="application/pdf,image/*" />
         </label>
-        <label>
-          Girls
-          <input id="girls" type="number" min="0" value="0" />
-        </label>
-      </div>
-      <p class="hint">We will create one name field for each guest.</p>
-    </section>
-
-    <section class="panel page-section" id="attendees-panel" data-page-section="book" hidden>
-      <h2>Guest names</h2>
-      <p class="hint">Use the name and surname from the passport or ID.</p>
-      <div id="attendees-list" class="attendees"></div>
-    </section>
-
-    <section class="panel page-section" id="summary-panel" data-page-section="book" hidden>
-      <h2>Review and book</h2>
-      <div id="summary" class="summary-card">
-        <p>Choose an event and add your group size.</p>
-      </div>
-      <label>
-        Payment proof (PDF or image)
-        <input id="payment-proof" type="file" accept="application/pdf,image/*" />
-      </label>
       <div class="terms-box">
         <details>
           <summary>Booking terms and conduct agreement</summary>
@@ -248,9 +280,10 @@
               <li>If you damage the venue, DJ equipment, event property, or another person’s property, you are responsible for the consequences, costs, and claims.</li>
               <li>Security or organizers may refuse entry or remove anyone who breaks rules, appears unsafe, is aggressive, intoxicated beyond safe limits, or creates risk for others.</li>
               <li>Tickets are personal booking records. Bring your booking code and valid ID if requested. Entry can be refused if the booking cannot be verified.</li>
-              <li>After a ticket is bought, payments are not refunded in cash. If you cannot attend, organizers may, at their discretion, move your access to the next party when you contact us at least 48 hours before the event.</li>
+              <li>After a ticket is bought, if you cannot attend you can ask us to move your ticket to another event up to 24 hours before the event, or request a refund up to 72 hours before the event. Both are subject to organizer discretion and require you to contact us in advance.</li>
               <li>If an event is postponed or materially changed, organizers may offer access to the rescheduled or next suitable event.</li>
               <li>Fake payment proofs, edited screenshots, chargebacks, or misleading booking information can lead to cancellation without access.</li>
+              <li>If you claim a story discount, you must post from a real, public account with at least 100 followers and 100 following, share the story to everyone (not Close Friends), keep it visible for at least 12 hours, and keep your account open for the whole verification period. If these conditions are not met, the discount is void and the remaining amount is due before entry.</li>
               <li>Photos and videos may be taken at the event for community and promotional content. If you want a specific image removed, contact us.</li>
               <li>You are responsible for the guests you add to your booking and for making sure they know these terms.</li>
             </ol>
@@ -262,8 +295,15 @@
           <span>I have read and accept the booking terms and conduct agreement.</span>
         </label>
       </div>
+      <button id="register-note" class="register-note" type="button" hidden>Please register before booking. Tap here to register.</button>
       <button id="submit-booking" class="primary" type="button" disabled>Book</button>
       <p id="status" class="hint"></p>
+      </div>
+
+      <div class="wizard-nav">
+        <button id="wizard-back" class="wizard-back" type="button" hidden>Back</button>
+        <button id="wizard-next" class="primary wizard-next" type="button">Next</button>
+      </div>
     </section>
 
     <section class="panel page-section" id="tickets-panel" data-page-section="tickets" hidden>
@@ -317,6 +357,7 @@
           <input id="admin-password" type="password" autocomplete="current-password" />
         </label>
         <button id="admin-login" class="primary" type="button">Log in</button>
+        <button id="guard-login" type="button">Log in as guard</button>
       </div>
 
       <nav class="admin-tabs" aria-label="Admin sections" role="tablist">
@@ -327,6 +368,7 @@
         <button type="button" class="admin-tab" data-admin-tab="add_guest" role="tab" aria-selected="false" aria-controls="admin-section-add_guest">Add Guest</button>
         <button type="button" class="admin-tab" data-admin-tab="import_export" role="tab" aria-selected="false" aria-controls="admin-section-import_export">Import/Export</button>
         <button type="button" class="admin-tab" data-admin-tab="carousel" role="tab" aria-selected="false" aria-controls="admin-section-carousel">Homepage</button>
+        <button type="button" class="admin-tab" data-admin-tab="history" role="tab" aria-selected="false" aria-controls="admin-section-history">History</button>
       </nav>
 
       <section class="admin-block admin-section" id="admin-section-payments" data-admin-section="payments" role="tabpanel" aria-label="Payments">
@@ -547,6 +589,19 @@
           <button id="admin-carousel-add" type="button">Add photo</button>
         </div>
         <div id="admin-carousel-list" class="admin-carousel-grid"></div>
+      </section>
+
+      <section class="admin-block admin-section" id="admin-section-history" data-admin-section="history" role="tabpanel" aria-label="History" hidden>
+        <div class="panel-head">
+          <h3>Purchase history</h3>
+          <button id="admin-history-refresh" type="button">Refresh</button>
+        </div>
+        <p class="hint">All purchases grouped by buyer, newest purchases first within each buyer.</p>
+        <label>
+          Search
+          <input id="admin-history-search" type="text" placeholder="Buyer/email/phone/event/code" />
+        </label>
+        <div id="admin-history-list" class="admin-cards"></div>
       </section>
     </section>
     <footer class="site-footer">
